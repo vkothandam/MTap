@@ -1,0 +1,32 @@
+# Copy to settings.toml and fill in. settings.toml is gitignored — never commit secrets.
+# Any value here can also be overridden by an environment variable (see comments).
+
+[destination]
+# Base directory for emitted parquet/jsonl output. Relative paths resolve from repo root.
+# Override with env OUT_ROOT.
+out_root = "./out"
+
+[massive]
+# Massive.com market-data REST API.
+base_url = "https://api.massive.com"
+# Override with env MASSIVE_API_KEY (preferred in CI / shared machines).
+api_key = "REPLACE_WITH_YOUR_KEY"
+# Per-minute request cap for the account (free tier is small, e.g. 5). This budget
+# is SHARED across every Massive source via a cross-process throttle, so running
+# several Massive programs at once won't exceed it. Raise this on a paid plan.
+# Override with env MASSIVE_RATE_LIMIT_PER_MIN.
+rate_limit_per_min = 5
+
+[etrade]
+# E*TRADE wsod fundamentals REST API (balance sheet, income statement, SEC filings).
+# Override with env ETRADE_BASE_URL.
+base_url = "https://etrade.api.wsod.com/etrade-api/1.0"
+# Throttle target: max stocks/second (each stock = ~7 API calls). Paced via the
+# cross-process lock state/rate/etrade.lock. Override with env ETRADE_STOCKS_PER_SEC.
+stocks_per_sec = 2
+# DuckDB system-of-record for symbols + fundamentals. Relative paths resolve from
+# repo root. Override with env ETRADE_DB_PATH.
+db_path = "./state/etrade/fundamentals.duckdb"
+# Browser session written by the Node E*TRADE login (cookies + stk1/stk2). Phase 2
+# `fetch` requires this file. Override with env SESSION_PATH.
+session_path = "./state/etrade/session.json"

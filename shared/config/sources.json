@@ -1,0 +1,24 @@
+{
+  "$comment": "Source registry. One entry per source. `runtime` picks the stack; `format` picks the output writer. `schema` points at schemas/<name>.schema.json.",
+  "sources": {
+    "example_api": {
+      "runtime": "python",
+      "format": "jsonl",
+      "schema": "schemas/example_api.schema.json",
+      "description": "Example API source (Python). Replace with a real one."
+    },
+    "example_scrape": {
+      "runtime": "node",
+      "format": "jsonl",
+      "schema": "schemas/example_api.schema.json",
+      "description": "Example scrape source (Node). Reuses the example schema for now."
+    },
+    "massive_grouped_daily": {
+      "runtime": "python",
+      "format": "jsonl",
+      "dataset": "daily_summary",
+      "schema": "schemas/massive_grouped_daily.schema.json",
+      "description": "Massive.com grouped daily bars for the US stocks market (one row per ticker per day)."
+    }
+  }
+}

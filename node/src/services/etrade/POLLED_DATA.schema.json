@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "polled_data",
+  "title": "POLLED_DATA bus event envelope (MTap -> MBin)",
+  "description": "Frozen v1 contract for the POLLED_DATA event. See POLLED_DATA.contract.md. `data` is an opaque passthrough of the upstream E*TRADE response and is intentionally left unconstrained.",
+  "type": "object",
+  "required": ["type", "data"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["watchlist", "marketMovers"],
+      "description": "Discriminator."
+    },
+    "data": {
+      "description": "Opaque passthrough of the raw upstream E*TRADE response; not reshaped by MTap."
+    },
+    "_key": {
+      "type": "string",
+      "pattern": "^poll:[0-9a-f]{1,24}$",
+      "description": "Idempotency key added by the Bus (present when published with an idempotencyKey)."
+    },
+    "_ts": {
+      "type": "integer",
+      "description": "Publish timestamp, ms since epoch, added by the Bus."
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "type": { "const": "watchlist" },
+        "watchlistId": { "type": "string", "description": "E*TRADE watchlist id." },
+        "watchlistName": { "type": "string", "description": "Display name." },
+        "csvPrefix": { "type": "string", "description": "Prefix for MBin's per-watchlist CSV naming." }
+      },
+      "required": ["watchlistId", "watchlistName", "csvPrefix"]
+    },
+    {
+      "properties": {
+        "type": { "const": "marketMovers" },
+        "direction": {
+          "type": "string",
+          "enum": ["up", "down"],
+          "description": "Movers direction."
+        }
+      },
+      "required": ["direction"]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+ "data": {
+  "symbol": "GOOGL",
+  "secFilings": [
+   {
+    "formType": "10-K",
+    "dateFiled": "2026-02-05",
+    "htmlDocKey": "136-000165204426000018-4MGTQTQTJPNNHHP90RP65U9407"
+   },
+   {
+    "formType": "10-K",
+    "dateFiled": "2025-02-05",
+    "htmlDocKey": "136-000165204425000014-51EMPUU7TKK272NSTC4JGS739U"
+   }
+  ],
+  "totalRows": 3,
+  "error": []
+ }
+}

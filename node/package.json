@@ -1,0 +1,38 @@
+{
+  "name": "sourcing-node",
+  "version": "0.1.0",
+  "description": "Node.js sourcers for the MTap sourcing module",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "sourcing-node": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "run-source": "tsx src/cli.ts",
+    "serve": "tsx src/cli.ts serve",
+    "test": "tsx --test src/**/*.test.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ajv": "^8.17.0",
+    "ajv-formats": "^3.0.1",
+    "axios": "^1.6.7",
+    "cheerio": "^1.0.0",
+    "nodemailer": "^6.9.9",
+    "puppeteer": "^22.3.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "redis": "^4.7.0",
+    "undici": "^6.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/nodemailer": "^6.4.14",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  },
+  "$comment": "parquet output: add a lib (e.g. parquetjs or parquet-wasm) when a source needs it; the writer stubs it out for now."
+}

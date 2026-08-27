@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "massive_grouped_daily",
+  "title": "massive_grouped_daily record",
+  "description": "One ticker's daily aggregate bar from Massive.com grouped daily bars (v2/aggs/grouped).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ticker", "date", "open", "high", "low", "close", "volume", "window_start_ms"],
+  "properties": {
+    "ticker": { "type": "string", "description": "Ticker symbol (upstream field T)." },
+    "date": { "type": "string", "format": "date", "description": "Trading date (YYYY-MM-DD)." },
+    "open": { "type": "number", "description": "Open price (o)." },
+    "high": { "type": "number", "description": "High price (h)." },
+    "low": { "type": "number", "description": "Low price (l)." },
+    "close": { "type": "number", "description": "Close price (c)." },
+    "volume": { "type": "number", "description": "Trading volume (v)." },
+    "vwap": { "type": ["number", "null"], "description": "Volume-weighted average price (vw)." },
+    "transactions": { "type": ["integer", "null"], "description": "Number of transactions (n)." },
+    "window_start_ms": { "type": "integer", "description": "Aggregate window start, unix ms (t)." }
+  }
+}

@@ -1,0 +1,1117 @@
+{
+ "data": {
+  "summaryData": [
+   {
+    "name": "Total revenue",
+    "data": [
+     {
+      "value": 119796,
+      "code": "RTLR",
+      "date": "2026-06-30",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     },
+     {
+      "value": 109896,
+      "code": "RTLR",
+      "date": "2026-03-31",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     }
+    ]
+   },
+   {
+    "name": "Total operating expense",
+    "data": [
+     {
+      "value": 79607,
+      "code": "ETOE",
+      "date": "2026-06-30",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     },
+     {
+      "value": 70200,
+      "code": "ETOE",
+      "date": "2026-03-31",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     }
+    ]
+   },
+   {
+    "name": "Operating income",
+    "data": [
+     {
+      "value": 40189,
+      "code": "SOPI",
+      "date": "2026-06-30",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     },
+     {
+      "value": 39696,
+      "code": "SOPI",
+      "date": "2026-03-31",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     }
+    ]
+   },
+   {
+    "name": "Income before tax",
+    "data": [
+     {
+      "value": 138753,
+      "code": "EIBT",
+      "date": "2026-06-30",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     },
+     {
+      "value": 77412,
+      "code": "EIBT",
+      "date": "2026-03-31",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     }
+    ]
+   },
+   {
+    "name": "Income after tax",
+    "data": [
+     {
+      "value": 112193,
+      "code": "TIAT",
+      "date": "2026-06-30",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     },
+     {
+      "value": 62578,
+      "code": "TIAT",
+      "date": "2026-03-31",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     }
+    ]
+   },
+   {
+    "name": "Net inc before extra items",
+    "data": [
+     {
+      "value": 112193,
+      "code": "NIBX",
+      "date": "2026-06-30",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     },
+     {
+      "value": 62578,
+      "code": "NIBX",
+      "date": "2026-03-31",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     }
+    ]
+   },
+   {
+    "name": "Net income",
+    "data": [
+     {
+      "value": 112193,
+      "code": "NINC",
+      "date": "2026-06-30",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     },
+     {
+      "value": 62578,
+      "code": "NINC",
+      "date": "2026-03-31",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     }
+    ]
+   },
+   {
+    "name": "Income available to common excl. extra. items",
+    "data": [
+     {
+      "value": 112107,
+      "code": "CIAC",
+      "date": "2026-06-30",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     },
+     {
+      "value": 62578,
+      "code": "CIAC",
+      "date": "2026-03-31",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     }
+    ]
+   },
+   {
+    "name": "Income available to common incl. extra. items",
+    "data": [
+     {
+      "value": 112107,
+      "code": "XNIC",
+      "date": "2026-06-30",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     },
+     {
+      "value": 62578,
+      "code": "XNIC",
+      "date": "2026-03-31",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     }
+    ]
+   },
+   {
+    "name": "Normalized income before tax",
+    "data": [
+     {
+      "value": 139565,
+      "code": "VPTI",
+      "date": "2026-06-30",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     },
+     {
+      "value": 77920,
+      "code": "VPTI",
+      "date": "2026-03-31",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     }
+    ]
+   },
+   {
+    "name": "Normalized income after tax",
+    "data": [
+     {
+      "value": 112849.56754,
+      "code": "VIAT",
+      "date": "2026-06-30",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     },
+     {
+      "value": 62988.65499,
+      "code": "VIAT",
+      "date": "2026-03-31",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     }
+    ]
+   },
+   {
+    "name": "Normalized inc avail to common",
+    "data": [
+     {
+      "value": 112763.56754,
+      "code": "VIAC",
+      "date": "2026-06-30",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     },
+     {
+      "value": 62988.65499,
+      "code": "VIAC",
+      "date": "2026-03-31",
+      "periodLength": 3,
+      "periodLengthUnits": "M"
+     }
+    ]
+   }
+  ],
+  "incomeStatement": {
+   "data": [
+    {
+     "name": "Revenue and gross profit",
+     "children": [
+      {
+       "name": "Total revenue",
+       "data": [
+        {
+         "value": 119796,
+         "code": "RTLR",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 109896,
+         "code": "RTLR",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ],
+       "children": []
+      }
+     ]
+    },
+    {
+     "name": "Operating expenses",
+     "children": [
+      {
+       "name": "Total operating expense",
+       "data": [
+        {
+         "value": 79607,
+         "code": "ETOE",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 70200,
+         "code": "ETOE",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ],
+       "children": [
+        {
+         "name": "Cost of revenue, total",
+         "data": [
+          {
+           "value": 45943,
+           "code": "SCOR"
+          },
+          {
+           "value": 41271,
+           "code": "SCOR"
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Sell/gen/admin expenses, tot",
+         "data": [
+          {
+           "value": 14633,
+           "code": "SSGA"
+          },
+          {
+           "value": 11389,
+           "code": "SSGA"
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Research & development",
+         "data": [
+          {
+           "value": 17627,
+           "code": "ERAD"
+          },
+          {
+           "value": 16526,
+           "code": "ERAD"
+          }
+         ]
+        },
+        {
+         "name": "Depreciation/amortization",
+         "data": [
+          {
+           "value": 592,
+           "code": "SDPR"
+          },
+          {
+           "value": 506,
+           "code": "SDPR"
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Unusual expense (income)",
+         "data": [
+          {
+           "value": 812,
+           "code": "SUIE"
+          },
+          {
+           "value": 508,
+           "code": "SUIE"
+          }
+         ],
+         "children": [
+          {
+           "name": "Litigation",
+           "data": [
+            {
+             "value": 812,
+             "code": "ELIT"
+            },
+            {
+             "value": 208,
+             "code": "ELIT"
+            }
+           ]
+          },
+          {
+           "name": "Impair-assets held for use",
+           "data": [
+            {
+             "code": "EIAU"
+            },
+            {
+             "value": 300,
+             "code": "EIAU"
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "name": "Operating income",
+         "data": [
+          {
+           "value": 40189,
+           "code": "SOPI"
+          },
+          {
+           "value": 39696,
+           "code": "SOPI"
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "Non-operating income & expenses",
+     "children": [
+      {
+       "name": "Income before tax",
+       "data": [
+        {
+         "value": 138753,
+         "code": "EIBT",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 77412,
+         "code": "EIBT",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ],
+       "children": [
+        {
+         "name": "Inter inc(exp), net non-oper",
+         "data": [
+          {
+           "code": "NINN"
+          },
+          {
+           "code": "NINN"
+          }
+         ],
+         "children": [
+          {
+           "name": "Inter expse, net non-operat",
+           "data": [
+            {
+             "value": -1278,
+             "code": "SIEN"
+            },
+            {
+             "value": -533,
+             "code": "SIEN"
+            }
+           ],
+           "children": [
+            {
+             "name": "Inter expse, non-operating",
+             "data": [
+              {
+               "value": -1641,
+               "code": "NIEN"
+              },
+              {
+               "value": -798,
+               "code": "NIEN"
+              }
+             ]
+            },
+            {
+             "name": "Inter capital, non-operat",
+             "data": [
+              {
+               "value": 363,
+               "code": "NCIN"
+              },
+              {
+               "value": 265,
+               "code": "NCIN"
+              }
+             ]
+            }
+           ]
+          },
+          {
+           "name": "Inter/invest inc, non-oper",
+           "data": [
+            {
+             "value": 100234,
+             "code": "SIIN"
+            },
+            {
+             "value": 38391,
+             "code": "SIIN"
+            }
+           ],
+           "children": [
+            {
+             "name": "Inter inc(exp), net non-oper",
+             "data": [
+              {
+               "value": 1430,
+               "code": "NIIN"
+              },
+              {
+               "value": 1381,
+               "code": "NIIN"
+              }
+             ]
+            },
+            {
+             "name": "Invest income, non-operat",
+             "data": [
+              {
+               "value": 98804,
+               "code": "NINV"
+              },
+              {
+               "value": 37010,
+               "code": "NINV"
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "name": "Other, net",
+         "data": [
+          {
+           "value": -392,
+           "code": "SONT"
+          },
+          {
+           "value": -142,
+           "code": "SONT"
+          }
+         ],
+         "children": [
+          {
+           "name": "Other non-operat inc (expnse)",
+           "data": [
+            {
+             "value": -392,
+             "code": "NONT"
+            },
+            {
+             "value": -142,
+             "code": "NONT"
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "Income taxes",
+     "children": [
+      {
+       "name": "Income after tax",
+       "data": [
+        {
+         "value": 112193,
+         "code": "TIAT",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 62578,
+         "code": "TIAT",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ],
+       "children": [
+        {
+         "name": "Income tax - total",
+         "data": [
+          {
+           "value": 26560,
+           "code": "TTAX"
+          },
+          {
+           "value": 14834,
+           "code": "TTAX"
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "Minority interest and equity in affiliates",
+     "children": [
+      {
+       "name": "Net inc before extra items",
+       "data": [
+        {
+         "value": 112193,
+         "code": "NIBX",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 62578,
+         "code": "NIBX",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ],
+       "children": []
+      }
+     ]
+    },
+    {
+     "name": "Extraordinary items",
+     "children": [
+      {
+       "name": "Net income",
+       "data": [
+        {
+         "value": 112193,
+         "code": "NINC",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 62578,
+         "code": "NINC",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ],
+       "children": []
+      }
+     ]
+    },
+    {
+     "name": "Adjustments to net income",
+     "children": [
+      {
+       "name": "Income available to common excl. extra items",
+       "data": [
+        {
+         "value": 112107,
+         "code": "CIAC",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 62578,
+         "code": "CIAC",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ],
+       "children": [
+        {
+         "name": "Total adjust to net income",
+         "data": [
+          {
+           "value": -86,
+           "code": "SANI"
+          },
+          {
+           "code": "SANI"
+          }
+         ],
+         "children": []
+        }
+       ]
+      },
+      {
+       "name": "Income available to common incl. extra items",
+       "data": [
+        {
+         "value": 112107,
+         "code": "XNIC",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 62578,
+         "code": "XNIC",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "EPS reconciliation",
+     "children": [
+      {
+       "name": "Basic/primary weighted average shares",
+       "data": [
+        {
+         "value": 12151,
+         "code": "SBAS",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 12099,
+         "code": "SBAS",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      },
+      {
+       "name": "Basic/primary EPS excl. extra items",
+       "data": [
+        {
+         "value": 9.22615,
+         "code": "SBBF",
+         "decimals": "2",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 5.17216,
+         "code": "SBBF",
+         "decimals": "2",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      },
+      {
+       "name": "Basic/primary EPS incl. extra items",
+       "data": [
+        {
+         "value": 9.22615,
+         "code": "SBAI",
+         "decimals": "2",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 5.17216,
+         "code": "SBAI",
+         "decimals": "2",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      },
+      {
+       "name": "Dilution adjustment",
+       "data": [
+        {
+         "value": 0,
+         "code": "SDAJ",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 0,
+         "code": "SDAJ",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      },
+      {
+       "name": "Diluted weighted average shares",
+       "data": [
+        {
+         "value": 12309,
+         "code": "SDWS",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 12238,
+         "code": "SDWS",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      },
+      {
+       "name": "Diluted EPS excl. extra items",
+       "data": [
+        {
+         "value": 9.10773,
+         "code": "SDBF",
+         "decimals": "2",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 5.11342,
+         "code": "SDBF",
+         "decimals": "2",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      },
+      {
+       "name": "Diluted EPS incl. extra items",
+       "data": [
+        {
+         "value": 9.10773,
+         "code": "SDAI",
+         "decimals": "2",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 5.11342,
+         "code": "SDAI",
+         "decimals": "2",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "Common stock dividends",
+     "children": [
+      {
+       "name": "Div/share-comstockprimissue",
+       "data": [
+        {
+         "value": 0.22,
+         "code": "DDPS1",
+         "decimals": "2",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 0.21,
+         "code": "DDPS1",
+         "decimals": "2",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      },
+      {
+       "name": "Gross dividend - common stock",
+       "data": [
+        {
+         "value": 2744,
+         "code": "DCGD",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 2609,
+         "code": "DCGD",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "Pro forma income",
+     "children": [
+      {
+       "name": "Pro forma net income",
+       "data": [
+        {
+         "code": "VPFI",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "code": "VPFI",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ],
+       "children": []
+      }
+     ]
+    },
+    {
+     "name": "Supplemental items",
+     "children": [
+      {
+       "name": "Interest expense, suppl",
+       "data": [
+        {
+         "value": 1278,
+         "code": "VIEX",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 533,
+         "code": "VIEX",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      },
+      {
+       "name": "Interest capitalized, suppl",
+       "data": [
+        {
+         "value": -363,
+         "code": "VCAP",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": -265,
+         "code": "VCAP",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      },
+      {
+       "name": "Depreciat/amort, suppl",
+       "data": [
+        {
+         "value": 7104,
+         "code": "VDEP",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 6482,
+         "code": "VDEP",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "Normalized income",
+     "children": [
+      {
+       "name": "Normalized income before tax",
+       "data": [
+        {
+         "value": 139565,
+         "code": "VPTI",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 77920,
+         "code": "VPTI",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ],
+       "children": [
+        {
+         "name": "Total special items",
+         "data": [
+          {
+           "value": 812,
+           "code": "STSI"
+          },
+          {
+           "value": 508,
+           "code": "STSI"
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "name": "Normalized income after tax",
+       "data": [
+        {
+         "value": 112849.56754,
+         "code": "VIAT",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 62988.65499,
+         "code": "VIAT",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ],
+       "children": [
+        {
+         "name": "Effect spec items incl tax (STEC)",
+         "data": [
+          {
+           "value": 155.43246,
+           "code": "STEC"
+          },
+          {
+           "value": 97.34501,
+           "code": "STEC"
+          }
+         ]
+        },
+        {
+         "name": "Incl tax excl/impact spec items",
+         "data": [
+          {
+           "value": 26715.43246,
+           "code": "VITN"
+          },
+          {
+           "value": 14931.34501,
+           "code": "VITN"
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "name": "Normalized inc avail to common",
+       "data": [
+        {
+         "value": 112763.56754,
+         "code": "VIAC",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 62988.65499,
+         "code": "VIAC",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      },
+      {
+       "name": "Basic normalized EPS",
+       "data": [
+        {
+         "value": 9.28019,
+         "code": "VBES",
+         "decimals": "2",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 5.2061,
+         "code": "VBES",
+         "decimals": "2",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      },
+      {
+       "name": "Diluted normalized EPS",
+       "data": [
+        {
+         "value": 9.16107,
+         "code": "VDES",
+         "decimals": "2",
+         "date": "2026-06-30",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        },
+        {
+         "value": 5.14697,
+         "code": "VDES",
+         "decimals": "2",
+         "date": "2026-03-31",
+         "periodLength": 3,
+         "periodLengthUnits": "M"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "thousandMultiplier": false
+ }
+}

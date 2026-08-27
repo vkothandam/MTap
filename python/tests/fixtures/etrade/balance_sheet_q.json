@@ -1,0 +1,1026 @@
+{
+ "data": {
+  "summaryData": [
+   {
+    "name": "Total current assets",
+    "data": [
+     {
+      "value": 343524,
+      "code": "ATCA",
+      "date": "2026-06-30"
+     },
+     {
+      "value": 213753,
+      "code": "ATCA",
+      "date": "2026-03-31"
+     }
+    ]
+   },
+   {
+    "name": "Total assets",
+    "data": [
+     {
+      "value": 921983,
+      "code": "ATOT",
+      "date": "2026-06-30"
+     },
+     {
+      "value": 703919,
+      "code": "ATOT",
+      "date": "2026-03-31"
+     }
+    ]
+   },
+   {
+    "name": "Total current liabilities",
+    "data": [
+     {
+      "value": 126111,
+      "code": "LTCL",
+      "date": "2026-06-30"
+     },
+     {
+      "value": 111188,
+      "code": "LTCL",
+      "date": "2026-03-31"
+     }
+    ]
+   },
+   {
+    "name": "Total debt",
+    "data": [
+     {
+      "value": 102754,
+      "code": "STLD",
+      "date": "2026-06-30"
+     },
+     {
+      "value": 81713,
+      "code": "STLD",
+      "date": "2026-03-31"
+     }
+    ]
+   },
+   {
+    "name": "Total liabilities",
+    "data": [
+     {
+      "value": 281503,
+      "code": "LTLL",
+      "date": "2026-06-30"
+     },
+     {
+      "value": 225173,
+      "code": "LTLL",
+      "date": "2026-03-31"
+     }
+    ]
+   },
+   {
+    "name": "Total equity",
+    "data": [
+     {
+      "value": 640480,
+      "code": "QTLE",
+      "date": "2026-06-30"
+     },
+     {
+      "value": 478746,
+      "code": "QTLE",
+      "date": "2026-03-31"
+     }
+    ]
+   },
+   {
+    "name": "Total liabilities & shareholders\u2019 equity",
+    "data": [
+     {
+      "value": 921983,
+      "code": "QTEL",
+      "date": "2026-06-30"
+     },
+     {
+      "value": 703919,
+      "code": "QTEL",
+      "date": "2026-03-31"
+     }
+    ]
+   }
+  ],
+  "balanceSheet": {
+   "data": [
+    {
+     "name": "Assets",
+     "children": [
+      {
+       "name": "Total current assets",
+       "data": [
+        {
+         "value": 343524,
+         "code": "ATCA",
+         "date": "2026-06-30"
+        },
+        {
+         "value": 213753,
+         "code": "ATCA",
+         "date": "2026-03-31"
+        }
+       ],
+       "children": [
+        {
+         "name": "Cash and short term inv",
+         "data": [
+          {
+           "value": 242474,
+           "code": "SCSI"
+          },
+          {
+           "value": 126840,
+           "code": "SCSI"
+          }
+         ],
+         "children": [
+          {
+           "name": "Cash",
+           "data": [
+            {
+             "value": 12823,
+             "code": "ACSH"
+            },
+            {
+             "value": 15408,
+             "code": "ACSH"
+            }
+           ]
+          },
+          {
+           "name": "Cash & equivalents",
+           "data": [
+            {
+             "value": 43088,
+             "code": "ACAE"
+            },
+            {
+             "value": 22655,
+             "code": "ACAE"
+            }
+           ]
+          },
+          {
+           "name": "Short term investments",
+           "data": [
+            {
+             "value": 186563,
+             "code": "ASTI"
+            },
+            {
+             "value": 88777,
+             "code": "ASTI"
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "name": "Total receivables, net",
+         "data": [
+          {
+           "value": 69175,
+           "code": "ATRC"
+          },
+          {
+           "value": 62999,
+           "code": "ATRC"
+          }
+         ],
+         "children": [
+          {
+           "name": "Trade accts recvble, net",
+           "data": [
+            {
+             "code": "AACR"
+            },
+            {
+             "code": "AACR"
+            }
+           ],
+           "children": [
+            {
+             "name": "Trade accts recvble, gross",
+             "data": [
+              {
+               "value": 70170,
+               "code": "AARG"
+              },
+              {
+               "value": 63961,
+               "code": "AARG"
+              }
+             ]
+            },
+            {
+             "name": "Prov. for doubtful accts",
+             "data": [
+              {
+               "value": -995,
+               "code": "APDA"
+              },
+              {
+               "value": -962,
+               "code": "APDA"
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "name": "Total inventory",
+         "data": [
+          {
+           "value": 9991,
+           "code": "AITL"
+          },
+          {
+           "code": "AITL"
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Other curr. assets, total",
+         "data": [
+          {
+           "value": 21884,
+           "code": "SOCA"
+          },
+          {
+           "value": 23914,
+           "code": "SOCA"
+          }
+         ],
+         "children": [
+          {
+           "name": "Discont. pps.-curr. assets",
+           "data": [
+            {
+             "value": 7100,
+             "code": "ADCA"
+            },
+            {
+             "code": "ADCA"
+            }
+           ]
+          },
+          {
+           "name": "Other current assets",
+           "data": [
+            {
+             "value": 14784,
+             "code": "AOCA"
+            },
+            {
+             "value": 23914,
+             "code": "AOCA"
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "name": "Total Assets",
+       "data": [
+        {
+         "value": 921983,
+         "code": "ATOT",
+         "date": "2026-06-30"
+        },
+        {
+         "value": 703919,
+         "code": "ATOT",
+         "date": "2026-03-31"
+        }
+       ],
+       "children": [
+        {
+         "name": "Prop./plant/equip. - net",
+         "data": [
+          {
+           "value": 338906,
+           "code": "APPN"
+          },
+          {
+           "value": 296529,
+           "code": "APPN"
+          }
+         ],
+         "children": [
+          {
+           "name": "Prop./plant/equip. - gross",
+           "data": [
+            {
+             "value": 444818,
+             "code": "APTC"
+            },
+            {
+             "value": 396709,
+             "code": "APTC"
+            }
+           ],
+           "children": [
+            {
+             "name": "Construction in progress",
+             "data": [
+              {
+               "value": 122814,
+               "code": "ACPC"
+              },
+              {
+               "value": 108597,
+               "code": "ACPC"
+              }
+             ]
+            },
+            {
+             "name": "Other prop./plant/equip.",
+             "data": [
+              {
+               "value": 322004,
+               "code": "AOPC"
+              },
+              {
+               "value": 288112,
+               "code": "AOPC"
+              }
+             ]
+            }
+           ]
+          },
+          {
+           "name": "Accumulated depreciation",
+           "data": [
+            {
+             "value": -105912,
+             "code": "ADEP"
+            },
+            {
+             "value": -100180,
+             "code": "ADEP"
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "name": "Goodwill, net",
+         "data": [
+          {
+           "value": 57828,
+           "code": "AGWI"
+          },
+          {
+           "value": 57774,
+           "code": "AGWI"
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Intangibles, net",
+         "data": [
+          {
+           "value": 9105,
+           "code": "AINT"
+          },
+          {
+           "value": 9444,
+           "code": "AINT"
+          }
+         ],
+         "children": [
+          {
+           "name": "Intangibles, gross",
+           "data": [
+            {
+             "value": 10796,
+             "code": "AING"
+            },
+            {
+             "value": 10821,
+             "code": "AING"
+            }
+           ]
+          },
+          {
+           "name": "Accum. intangible amort.",
+           "data": [
+            {
+             "value": -1691,
+             "code": "AAMT"
+            },
+            {
+             "value": -1377,
+             "code": "AAMT"
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "name": "Long term investments",
+         "data": [
+          {
+           "value": 131461,
+           "code": "SINV"
+          },
+          {
+           "value": 106946,
+           "code": "SINV"
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Other long term assets",
+         "data": [
+          {
+           "value": 39711,
+           "code": "AOAS"
+          },
+          {
+           "value": 17478,
+           "code": "AOAS"
+          }
+         ],
+         "children": []
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "Liabilities",
+     "children": [
+      {
+       "name": "Total current liabilities",
+       "data": [
+        {
+         "value": 126111,
+         "code": "LTCL",
+         "date": "2026-06-30"
+        },
+        {
+         "value": 111188,
+         "code": "LTCL",
+         "date": "2026-03-31"
+        }
+       ],
+       "children": [
+        {
+         "name": "Accounts payable",
+         "data": [
+          {
+           "value": 20258,
+           "code": "LAPB"
+          },
+          {
+           "value": 16852,
+           "code": "LAPB"
+          }
+         ]
+        },
+        {
+         "name": "Accrued expenses",
+         "data": [
+          {
+           "value": 62241,
+           "code": "LAEX"
+          },
+          {
+           "value": 54704,
+           "code": "LAEX"
+          }
+         ]
+        },
+        {
+         "name": "Notes payable/st debt",
+         "data": [
+          {
+           "value": 0,
+           "code": "LSTD"
+          },
+          {
+           "value": 0,
+           "code": "LSTD"
+          }
+         ]
+        },
+        {
+         "name": "Curr. port. lt dbt/cap ls.",
+         "data": [
+          {
+           "value": 2448,
+           "code": "LCLD"
+          },
+          {
+           "value": 2175,
+           "code": "LCLD"
+          }
+         ]
+        },
+        {
+         "name": "Other curr. lblts, total",
+         "data": [
+          {
+           "value": 41164,
+           "code": "SOCL"
+          },
+          {
+           "value": 37457,
+           "code": "SOCL"
+          }
+         ],
+         "children": [
+          {
+           "name": "Customer advances",
+           "data": [
+            {
+             "value": 17753,
+             "code": "LCAV"
+            },
+            {
+             "value": 17370,
+             "code": "LCAV"
+            }
+           ]
+          },
+          {
+           "name": "Income taxes payable",
+           "data": [
+            {
+             "value": 5233,
+             "code": "LTXP"
+            },
+            {
+             "value": 3905,
+             "code": "LTXP"
+            }
+           ]
+          },
+          {
+           "name": "Other payables",
+           "data": [
+            {
+             "value": 822,
+             "code": "LOPB"
+            },
+            {
+             "value": 631,
+             "code": "LOPB"
+            }
+           ]
+          },
+          {
+           "name": "Other current liabilities",
+           "data": [
+            {
+             "value": 17356,
+             "code": "LOCL"
+            },
+            {
+             "value": 15551,
+             "code": "LOCL"
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "name": "Total debt",
+       "data": [
+        {
+         "value": 102754,
+         "code": "STLD",
+         "date": "2026-06-30"
+        },
+        {
+         "value": 81713,
+         "code": "STLD",
+         "date": "2026-03-31"
+        }
+       ],
+       "children": [
+        {
+         "name": "Total long term debt",
+         "data": [
+          {
+           "value": 100306,
+           "code": "LTTD"
+          },
+          {
+           "value": 79538,
+           "code": "LTTD"
+          }
+         ],
+         "children": [
+          {
+           "name": "Long term debt",
+           "data": [
+            {
+             "value": 98165,
+             "code": "LLTD"
+            },
+            {
+             "value": 77501,
+             "code": "LLTD"
+            }
+           ]
+          },
+          {
+           "name": "Capital lease obligations",
+           "data": [
+            {
+             "value": 2141,
+             "code": "LCLO"
+            },
+            {
+             "value": 2037,
+             "code": "LCLO"
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "name": "Total liabilities",
+       "data": [
+        {
+         "value": 281503,
+         "code": "LTLL",
+         "date": "2026-06-30"
+        },
+        {
+         "value": 225173,
+         "code": "LTLL",
+         "date": "2026-03-31"
+        }
+       ],
+       "children": [
+        {
+         "name": "Deferred income tax",
+         "data": [
+          {
+           "value": 22819,
+           "code": "SBDT"
+          },
+          {
+           "code": "SBDT"
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Other liabilities, total",
+         "data": [
+          {
+           "value": 32267,
+           "code": "SLTL"
+          },
+          {
+           "value": 34447,
+           "code": "SLTL"
+          }
+         ],
+         "children": []
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "name": "Shareholder equity",
+     "children": [
+      {
+       "name": "Total Equity",
+       "data": [
+        {
+         "value": 640480,
+         "code": "QTLE",
+         "date": "2026-06-30"
+        },
+        {
+         "value": 478746,
+         "code": "QTLE",
+         "date": "2026-03-31"
+        }
+       ],
+       "children": [
+        {
+         "name": "Pref. Stock-Non Rdmbl, Net",
+         "data": [
+          {
+           "value": 18023,
+           "code": "SPRS"
+          },
+          {
+           "value": 0,
+           "code": "SPRS"
+          }
+         ],
+         "children": [
+          {
+           "name": "Pref. Stock - Non Rdmbl.",
+           "data": [
+            {
+             "value": 18023,
+             "code": "QPRS"
+            },
+            {
+             "code": "QPRS"
+            }
+           ]
+          },
+          {
+           "name": "Conv. Pref. Stk-Non Rdmbl.",
+           "data": [
+            {
+             "code": "QCPS"
+            },
+            {
+             "value": 0,
+             "code": "QCPS"
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "name": "Common Stock",
+         "data": [
+          {
+           "value": 12.23,
+           "code": "SCMS"
+          },
+          {
+           "value": 12.116,
+           "code": "SCMS"
+          }
+         ],
+         "children": []
+        },
+        {
+         "name": "Additional Paid-In Capital",
+         "data": [
+          {
+           "value": 131358.77,
+           "code": "QPIC"
+          },
+          {
+           "value": 96889.884,
+           "code": "QPIC"
+          }
+         ]
+        },
+        {
+         "name": "Ret. Earn.(Accum. Deficit)",
+         "data": [
+          {
+           "value": 493371,
+           "code": "QRED"
+          },
+          {
+           "value": 384024,
+           "code": "QRED"
+          }
+         ]
+        },
+        {
+         "name": "Unrealized Gain (Loss)",
+         "data": [
+          {
+           "value": 64,
+           "code": "QUGL"
+          },
+          {
+           "value": 303,
+           "code": "QUGL"
+          }
+         ]
+        },
+        {
+         "name": "Other Equity, Total",
+         "data": [
+          {
+           "value": -2349,
+           "code": "SOTE"
+          },
+          {
+           "value": -2483,
+           "code": "SOTE"
+          }
+         ],
+         "children": [
+          {
+           "name": "Cum. Trans. Adjustment",
+           "data": [
+            {
+             "value": -2893,
+             "code": "QCTA"
+            },
+            {
+             "value": -2884,
+             "code": "QCTA"
+            }
+           ]
+          },
+          {
+           "name": "Other Comprehensive Income",
+           "data": [
+            {
+             "value": 544,
+             "code": "QCOM"
+            },
+            {
+             "value": 401,
+             "code": "QCOM"
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "name": "Total liabilities & shareholders\u2019 equity",
+       "data": [
+        {
+         "value": 921983,
+         "code": "QTEL",
+         "date": "2026-06-30"
+        },
+        {
+         "value": 703919,
+         "code": "QTEL",
+         "date": "2026-03-31"
+        }
+       ],
+       "children": [
+        {
+         "name": "Ttl comm. shares outs.",
+         "data": [
+          {
+           "value": 12230,
+           "code": "QTCO"
+          },
+          {
+           "value": 12116,
+           "code": "QTCO"
+          }
+         ],
+         "children": [
+          {
+           "name": "Shr outs.-com. primary iss.",
+           "data": [
+            {
+             "value": 5868,
+             "code": "QCSO1"
+            },
+            {
+             "value": 5824,
+             "code": "QCSO1"
+            }
+           ]
+          },
+          {
+           "name": "Shr outs.-com. stk. iss. 2",
+           "data": [
+            {
+             "value": 835,
+             "code": "QCSO2"
+            },
+            {
+             "value": 836,
+             "code": "QCSO2"
+            }
+           ]
+          },
+          {
+           "name": "Shr outs.-com. stk. iss. 3",
+           "data": [
+            {
+             "value": 5527,
+             "code": "QCSO3"
+            },
+            {
+             "value": 5456,
+             "code": "QCSO3"
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "name": "Trsy. shrs-comm. primary iss.",
+         "data": [
+          {
+           "value": 0,
+           "code": "QTSN1"
+          },
+          {
+           "value": 0,
+           "code": "QTSN1"
+          }
+         ]
+        },
+        {
+         "name": "Trsy. shrs-comm. iss. 2",
+         "data": [
+          {
+           "value": 0,
+           "code": "QTSN2"
+          },
+          {
+           "value": 0,
+           "code": "QTSN2"
+          }
+         ]
+        },
+        {
+         "name": "Trsy. shrs-comm. iss. 3",
+         "data": [
+          {
+           "value": 0,
+           "code": "QTSN3"
+          },
+          {
+           "value": 0,
+           "code": "QTSN3"
+          }
+         ]
+        },
+        {
+         "name": "\"Trsry shrs-pref. iss. 1",
+         "data": [
+          {
+           "value": 0,
+           "code": "QTPN1"
+          },
+          {
+           "code": "QTPN1"
+          }
+         ],
+         "children": [
+          {
+           "name": "Shrs out-pref primary iss.",
+           "data": [
+            {
+             "value": 9.5,
+             "code": "QPSO1"
+            },
+            {
+             "code": "QPSO1"
+            }
+           ]
+          },
+          {
+           "name": "Shrs out-pref primary iss.",
+           "data": [
+            {
+             "value": 9.5,
+             "code": "QPSO2"
+            },
+            {
+             "code": "QPSO2"
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "name": "Trsry shrs-pref. iss. 2",
+         "data": [
+          {
+           "value": 0,
+           "code": "QTPN2"
+          },
+          {
+           "code": "QTPN2"
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "thousandMultiplier": false
+ }
+}

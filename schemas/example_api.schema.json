@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "example_api",
+  "title": "example_api record",
+  "description": "One record produced by the example_api source. Replace with a real source.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "fetched_at"],
+  "properties": {
+    "id": {
+      "type": "integer",
+      "description": "Upstream primary key."
+    },
+    "name": {
+      "type": "string",
+      "description": "Display name."
+    },
+    "score": {
+      "type": "number",
+      "description": "Arbitrary numeric field."
+    },
+    "active": {
+      "type": "boolean",
+      "description": "Whether the record is active upstream."
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the source fetched this record (ISO-8601 UTC)."
+    }
+  }
+}

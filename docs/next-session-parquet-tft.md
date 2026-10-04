@@ -1,116 +1,148 @@
-# Next session: Parquet export + TFT training
+# Parquet export + TFT training: plan
 
-Handoff notes for picking up the work. Feature spec: [Parquet.txt](Parquet.txt). Design
-background: [stock-prediction-plan.md](stock-prediction-plan.md) §3–§8. Schema:
-[database-schema.md](database-schema.md).
+Feature spec: [Parquet.txt](Parquet.txt). Design background: [stock-prediction-plan.md](stock-prediction-plan.md)
+§3–§8. Schema: [database-schema.md](database-schema.md).
 
-## Where things stand (as of 2026-10-04)
+Branch `feat/derive-features-news` (commit `9942f17`) holds all work through derive-features.
 
-**Done and populated in the real DB** (`state/etrade/fundamentals.duckdb`, ~667 MB):
+## Data facts (real DB, 2026-10-04)
 
-- `derive-features` (`python/sourcing_py/etrade/features.py`) has been run on the real DB:
-  **5,706,444 bars, 15,886 symbols, 1,694 calendar sessions, 47,952 filings mapped.**
-- Derived columns on `daily_bars`: `day_idx`, `is_10k`, `is_10q`, `results_window`,
-  `vwap_nx_1d`, `vwap_nx_10d`, `vwap_end_week`, `vwap_nx_qtr`, `vwap_pct_prev_day`,
-  `features_computed_at`.
-- `trading_calendar(date, day_idx, calendar)` dimension table, built by the reusable
-  `python/sourcing_py/utils/trading_calendar.py` (XNYS via `exchange_calendars`;
-  `day_idx = 1` on 2020-01-02).
-- Checked on AAPL: `day_idx` is contiguous, `is_10q=1` on 2026-07-31 (`Earnings_Day`) with the
-  correct buckets around it, `vwap_pct_prev_day = -0.0776` that day, and `vwap_nx_1d` is NULL
-  on the latest bar.
-- 27 tests in `tests/test_etrade.py` pass. `gen_schema_docs.py --check` is clean.
-- Backup: `state/etrade/fundamentals.snapshot.duckdb` (~320 MB, from before derive-features).
+These differ from earlier assumptions, so check them before tuning anything:
 
-**Nothing is committed.** Everything since the initial commit is still in the working tree,
-including the untracked `features.py`, `utils/`, `industry.py`, `login.py`, `news/` and
-`docs/`. You may want to commit before starting the exporter.
+| Fact | Consequence |
+|---|---|
+| Bars span **2024-08-16 → 2026-08-14**, `day_idx` 1164–1663 (~500 sessions) | Only ~4 walk-forward folds with a 60-session encoder |
+| 15,886 symbols; 8,909 have ≥450 bars, 1,711 have <60 | Universe filter required |
+| `vwap_nx_1d` NULL on 122,584 rows (67,754 intra-symbol gaps + last bars); 39,188 bars have NULL vwap/volume/transactions | Target is NULL whenever the next session's bar is missing → drop those rows |
+| `vwap_nx_1d` is an **absolute price** (AAPL 2026-08-13: 305.75), not a % change | Cross-symbol scale handled by `GroupNormalizer(log)` per symbol; evaluate in % terms |
+| `symbol_industry` is exactly 1:1 (5,808 symbols, 59 codes) | Single `industry_code` categorical + `"unknown"`; no multi-hot |
+| `symbol_sentiment_daily` is **empty**; `news_articles` covers only 2026-07-26 → 08-25 (741 symbol links) | Sentiment ≈ all-zero in training but non-zero at inference → exclude from v1 features |
+| `pytorch-forecasting 1.8.0` + `lightning 2.6.6` resolve against installed torch 2.13; MPS available, 64 GB RAM | Local training is feasible; no pin changes |
 
-**Re-run rule:** run `sourcing-py etrade derive-features` after every `ingest-eod` / `fetch`.
-The forward columns, including the target `vwap_nx_1d`, change as new bars land.
+## Decisions (settled 2026-10-04)
 
-## Next step 1: the Parquet exporter
+1. **Target:** raw next-day VWAP (`target_tomorrow_vwap`) with
+   `GroupNormalizer(groups=["symbol"], transformation="log")`. The panel also carries
+   `target_return = vwap_nx_1d / vwap - 1` so switching is a training-config flag, not a re-export.
+2. **Universe:** liquid common stock + ADRs: `issue_type IN ('CS','DR')`, ≥120 bars,
+   median VWAP ≥ $1, median volume ≥ 50k. Thresholds are exporter flags.
+3. **`industry_code`:** one value per symbol, `"unknown"` when unmapped.
+4. **`calendar`:** replaced by known-future features `day_of_week`, `month`, `is_month_end`,
+   `is_quarter_end`, `sessions_gap_next` (calendar days to the next session; >1 marks
+   weekends/holidays). All come from `trading_calendar`.
+5. **Sentiment:** exported (zero-filled + `has_news` flag) but off by default in training until
+   news history accumulates.
+6. **Code location:** ML lives in a self-contained top-level `ml/` project, to be extracted into
+   its own repo later. **`panel.parquet` + `panel.meta.json` is the only contract.** `ml/` never
+   imports `sourcing_py`, never reads the DuckDB stores or `settings.toml`, and its deps never
+   enter `python/pyproject.toml`.
 
-Proposed command: `sourcing-py etrade export-tft`, output `panel.parquet`. The work is
-DuckDB SQL followed by `COPY ... TO 'panel.parquet' (FORMAT parquet)`, with one row per
-`(symbol, day_idx)`.
+## Step 1: exporter (`sourcing-py etrade export-tft`) — DONE 2026-10-04
 
-Field mapping from [Parquet.txt](Parquet.txt) to its source:
+The first real run produced 1,773,489 rows across 3,730 symbols (3,685 of them inference
+rows). It covers day_idx 1164–1663, the file is 109 MB, and the export takes about 1.4 s.
+There are no duplicate keys. The only NULLs are the target on inference rows and
+`vwap_pct_prev_day` on each symbol's first bar, so the ML side should fill that with 0.
 
-| Panel column | TFT role | Source / formula | Status |
-|---|---|---|---|
-| `target_tomorrow_vwap` | target | `daily_bars.vwap_nx_1d` | ready |
-| `symbol` | static cat | `daily_bars.symbol` | ready |
-| `industry_code` | static cat | `symbol_industry` (many-to-many) | **needs collapse**, see decision 2 |
-| `exchange` | static cat | `symbols.exchange` | ready (NULL for non-fetched symbols) |
-| `issue_type` | static cat | `symbols.issue_type` | ready (NULL for non-fetched symbols) |
-| `day_idx` | time index | `daily_bars.day_idx` | ready |
-| `calendar` | known cat | see decision 3 | **unclear** |
-| `today_vwap` | observed | `daily_bars.vwap` | ready |
-| `vwap_pct_prev_day` | observed | `daily_bars.vwap_pct_prev_day` | ready |
-| `intraday_spread_pct` | observed | `(high - low) / vwap` | compute at export |
-| `close_position_pct` | observed | `(close - vwap) / vwap` | compute at export |
-| `open_position_pct` | observed | `(open - vwap) / vwap` | compute at export |
-| `volume_velocity` | observed | `volume / AVG(volume) OVER 20 trailing sessions` | compute at export |
-| `transactions_per_volume` | observed | `transactions / volume` | compute at export |
-| `daily_sentiment` | observed | `news.duckdb` `symbol_sentiment_daily.mean_score_agg` | cross-store join |
-| `sentiment_volume` | observed | `symbol_sentiment_daily.n_articles` | cross-store join |
-| `is_10k` / `is_10q` | observed | `daily_bars.is_10k` / `is_10q` | ready |
+**Open data issue: corporate actions.** 993 rows across 469 symbols have a next-day move
+above 50%, up to 11.8×. For example, WOLF on 2025-09-26 went from $1.33 to $17.08. Massive's
+`adjusted=true` only adjusts as of each day's fetch, so splits that happen later are never
+applied to earlier daily files. The stored history is therefore unadjusted across reverse
+splits and restructurings. Fix options:
 
-Implementation notes:
+- (a) Source a splits table (Polygon-style `/v3/reference/splits`) and back-adjust in
+  derive-features.
+- (b) Exclude or mask rows near jumps where `|return| > X`, as an exporter flag or in the
+  ML loss.
+- (c) Re-fetch the history with fresh `adjusted=true`.
 
-- **Cross-store join:** `ATTACH 'state/news/news.duckdb' AS news (READ_ONLY)` and LEFT JOIN on
-  `(symbol, date)`. Fill missing days with `n_articles = 0` and `mean_score_agg = 0` (neutral).
-  Most symbol-days have no news.
-- Guard every ratio with `NULLIF(denominator, 0)`.
-- **`volume_velocity`:** use `RANGE BETWEEN 19 PRECEDING AND CURRENT ROW` on `day_idx`,
-  matching the RANGE-on-day_idx approach in `features.py`. Decide whether the 20-day mean
-  includes the current day. The first 19 bars per symbol have a partial window.
-- **Drop rows where the target is NULL** (each symbol's last bar), or keep them only as
-  inference rows.
-- Emit **raw values, not normalized ones.** TFT's `GroupNormalizer` scales per symbol
-  (plan §6). The "Normalized" label in Parquet.txt means TFT normalizes them at training time.
-- **Leakage:** every observed feature must be known at close of day t. All the fields listed
-  above meet this. The forward VWAP columns other than the target (`vwap_nx_10d`,
-  `vwap_end_week`, `vwap_nx_qtr`) are future values and **must not** be used as inputs.
-- **Universe filter (plan §7):** consider `days_seen >= N`, and possibly
-  `fundamentals_status='ok'`.
-- Add tests in `tests/test_etrade.py` using the existing `_bar` / `_seed_ramp` /
-  `_insert_filing` helpers. The exporter could live in a new `etrade/export.py`.
+(a) is the correct fix. (b) is a stopgap.
 
-## Next step 2: training
 
-- **Dependency:** `pytorch-forecasting` and its `lightning` are not installed yet. Check that
-  they work with the `torch>=2.2` pin in `python/pyproject.toml` before running `uv add`.
-- `TimeSeriesDataSet` roles:
-  - `group_ids=["symbol"]` and `time_idx="day_idx"` with `allow_missing_timesteps=True`.
-    `day_idx` is global, so a symbol's missing bars show up as gaps.
-  - Static categoricals: `industry_code`, `exchange`, `issue_type`.
-  - Known: `day_idx`, calendar features.
-  - Unknown: the observed reals listed above.
-  - `target="target_tomorrow_vwap"` with
-    `GroupNormalizer(groups=["symbol"], transformation="log")`.
-- Embedding sizes from Parquet.txt: `symbol` 16-D, `industry_code` 4-D, the rest small. These
-  are set through `embedding_sizes` on the TFT model.
-- **Split:** walk-forward / expanding window by `day_idx`, never a random split. Metrics:
-  quantile loss plus directional accuracy.
-- Encoder/decoder lengths are still TBD. A starting point: about 60 sessions of history and a
-  1-day horizon, since the target is next-day VWAP.
+New module `python/sourcing_py/etrade/export.py`. It runs DuckDB SQL, then
+`COPY ... TO '<out_root>/tft/panel.parquet' (FORMAT parquet)`, with one row per
+`(symbol, day_idx)` and **raw, un-normalized values**.
 
-## Open decisions to settle first
+| Panel column | TFT role | Source / formula |
+|---|---|---|
+| `target_tomorrow_vwap` | target | `daily_bars.vwap_nx_1d` |
+| `target_return` | alt target | `vwap_nx_1d / NULLIF(vwap,0) - 1` |
+| `symbol` | group id / static cat | `daily_bars.symbol` |
+| `industry_code` | static cat | `symbol_industry`, else `'unknown'` |
+| `exchange`, `issue_type` | static cat | `symbols`, else `'unknown'` |
+| `day_idx` | time index | `daily_bars.day_idx` |
+| `date` | metadata | `daily_bars.date` |
+| `day_of_week`, `month`, `is_month_end`, `is_quarter_end`, `sessions_gap_next` | known | `trading_calendar` |
+| `today_vwap` | observed | `vwap` |
+| `vwap_pct_prev_day` | observed | `daily_bars.vwap_pct_prev_day` |
+| `intraday_spread_pct` | observed | `(high - low) / NULLIF(vwap,0)` |
+| `close_position_pct` | observed | `(close - vwap) / NULLIF(vwap,0)` |
+| `open_position_pct` | observed | `(open - vwap) / NULLIF(vwap,0)` |
+| `volume_velocity` | observed | `volume / NULLIF(AVG(volume) OVER (PARTITION BY symbol ORDER BY day_idx RANGE BETWEEN 19 PRECEDING AND CURRENT ROW), 0)`; the trailing window includes today |
+| `transactions_per_volume` | observed | `transactions / NULLIF(volume,0)` |
+| `daily_sentiment`, `sentiment_volume`, `has_news` | observed | `ATTACH news.duckdb (READ_ONLY)`; LEFT JOIN `(symbol,date)`, zero-filled |
+| `is_10k`, `is_10q` | observed | `daily_bars` |
 
-1. **Target form.** Raw `vwap_nx_1d` (the current spec) or a return
-   (`vwap_nx_1d / vwap - 1`). Returns are more stationary across symbols.
-2. **`industry_code` as multi-hot.** Parquet.txt says "Mapped via Multi-Hot", but a TFT static
-   categorical takes one value per series. In practice MBin is 1:1 today, so one
-   `industry_code` per symbol works. 10,078 symbols have no industry, so they need an
-   `"unknown"` level. Real multi-hot would need static real columns, one per industry.
-3. **`calendar` column.** The spec says it "marks operational vs weekend/holiday", but
-   `daily_bars` only contains trading sessions, so every row would get the same value.
-   `trading_calendar.calendar` is just `'XNYS'`. Options: drop it; replace it with day-of-week,
-   month and quarter-end known features; or add a "next day is a holiday / long weekend" flag.
-4. **ETF / no-fundamentals symbols** (9,014 of them). Keep them using price and sentiment only,
-   or exclude them.
+Rules:
+
+- Compute the window features over **all** bars first, then filter rows. Otherwise dropping a
+  row would distort its neighbours' 20-day means.
+- Drop rows where the target or `vwap` is NULL. `--include-inference` keeps each symbol's
+  latest bar, with a NULL target, for prediction.
+- **No leakage:** never export `vwap_nx_10d`, `vwap_end_week` or `vwap_nx_qtr`. Never export
+  `results_window` either, because `Pre_Earnings_Runup` and `Earnings_Eve` are assigned from
+  an upcoming filing date that isn't known at close of day t.
+- Write a `panel.meta.json` sidecar with `schema_version`, row/symbol counts, the `day_idx`
+  range, the filter thresholds, the export timestamp and the git SHA.
+- CLI summary: rows, symbols, day_idx range, and the share of rows with news.
+- Tests in `tests/test_etrade.py` using `_bar` / `_seed_ramp` / `_insert_filing`. Cover the
+  ratio formulas, the 20-day window over a gap, NULL-target dropping, the universe filter,
+  the `'unknown'` fills, and the absence of leakage columns.
+- Run `gen_schema_docs.py` only if DDL changes (it shouldn't).
+
+## Step 2: training program (`ml/`)
+
+```
+ml/
+  pyproject.toml        # pytorch-forecasting>=1.8, lightning>=2.6, torch, pandas, pyarrow
+  tft_vwap/
+    config.py           # dataclass: panel path, target, enc/dec length, feature toggles, folds
+    dataset.py          # panel.parquet -> TimeSeriesDataSet (checks meta schema_version)
+    train.py            # CLI: walk-forward folds, checkpoints + metrics per fold
+    evaluate.py         # metrics + naive baseline
+  tests/                # synthetic in-memory panel; no dependency on MTap stores
+```
+
+- **TimeSeriesDataSet:**
+  - `group_ids=["symbol"]`, `time_idx="day_idx"`, `allow_missing_timesteps=True`.
+  - Static categoricals: `symbol` (16-D), `industry_code` (4-D), `exchange`, `issue_type`
+    (low-dim, set via `embedding_sizes`).
+  - Known reals: `day_idx` plus the calendar features.
+  - Unknown reals: the observed list, plus the target itself as an encoder input.
+  - Missing reals are filled with 0 and flagged.
+  - `add_relative_time_idx=True`, `add_target_scales=True`.
+- **Model:** `TemporalFusionTransformer`, `QuantileLoss`, encoder 60, decoder 1. Start small
+  (`hidden_size` 32, attention heads 2) and train on MPS.
+- **Walk-forward folds** (expanding window, by `day_idx`): the first validation block starts
+  at about 1414, so the first fold trains on ~250 sessions. Validation blocks are 60
+  sessions: 1414–1473, 1474–1533, 1534–1593, 1594–1663. The encoder context may reach
+  back into the training region, but no validation target is ever trained on.
+- **Metrics per fold:**
+  - quantile loss
+  - MAPE on the P50 forecast
+  - directional accuracy: the sign of `pred/today_vwap - 1` vs `target_return`
+  - P10–P90 interval coverage
+  - all reported against the naive baseline "tomorrow VWAP = today VWAP"
+- **Throughput guard:** ~4–5k symbols × ~400 rows gives about 2M samples. Use
+  `limit_train_batches` plus early stopping. A `--symbols N` flag samples a subset for fast
+  iteration.
+
+## Suggested build order
+
+1. `export.py`, its CLI wiring and tests, then run it on the real DB and sanity-check the panel.
+2. Scaffold `ml/` and write a `dataset.py` test on a synthetic panel.
+3. `train.py` and `evaluate.py`: a single-fold smoke run on `--symbols 200`, then the full
+   walk-forward.
 
 ## Useful commands
 
@@ -119,9 +151,9 @@ cd python
 uv run pytest tests/test_etrade.py -q
 uv run sourcing-py etrade derive-features          # after any ingest-eod / fetch
 uv run python scripts/gen_schema_docs.py           # after any DDL change (CI runs --check)
-# quick look at the real DB (use the absolute path, read-only):
 uv run python -c "import duckdb; c=duckdb.connect('/Users/vkothandaraman/development/pprojects/MTap/state/etrade/fundamentals.duckdb', read_only=True); print(c.execute('SELECT count(*) FROM daily_bars').fetchone())"
 ```
 
 The DB path resolves from the repo root (`ETRADE_DB_PATH`). A cwd-relative path from
-`python/` will not find it.
+`python/` will not find it. Re-run `derive-features` after every `ingest-eod` / `fetch`
+before exporting.

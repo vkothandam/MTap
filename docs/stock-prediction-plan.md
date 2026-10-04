@@ -216,7 +216,8 @@ These need a call before the exporter is built — flagging them rather than gue
 - [x] Derived feature columns on `daily_bars` (`derive-features`): global `day_idx` +
   `trading_calendar`, 10-K/10-Q filing flags, `results_window`, forward VWAPs (§2b)
       sentiment, all in DuckDB (done, see §2).
-- [ ] Phase 2a — exporter: point-in-time join + pivot + `time_idx` → `panel.parquet`.
+- [x] Phase 2a — exporter: `sourcing-py etrade export-tft` → `out/tft/panel.parquet` + `panel.meta.json`
+  (price/calendar/sentiment/filing-flag features; fundamentals pivot not yet included).
 - [ ] Phase 2b — `TimeSeriesDataSet` config module (variable classification from §6).
 - [ ] Phase 2c — training script + walk-forward backtest harness (§7).
 - [ ] Phase 2d — resolve open decisions in §8 as data characterization lands.

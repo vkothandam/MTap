@@ -11,11 +11,13 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pyarrow.parquet as pq
 import pytest
 
 from sourcing_py.common.errors import ConfigError
-from sourcing_py.etrade import db, eod, features, fundamentals, industry, symbols
+from sourcing_py.etrade import db, eod, export, features, fundamentals, industry, symbols
 from sourcing_py.etrade.client import EtradeClient
+from sourcing_py.news import db as news_db
 from sourcing_py.utils import trading_calendar as tc
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "etrade"
@@ -697,3 +699,151 @@ def test_derive_features_scoped_to_symbols(tmp_path):
         ).fetchone()[0]
     assert aaa == len(sess)  # in scope -> derived
     assert bbb == 0          # out of scope -> untouched
+
+
+# --- Phase 2a: TFT panel export (export.export_tft) ---------------------------------------
+
+_LOOSE = {"min_bars": 1, "min_median_vwap": 0.0, "min_median_volume": 0.0}
+
+
+def _ohlc_bar(con, symbol, d, vwap, volume=100.0, transactions=50):
+    con.execute(
+        "INSERT INTO daily_bars (symbol, date, open, high, low, close, vwap, volume, transactions) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [symbol, d, vwap - 0.5, vwap + 1.0, vwap - 1.0, vwap + 0.25, vwap, volume, transactions],
+    )
+
+
+def _symbol(con, symbol, issue_type="CS", exchange="NASDAQ"):
+    con.execute(
+        "INSERT INTO symbols (symbol, issue_type, exchange) VALUES (?, ?, ?)",
+        [symbol, issue_type, exchange],
+    )
+
+
+def _export(tmp_path, dbp, **kw):
+    out = tmp_path / "out" / "panel.parquet"
+    kw = {**_LOOSE, "news_db_path": tmp_path / "absent.duckdb", **kw}
+    summary = export.export_tft(db_path=dbp, out_path=out, **kw)
+    return summary, pq.read_table(out).to_pylist()
+
+
+def test_export_tft_columns_formulas_and_fills(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 2, 9))
+    with db.connect(dbp) as con:
+        _symbol(con, "AAA")
+        _symbol(con, "BBB", issue_type="DR", exchange=None)
+        con.execute("INSERT INTO symbol_industry (symbol, industry_code) VALUES ('BBB', '532040')")
+        for i, d in enumerate(sess):
+            _ohlc_bar(con, "AAA", d, 10.0 + i)
+            _ohlc_bar(con, "BBB", d, 20.0)
+    features.derive_features(db_path=dbp)
+    summary, rows = _export(tmp_path, dbp)
+
+    assert list(rows[0]) == [
+        "target_tomorrow_vwap", "target_return", "symbol", "industry_code", "exchange",
+        "issue_type", "day_idx", "date", "day_of_week", "month", "is_month_end",
+        "is_quarter_end", "sessions_gap_next", "today_vwap", "vwap_pct_prev_day",
+        "intraday_spread_pct", "close_position_pct", "open_position_pct", "volume_velocity",
+        "transactions_per_volume", "daily_sentiment", "sentiment_volume", "has_news",
+        "is_10k", "is_10q",
+    ]  # exact set: no leaky forward VWAPs / results_window
+    by = {(r["symbol"], r["date"].isoformat()): r for r in rows}
+    r = by[("AAA", "2024-01-16")]  # vwap 10, next session 11
+    assert r["target_tomorrow_vwap"] == 11.0
+    assert r["target_return"] == pytest.approx(0.1)
+    assert r["intraday_spread_pct"] == pytest.approx(2.0 / 10)
+    assert r["close_position_pct"] == pytest.approx(0.25 / 10)
+    assert r["open_position_pct"] == pytest.approx(-0.5 / 10)
+    assert r["transactions_per_volume"] == pytest.approx(0.5)
+    assert r["volume_velocity"] == pytest.approx(1.0)  # constant volume
+    assert (r["industry_code"], r["exchange"], r["issue_type"]) == ("unknown", "NASDAQ", "CS")
+    assert (r["daily_sentiment"], r["sentiment_volume"], r["has_news"]) == (0.0, 0, 0)
+    assert by[("BBB", "2024-01-16")]["industry_code"] == "532040"
+    assert by[("BBB", "2024-01-16")]["exchange"] == "unknown"
+
+    fri = by[("AAA", "2024-01-19")]
+    assert (fri["day_of_week"], fri["sessions_gap_next"]) == (5, 3)  # Fri -> Mon
+    assert by[("AAA", "2024-01-31")]["is_month_end"] == 1
+    assert by[("AAA", "2024-01-30")]["is_month_end"] == 0
+    assert by[("AAA", "2024-01-31")]["is_quarter_end"] == 0
+
+    last = sess[-1].isoformat()
+    assert ("AAA", last) not in by  # NULL target dropped
+    assert summary["rows"] == 2 * (len(sess) - 1) and summary["inference_rows"] == 0
+
+
+def test_export_tft_volume_velocity_trailing_window_over_gap(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 2), date(2024, 2, 29))[:25]
+    gap = sess[10]
+    with db.connect(dbp) as con:
+        _symbol(con, "AAA")
+        for i, d in enumerate(sess):
+            if d != gap:
+                _ohlc_bar(con, "AAA", d, 10.0, volume=300.0 if i == 22 else 100.0)
+    features.derive_features(db_path=dbp)
+    _, rows = _export(tmp_path, dbp)
+    vv = {r["date"]: r["volume_velocity"] for r in rows}
+    # 20-session trailing window ending on sess[22] covers sess[3..22]; sess[10] is missing,
+    # so it averages 19 bars: 18 x 100 + 300 (the current day is included).
+    assert vv[sess[22]] == pytest.approx(300.0 / ((18 * 100 + 300) / 19))
+    assert vv[sess[1]] == pytest.approx(1.0)  # partial window at the start of history
+
+
+def test_export_tft_universe_filter(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 2, 9))
+    with db.connect(dbp) as con:
+        for sym, it in (("GOOD", "CS"), ("ETF1", "ETF"), ("PENNY", "CS"), ("THIN", "CS"), ("NEW", "CS")):
+            _symbol(con, sym, issue_type=it)
+        for d in sess:
+            _ohlc_bar(con, "GOOD", d, 10.0, volume=1000.0)
+            _ohlc_bar(con, "ETF1", d, 10.0, volume=1000.0)
+            _ohlc_bar(con, "PENNY", d, 0.5, volume=1000.0)
+            _ohlc_bar(con, "THIN", d, 10.0, volume=10.0)
+        for d in sess[:3]:
+            _ohlc_bar(con, "NEW", d, 10.0, volume=1000.0)
+    features.derive_features(db_path=dbp)
+    _, rows = _export(tmp_path, dbp, min_bars=5, min_median_vwap=1.0, min_median_volume=500.0)
+    assert {r["symbol"] for r in rows} == {"GOOD"}
+
+
+def test_export_tft_inference_rows_news_join_and_meta(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    ndb = tmp_path / "news.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 1, 26))
+    with db.connect(dbp) as con:
+        _symbol(con, "AAA")
+        for i, d in enumerate(sess):
+            _ohlc_bar(con, "AAA", d, 10.0 + i)
+    with news_db.connect(ndb) as con:
+        con.execute(
+            "INSERT INTO symbol_sentiment_daily (symbol, date, n_articles, mean_score_agg) "
+            "VALUES ('AAA', ?, 3, 0.4)", [sess[2]]
+        )
+    features.derive_features(db_path=dbp)
+    summary, rows = _export(tmp_path, dbp, news_db_path=ndb, include_inference=True)
+
+    by = {r["date"]: r for r in rows}
+    assert by[sess[-1]]["target_tomorrow_vwap"] is None  # latest session kept for inference
+    assert summary["inference_rows"] == 1 and summary["rows"] == len(sess)
+    assert (by[sess[2]]["daily_sentiment"], by[sess[2]]["sentiment_volume"], by[sess[2]]["has_news"]) \
+        == (0.4, 3, 1)
+    assert by[sess[3]]["has_news"] == 0
+
+    meta = json.loads(Path(summary["meta_path"]).read_text())
+    assert meta["schema_version"] == export.SCHEMA_VERSION
+    assert meta["rows"] == len(sess) and meta["news_rows"] == 1
+    assert meta["date_range"] == [sess[0].isoformat(), sess[-1].isoformat()]
+    assert meta["filters"]["include_inference"] is True
+
+
+def test_export_tft_requires_derive_features(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    with db.connect(dbp) as con:
+        _symbol(con, "AAA")
+        _ohlc_bar(con, "AAA", date(2024, 1, 16), 10.0)
+    with pytest.raises(RuntimeError, match="derive-features"):
+        _export(tmp_path, dbp)

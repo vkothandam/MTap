@@ -8,6 +8,7 @@ Dispatched from `sourcing_py.__main__` when the first arg is `etrade`:
     sourcing-py etrade map-industries [--trading-db PATH]
     sourcing-py etrade fetch [--symbols A,B | --all] [--resume] [--retry-failed]
     sourcing-py etrade derive-features [--symbols A,B]
+    sourcing-py etrade export-tft [--out PATH] [--include-inference] [--min-bars N] ...
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from __future__ import annotations
 import sys
 
 from ..common.errors import ConfigError
-from . import eod, features, fundamentals, industry, symbols
+from . import eod, export, features, fundamentals, industry, symbols
 from . import login as login_mod
 
 _USAGE = (
@@ -25,7 +26,9 @@ _USAGE = (
     "  sourcing-py etrade login [--once]   (puppeteer login -> state/etrade/session.json)\n"
     "  sourcing-py etrade map-industries [--trading-db PATH]  (sector/industry from MBin)\n"
     "  sourcing-py etrade fetch [--symbols A,B | --all] [--resume] [--retry-failed]\n"
-    "  sourcing-py etrade derive-features [--symbols A,B]  (day_idx, filing flags, VWAP; re-run after ingest-eod)"
+    "  sourcing-py etrade derive-features [--symbols A,B]  (day_idx, filing flags, VWAP; re-run after ingest-eod)\n"
+    "  sourcing-py etrade export-tft [--out PATH] [--include-inference] [--issue-types CS,DR]\n"
+    "      [--min-bars 120] [--min-median-vwap 1] [--min-median-volume 50000]  (TFT panel.parquet)"
 )
 
 
@@ -136,6 +139,38 @@ def _cmd_derive_features(p: dict) -> int:
     return 0
 
 
+def _cmd_export_tft(p: dict) -> int:
+    kwargs: dict = {"include_inference": bool(p.get("include-inference"))}
+    if p.get("out"):
+        kwargs["out_path"] = p["out"]
+    if p.get("issue-types"):
+        kwargs["issue_types"] = tuple(t.strip() for t in str(p["issue-types"]).split(","))
+    for flag, key, cast in (
+        ("min-bars", "min_bars", int),
+        ("min-median-vwap", "min_median_vwap", float),
+        ("min-median-volume", "min_median_volume", float),
+    ):
+        if p.get(flag):
+            kwargs[key] = cast(p[flag])
+    try:
+        summary = export.export_tft(**kwargs)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    lo, hi = summary["date_range"]
+    news_share = summary["news_rows"] / summary["rows"] if summary["rows"] else 0.0
+    print(
+        f"exported {summary['rows']:,} rows across {summary['symbols']:,} symbols "
+        f"[{lo} .. {hi}, day_idx {summary['day_idx_range'][0]}..{summary['day_idx_range'][1]}] "
+        f"-> {summary['out_path']}"
+    )
+    print(
+        f"  {summary['inference_rows']:,} inference row(s); "
+        f"{news_share:.2%} of rows have news sentiment"
+    )
+    return 0
+
+
 def main(argv: list[str]) -> int:
     """argv is everything AFTER the `etrade` verb."""
     if not argv:
@@ -160,5 +195,7 @@ def main(argv: list[str]) -> int:
         return _cmd_fetch(params)
     if sub == "derive-features":
         return _cmd_derive_features(params)
+    if sub == "export-tft":
+        return _cmd_export_tft(params)
     print(f"unknown etrade subcommand {sub!r}\n{_USAGE}", file=sys.stderr)
     return 2

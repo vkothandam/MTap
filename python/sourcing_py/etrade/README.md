@@ -200,6 +200,42 @@ The trading-day grid comes from the generic `sourcing_py/utils/trading_calendar.
 > (one transaction, set-based SQL). Because the forward-looking columns for existing rows
 > change as new bars land, **re-run `derive-features` after each `ingest-eod`/`fetch`.**
 
+## Phase 2a — TFT panel export (no login)
+
+Writes the training panel consumed by the downstream ML code: `out/tft/panel.parquet` plus a
+`panel.meta.json` sidecar (schema version, row/symbol counts, day_idx/date range, filters,
+git SHA). The Parquet file and its sidecar are the **only** contract with the ML side.
+
+```bash
+cd python
+uv run sourcing-py etrade derive-features              # first: refreshes the target column
+uv run sourcing-py etrade export-tft --include-inference
+uv run sourcing-py etrade export-tft --out /tmp/panel.parquet --min-bars 250 --issue-types CS
+```
+
+- One row per `(symbol, day_idx)` with **raw values**. Per-symbol scaling happens at
+  training time (`GroupNormalizer`).
+- **Universe** (flags shown with their defaults): `--issue-types CS,DR`, `--min-bars 120`,
+  `--min-median-vwap 1`, `--min-median-volume 50000`.
+- **Target:** `target_tomorrow_vwap` (`vwap_nx_1d`) and `target_return`
+  (`vwap_nx_1d / vwap - 1`). Rows with a NULL target are dropped. `--include-inference`
+  keeps each symbol's bar on the latest session, with a NULL target.
+- **Statics:** `symbol`, `industry_code`, `exchange`, `issue_type`. Missing values become
+  `'unknown'`.
+- **Known calendar features:** `day_of_week`, `month`, `is_month_end`, `is_quarter_end`,
+  `sessions_gap_next` (calendar days to the next session).
+- **Observed:**
+  - prices and ratios: `today_vwap`, `vwap_pct_prev_day`, `intraday_spread_pct`,
+    `close_position_pct`, `open_position_pct`
+  - volume: `volume_velocity` (volume ÷ trailing 20-session mean, today included),
+    `transactions_per_volume`
+  - news: `daily_sentiment`, `sentiment_volume`, `has_news`. Joined from the news DB
+    (read-only ATTACH) and zero-filled.
+  - filings: `is_10k`, `is_10q`
+- **Not exported, because they leak the future:** `vwap_nx_10d`, `vwap_end_week`,
+  `vwap_nx_qtr`, and `results_window`, whose pre-earnings buckets come from an upcoming
+  filing.
+
 ## Storage schema
 
 ```

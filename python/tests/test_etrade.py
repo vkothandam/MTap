@@ -8,13 +8,15 @@ here (the normalizers are finalized against a real sampled response once login l
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 from sourcing_py.common.errors import ConfigError
-from sourcing_py.etrade import db, eod, fundamentals, symbols
+from sourcing_py.etrade import db, eod, features, fundamentals, industry, symbols
 from sourcing_py.etrade.client import EtradeClient
+from sourcing_py.utils import trading_calendar as tc
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "etrade"
 
@@ -324,6 +326,80 @@ def test_fetch_concurrent_stores_all_symbols(tmp_path, monkeypatch):
     assert n_ok == 12 and n_syms == 12
 
 
+def _make_trading_db(path):
+    """Minimal MBin trading.db: Industries + Symbol_Industry (source of the mapping)."""
+    import sqlite3
+
+    con = sqlite3.connect(str(path))
+    con.executescript(
+        """
+        CREATE TABLE Industries (Id INTEGER PRIMARY KEY, Sector_Code TEXT, Sector_Name TEXT,
+                                 Industry_Code TEXT, Industry_Name TEXT, Source_Url TEXT);
+        CREATE TABLE Symbol_Industry (Symbol TEXT, Industry_Id INTEGER, Created_At TEXT);
+        """
+    )
+    con.executemany(
+        "INSERT INTO Industries (Id, Sector_Code, Sector_Name, Industry_Code, Industry_Name, Source_Url) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (1, "53", "Consumer Cyclicals", "532040", "Household Goods", "http://x/1"),
+            (2, "57", "Technology", "571010", "Semiconductors", "http://x/2"),
+        ],
+    )
+    con.executemany(
+        "INSERT INTO Symbol_Industry (Symbol, Industry_Id, Created_At) VALUES (?, ?, ?)",
+        # AAA spans TWO industries (in two different sectors) — proves multi-membership;
+        # BBB is single; ZZZ isn't in our symbols table.
+        [("AAA", 1, "t"), ("AAA", 2, "t"), ("BBB", 2, "t"), ("ZZZ", 2, "t")],
+    )
+    con.commit()
+    con.close()
+
+
+def test_map_industries_populates_dims_and_memberships(tmp_path, monkeypatch):
+    """The sector/industry dims come from MBin and memberships land in the join table. A
+    symbol may belong to several industries/sectors; symbols absent from MBin get none, and
+    MBin symbols we don't track are reported unmatched."""
+    trading = tmp_path / "trading.db"
+    _make_trading_db(trading)
+    dbp = tmp_path / "f.duckdb"
+    with db.connect(dbp) as con:
+        con.executemany("INSERT INTO symbols (symbol) VALUES (?)", [("AAA",), ("BBB",), ("CCC",)])
+
+    summary = industry.map_industries(trading_db_path=trading, db_path=dbp)
+    assert summary["sectors"] == 2 and summary["industries"] == 2
+    assert summary["memberships"] == 3  # AAA×2 + BBB×1 (ZZZ excluded — not in our table)
+    assert summary["symbols_matched"] == 2  # distinct: AAA, BBB
+    assert summary["symbols_unmatched"] == 1  # ZZZ in MBin but not our table
+    assert summary["symbols_with_industry"] == 2
+
+    with db.connect(dbp) as con:
+        # AAA resolves to BOTH industries/sectors via the join table
+        aaa = {
+            (iname, sname)
+            for iname, sname in con.execute(
+                "SELECT i.industry_name, sec.sector_name FROM symbol_industry si "
+                "JOIN industries i ON si.industry_code = i.industry_code "
+                "JOIN sectors sec ON i.sector_code = sec.sector_code WHERE si.symbol = 'AAA'"
+            ).fetchall()
+        }
+        assert aaa == {("Household Goods", "Consumer Cyclicals"), ("Semiconductors", "Technology")}
+        # CCC (not in MBin) has no memberships
+        assert con.execute("SELECT count(*) FROM symbol_industry WHERE symbol='CCC'").fetchone()[0] == 0
+
+    # idempotent: a second run doesn't duplicate dims or memberships
+    industry.map_industries(trading_db_path=trading, db_path=dbp)
+    with db.connect(dbp) as con:
+        assert con.execute("SELECT count(*) FROM industries").fetchone()[0] == 2
+        assert con.execute("SELECT count(*) FROM sectors").fetchone()[0] == 2
+        assert con.execute("SELECT count(*) FROM symbol_industry").fetchone()[0] == 3  # no dupes
+
+
+def test_map_industries_missing_db_raises(tmp_path):
+    with pytest.raises(ConfigError, match="trading DB not found"):
+        industry.map_industries(trading_db_path=tmp_path / "nope.db", db_path=tmp_path / "f.duckdb")
+
+
 def test_client_bearer_auth(tmp_path, monkeypatch):
     session = tmp_path / "session.json"
     session.write_text(json.dumps({"accessToken": "tok123"}))
@@ -398,3 +474,226 @@ def test_store_empty_and_dropped_batches(tmp_path):
         fundamentals._store_fundamentals(con, 1, "GOOG", rows)
         periods = con.execute("SELECT count(DISTINCT fiscal_end) FROM fundamentals").fetchone()[0]
         assert periods == 2  # the 2-period trimmed fixture -> both periods kept
+
+
+# --- Phase 1c: derived feature columns (features.derive_features) ------------------------
+# These run fully offline: exchange_calendars computes NYSE sessions deterministically, and
+# derive_features touches no network. Bars are inserted straight into daily_bars so tests can
+# pin exact vwap/volume; real 2024 session dates are used so they line up with the calendar.
+
+
+def _bar(con, symbol, d, vwap, volume=100.0, close=None):
+    con.execute(
+        "INSERT INTO daily_bars (symbol, date, close, vwap, volume) VALUES (?, ?, ?, ?, ?)",
+        [symbol, d, vwap if close is None else close, vwap, volume],
+    )
+
+
+def _insert_filing(con, symbol, form_type, date_filed, key):
+    con.execute(
+        "INSERT INTO sec_filings (xid, symbol, form_type, date_filed, html_doc_key) "
+        "VALUES (1, ?, ?, ?, ?)",
+        [symbol, form_type, date_filed, key],
+    )
+
+
+def _seed_ramp(con, symbol, sess, base=10.0, volume=100.0):
+    """One bar per session, vwap ramping base, base+1, ... so forward means are predictable."""
+    for i, d in enumerate(sess):
+        _bar(con, symbol, d, base + i, volume=volume)
+
+
+def test_trading_calendar_excludes_weekends_and_holidays():
+    days = {d.isoformat() for d in tc.sessions(date(2024, 1, 1), date(2024, 1, 20))}
+    assert "2024-01-01" not in days  # New Year (holiday)
+    assert "2024-01-15" not in days  # MLK Day (holiday)
+    assert "2024-01-06" not in days and "2024-01-07" not in days  # weekend
+    assert "2024-01-16" in days
+    # day_idx is contiguous from the anchor, and gap-free
+    idxs = [i for _, i in tc.trading_calendar(end=date(2024, 1, 20))]
+    assert idxs == list(range(1, len(idxs) + 1))
+    assert tc.day_idx_for(date(2020, 1, 2)) == 1  # first session on/after 2020-01-01
+    assert tc.day_idx_for(date(2020, 1, 1)) is None  # holiday -> not a session
+    assert tc.next_trading_day(date(2024, 1, 20)) == date(2024, 1, 22)  # Sat -> Mon
+
+
+def test_derive_features_assigns_consecutive_day_idx(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 1, 26))
+    with db.connect(dbp) as con:
+        _seed_ramp(con, "AAA", sess)
+    features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        rows = con.execute("SELECT date, day_idx FROM daily_bars ORDER BY date").fetchall()
+        cal = dict(con.execute("SELECT date, day_idx FROM trading_calendar").fetchall())
+    idxs = [di for _, di in rows]
+    assert idxs == list(range(idxs[0], idxs[0] + len(idxs)))  # gap-free over consecutive sessions
+    assert all(cal[d] == di for d, di in rows)  # bars match the calendar dimension
+
+
+def test_filing_flag_snaps_to_next_session(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 1, 26))
+    with db.connect(dbp) as con:
+        _seed_ramp(con, "AAA", sess)
+        _insert_filing(con, "AAA", "10-K", "2024-01-20", "k1")  # Saturday
+    features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        flagged = [d.isoformat() for (d,) in con.execute(
+            "SELECT date FROM daily_bars WHERE is_10k = 1"
+        ).fetchall()]
+        total_k, total_q = con.execute(
+            "SELECT sum(is_10k), sum(is_10q) FROM daily_bars"
+        ).fetchone()
+    assert flagged == ["2024-01-22"]  # snapped forward to Monday
+    assert total_k == 1 and total_q == 0
+
+
+def test_results_window_classification(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 3, 1))
+    with db.connect(dbp) as con:
+        _seed_ramp(con, "AAA", sess)
+        _insert_filing(con, "AAA", "10-Q", "2024-01-22", "k1")  # a session (Mon)
+    features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        rw = {d.isoformat(): w for d, w in con.execute(
+            "SELECT date, results_window FROM daily_bars"
+        ).fetchall()}
+    assert rw["2024-01-16"] == "Pre_Earnings_Runup"        # t-4
+    assert rw["2024-01-19"] == "Earnings_Eve"              # t-1
+    assert rw["2024-01-22"] == "Earnings_Day"              # t0
+    assert rw["2024-01-24"] == "Post_Earnings_Reaction"    # t+2
+    assert rw["2024-01-29"] == "Post_Earnings_Drift"       # t+5
+    assert rw["2024-02-29"] == "Normal_Trading"            # far out
+    assert all(v is not None for v in rw.values())         # every bar classified
+
+
+def test_results_window_nearest_filing_wins(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 2, 1))
+    with db.connect(dbp) as con:
+        _seed_ramp(con, "AAA", sess)
+        _insert_filing(con, "AAA", "10-Q", "2024-01-22", "k1")  # t0 for the earlier window
+        _insert_filing(con, "AAA", "10-K", "2024-01-26", "k2")  # 4 sessions later
+    features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        mid = con.execute(
+            "SELECT results_window FROM daily_bars WHERE date = '2024-01-24'"
+        ).fetchone()[0]
+    # 01-24 is +2 from the first filing and -2 from the second: a tie in |offset| that the
+    # tie-break resolves toward the upcoming filing -> classified relative to 01-26 (t-2).
+    assert mid == "Pre_Earnings_Runup"
+
+
+def test_forward_vwap_values_and_nulls(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 2, 15))  # > 10 sessions
+    with db.connect(dbp) as con:
+        _seed_ramp(con, "AAA", sess, base=10.0, volume=100.0)  # vwap 10,11,12,...
+        _insert_filing(con, "AAA", "10-Q", "2024-01-22", "k1")
+    features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        first = con.execute(
+            "SELECT vwap_nx_1d, vwap_nx_10d, vwap_end_week, vwap_nx_qtr "
+            "FROM daily_bars WHERE date = '2024-01-16'"
+        ).fetchone()
+        last = con.execute(
+            "SELECT vwap_nx_1d, vwap_nx_10d, vwap_nx_qtr FROM daily_bars WHERE date = ?",
+            [sess[-1]],
+        ).fetchone()
+    # equal volumes -> volume-weighted mean collapses to the simple mean
+    assert first[0] == 11.0   # vwap_nx_1d: the next session's vwap
+    assert first[1] == 15.5   # vwap_nx_10d: mean of the next 10 (11..20)
+    assert first[2] == 11.5   # vwap_end_week: 2024-01-16..19 incl (10,11,12,13)
+    assert first[3] == 12.0   # vwap_nx_qtr: 01-16..01-22 incl (10..14)
+    assert last[0] is None and last[1] is None  # no forward bars
+    assert last[2] is None                       # no future filing
+
+
+def test_forward_vwap_is_volume_weighted(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 1, 19))  # Tue..Fri, one ISO week
+    prices = [10.0, 20.0, 30.0, 40.0]
+    vols = [10.0, 100.0, 100.0, 100.0]
+    with db.connect(dbp) as con:
+        for d, p, v in zip(sess, prices, vols):
+            _bar(con, "AAA", d, p, volume=v)
+    features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        end_week_first = con.execute(
+            "SELECT vwap_end_week FROM daily_bars WHERE date = '2024-01-16'"
+        ).fetchone()[0]
+    # includes the current (low-volume) day: (10*10 + 20*100 + 30*100 + 40*100) / 310
+    assert end_week_first == pytest.approx((100 + 2000 + 3000 + 4000) / 310)
+
+
+def test_vwap_pct_prev_day(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 1, 26))
+    with db.connect(dbp) as con:
+        _seed_ramp(con, "AAA", sess, base=10.0)  # vwap 10, 11, 12, ...
+        # BBB's first bar has vwap 0 so its next bar's prev-day change divides by zero
+        _bar(con, "BBB", sess[0], 0.0)
+        _bar(con, "BBB", sess[1], 5.0)
+    features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        pct = {d.isoformat(): p for d, p in con.execute(
+            "SELECT date, vwap_pct_prev_day FROM daily_bars WHERE symbol = 'AAA' ORDER BY date"
+        ).fetchall()}
+        bbb = {d.isoformat(): p for d, p in con.execute(
+            "SELECT date, vwap_pct_prev_day FROM daily_bars WHERE symbol = 'BBB' ORDER BY date"
+        ).fetchall()}
+    assert pct["2024-01-16"] is None                        # first bar: no prior day
+    assert pct["2024-01-17"] == pytest.approx((11 - 10) / 10)  # +10%
+    assert pct["2024-01-18"] == pytest.approx((12 - 11) / 11)
+    assert bbb["2024-01-16"] is None                        # first bar
+    assert bbb["2024-01-17"] is None                        # prev vwap 0 -> divide-by-zero guard
+
+
+def test_derive_features_idempotent_and_recomputes(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 1, 26))
+    with db.connect(dbp) as con:
+        _seed_ramp(con, "AAA", sess)
+    features.derive_features(db_path=dbp)
+    cols = "date, day_idx, results_window, vwap_nx_1d, vwap_nx_10d"
+    with db.connect(dbp) as con:
+        snap1 = con.execute(f"SELECT {cols} FROM daily_bars ORDER BY date").fetchall()
+        last_before = con.execute(
+            "SELECT vwap_nx_1d FROM daily_bars WHERE date = ?", [sess[-1]]
+        ).fetchone()[0]
+    features.derive_features(db_path=dbp)  # re-run: must be byte-for-byte identical
+    with db.connect(dbp) as con:
+        snap2 = con.execute(f"SELECT {cols} FROM daily_bars ORDER BY date").fetchall()
+    assert snap1 == snap2
+    assert last_before is None  # the last bar had no forward session yet
+
+    # append the next session and recompute: the previously-last row now has a forward day
+    nxt = tc.sessions(sess[-1], date(2024, 2, 1))[1]  # first session strictly after the old last
+    with db.connect(dbp) as con:
+        _bar(con, "AAA", nxt, 99.0)
+    features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        last_after = con.execute(
+            "SELECT vwap_nx_1d FROM daily_bars WHERE date = ?", [sess[-1]]
+        ).fetchone()[0]
+    assert last_after == 99.0  # forward-looking column refreshed as new data landed
+
+
+def test_derive_features_scoped_to_symbols(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 1, 26))
+    with db.connect(dbp) as con:
+        _seed_ramp(con, "AAA", sess)
+        _seed_ramp(con, "BBB", sess)
+    features.derive_features(db_path=dbp, symbols=["AAA"])
+    with db.connect(dbp) as con:
+        aaa = con.execute(
+            "SELECT count(*) FROM daily_bars WHERE symbol='AAA' AND day_idx IS NOT NULL"
+        ).fetchone()[0]
+        bbb = con.execute(
+            "SELECT count(*) FROM daily_bars WHERE symbol='BBB' AND day_idx IS NOT NULL"
+        ).fetchone()[0]
+    assert aaa == len(sess)  # in scope -> derived
+    assert bbb == 0          # out of scope -> untouched

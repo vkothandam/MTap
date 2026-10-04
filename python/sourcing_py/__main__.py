@@ -81,11 +81,16 @@ def main(argv: list[str] | None = None) -> int:
         from .etrade.cli import main as etrade_main
 
         return etrade_main(argv[1:])
+    if argv and argv[0] == "news":
+        from .news.cli import main as news_main
+
+        return news_main(argv[1:])
     if len(argv) < 2 or argv[0] != "run":
         print(
             "usage: sourcing-py run <source> "
             "[--date D | --fromdate D1 [--todate D2] | --retry-failed]\n"
-            "       sourcing-py etrade <build-symbols|fetch> [options]",
+            "       sourcing-py etrade <build-symbols|ingest-eod|fetch|derive-features> [options]\n"
+            "       sourcing-py news <aggregate|analyze|build-daily|run> [options]",
             file=sys.stderr,
         )
         return 2

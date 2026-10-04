@@ -1,19 +1,25 @@
 """E*TRADE wsod REST client (Phase 2).
 
 Reuses common/http.py for retry/backoff and common/ratelimit.py for cross-process
-pacing. Authentication reuses the browser session captured by the Node E*TRADE
-service: state/etrade/session.json.
+pacing. Authentication comes from state/etrade/session.json — this client is a pure
+consumer; it never logs in itself (see login.py for the two ways to produce the file).
 
 Sampling the live wsod API (2026-08) showed it authenticates with a **bearer token**
-(`authorization: Bearer <token>`) plus browser `origin`/`referer` headers — not the
-cookie/`stk1`/`stk2` scheme. The exact key the puppeteer login writes the token under
-is not yet fixed, so `_bearer_token()` looks in the common places and `_headers()`
-still passes through any `cookies` / `requestHeaders` the session carries. Confirm and
-tighten once the login is merged.
+(`authorization: Bearer <token>`) plus browser `origin`/`referer` headers. Two session
+shapes are supported, in priority order:
+  • bearer token (PRIMARY / verified — the full run used this): seeded manually as
+    {"accessToken": "<tok>"}, or captured by the puppeteer service into
+    requestHeaders.authorization.
+  • cookies + `stk1`/`stk2` (what the Node puppeteer login persists by default): passed
+    through by `_headers()`. Whether this alone authenticates the fundamentals API is
+    UNVERIFIED — on 401/403, fall back to a fresh bearer token.
+`_bearer_token()` therefore checks the common token keys AND an `authorization` header,
+and `_headers()` always forwards any `cookies` / `requestHeaders` the session carries.
 
-GATED: until the Node puppeteer login is merged and has written session.json, the
-session file will not exist. `EtradeClient.require_session()` raises a clear error so
-the fetch phase fails fast instead of making unauthenticated calls.
+GATED: `EtradeClient.require_session()` raises a clear ConfigError if session.json is
+absent or carries neither a token nor cookies, so the fetch phase fails fast instead of
+making unauthenticated calls. Produce the file with `sourcing-py etrade login` (puppeteer)
+or by seeding a bearer token.
 """
 
 from __future__ import annotations

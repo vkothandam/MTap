@@ -30,3 +30,37 @@ db_path = "./state/etrade/fundamentals.duckdb"
 # Browser session written by the Node E*TRADE login (cookies + stk1/stk2). Phase 2
 # `fetch` requires this file. Override with env SESSION_PATH.
 session_path = "./state/etrade/session.json"
+
+[news]
+# News processing layer (sourcing_py/news): per-symbol RSS aggregation -> local FinBERT
+# sentiment -> per-symbol sentiment store. The symbol universe + company names are read
+# from the E*TRADE DuckDB above (ATTACHed read-only), so no symbol store is set here.
+# DuckDB system-of-record for articles + sentiment. Override with env NEWS_DB_PATH.
+db_path = "./state/news/news.duckdb"
+# Politeness throttle: max HTTP requests/second (RSS + article fetches share it via the
+# cross-process lock state/rate/news.lock). Override with env NEWS_REQUESTS_PER_SEC.
+requests_per_sec = 2
+# HuggingFace model id for sentiment. First run downloads it into the HF cache (one-time
+# network). Override with env NEWS_FINBERT_MODEL.
+finbert_model = "ProsusAI/finbert"
+# Only keep feed entries published within this many days. Override with env NEWS_LOOKBACK_DAYS.
+lookback_days = 30
+# Per-request HTTP timeout (seconds).
+request_timeout = 30
+
+# Feeds to aggregate. Each is a per-symbol RSS endpoint; {symbol} is substituted per ticker.
+#   tag           = which symbol the feed's entries are (tentatively) about ("symbol")
+#   fetch_article = true when RSS entries are headline-only and the article body must be
+#                   fetched from the entry link and extracted (Yahoo/Google need this);
+#                   false when the feed itself carries usable article content.
+[[news.feeds]]
+name = "yahoo"
+url_template = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+tag = "symbol"
+fetch_article = true
+
+[[news.feeds]]
+name = "google"
+url_template = "https://news.google.com/rss/search?q={symbol}+stock&hl=en-US&gl=US&ceid=US:en"
+tag = "symbol"
+fetch_article = true

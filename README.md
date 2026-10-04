@@ -34,7 +34,13 @@ schemas/          language-neutral output contract (the heart of the repo)
 python/           Python sources + shared common lib (uv)
 node/             Node.js sources + shared common lib (TypeScript)
 shared/config/    source registry, credential layout (no secrets)
+docs/             generated reference — see database-schema.md (DuckDB ER diagrams)
 ```
+
+The DuckDB stores (E*TRADE fundamentals + news) are documented as ER diagrams in
+[docs/database-schema.md](docs/database-schema.md), generated from the DDL by
+`python/scripts/gen_schema_docs.py`. CI fails if they drift; regenerate after any schema
+change with `uv run python scripts/gen_schema_docs.py` (from `python/`).
 
 ## Adding a source
 

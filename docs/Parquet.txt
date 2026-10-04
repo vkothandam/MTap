@@ -1,0 +1,20 @@
+Here's the set of fields for ML
+Feature_Column_Name,Classification_Category,Data_Type,Dimensionality_Handling,Feature_Engineering_Description
+target_tomorrow_vwap,Target Variable,Continuous,Single Scalar,Predicts vwap_nx_1d. Optimized via the decoder.
+symbol,Static Categorical,Categorical,16D JEV Embedding,Tracks absolute asset identity and historical trends.
+industry_code,Static Categorical,Categorical,4D JEV Embedding,Mapped via Multi-Hot to capture industry footprints.
+exchange,Static Categorical,Categorical,Low-dim Embedding,Captures listing location structural nuances.
+issue_type,Static Categorical,Categorical,Low-dim Embedding,"Captures security classifications (Common Stock, ADR)."
+day_idx,Temporal Known,Continuous,Time Index,Absolute linear counter; increments strictly by 1.
+calendar,Temporal Known,Categorical,Embedding,Marks operational vs. weekend/holiday market states.
+today_vwap,Temporal Observed,Continuous,Normalized,Baseline average price reference for the current day.
+vwap_pct_prev_day,Temporal Observed,Continuous,Normalized,Pure day-over-day price momentum velocity.
+intraday_spread_pct,Temporal Observed,Continuous,Normalized,Engineered: (high - low) / vwap (Volatility range).
+close_position_pct,Temporal Observed,Continuous,Normalized,Engineered: (close - vwap) / vwap (End-of-day bias).
+open_position_pct,Temporal Observed,Continuous,Normalized,Engineered: (open - vwap) / vwap (Morning gap intensity).
+volume_velocity,Temporal Observed,Continuous,Normalized,Engineered: volume / 20-day MA (Institutional confirmation).
+transactions_per_volume,Temporal Observed,Continuous,Normalized,Engineered: transactions / volume (Trade granularity).
+daily_sentiment,Temporal Observed,Continuous,Raw Score,mean_score_agg joined from your news store.
+sentiment_volume,Temporal Observed,Continuous,Integer,n_articles tracking media focus density.
+is_10k,Temporal Observed,Categorical,Binary,Flags active earnings report drop days.
+is_10q,Temporal Observed,Categorical,Binary,Flags active earnings report drop days.

@@ -10,6 +10,48 @@ Per symbol:
 
 Pacing, failure logging, and resume reuse the shared common/ utilities.
 
+═══════════════════════════════════════════════════════════════════════════════
+(RE)RUNNING THIS COLLECTOR — operator runbook
+═══════════════════════════════════════════════════════════════════════════════
+Full pipeline to (re)generate the DuckDB store (state/etrade/fundamentals.duckdb):
+
+  1. build-symbols   seed the `symbols` master from out/daily_summary (no auth).
+  2. ingest-eod      load `daily_bars` OHLCV from the same files (no auth).
+  3. login           produce state/etrade/session.json (auth; see below).
+  4. fetch --all     this module — fill `fundamentals` + `sec_filings` per symbol.
+
+  cd python
+  uv run sourcing-py etrade build-symbols --days 90
+  uv run sourcing-py etrade ingest-eod
+  uv run sourcing-py etrade fetch --all --resume        # add ETRADE_STOCKS_PER_SEC=4
+
+AUTH — session.json is required and holds ONE of:
+  • a bearer token  (PRIMARY / verified): seed manually as {"accessToken": "<tok>"}
+    from a logged-in browser. Short-lived; on 401/403 the run aborts cleanly and you
+    re-seed a fresh token and re-run with --resume.
+  • a puppeteer session (fallback): `sourcing-py etrade login` runs the Node service,
+    which logs in (SMS/OTP) and writes cookies + stk1/stk2 (+ any captured bearer).
+    See login.py; the cookie/stk-only path is unverified for this API.
+
+HOW THE DUCKDB TABLES GET POPULATED (per symbol, one atomic transaction):
+  resolve XID (symbol-lookup) → _upsert_symbol_info updates the `symbols` row →
+  4 statement calls (balance-sheet/income-statement × q/a) normalize to long rows and
+  bulk-upsert into `fundamentals` → 2 filing calls (10-K/10-Q) bulk-upsert into
+  `sec_filings` → the `symbols` row is stamped fundamentals_status='ok'. Writes are
+  set-based Arrow upserts (see _bulk_upsert) — the periods a call returns UPSERT onto the
+  PK, so re-running over time ACCUMULATES history (old periods are kept, not overwritten).
+
+RESUME / IDEMPOTENCY (safe to stop and re-run any time):
+  --resume skips any symbol with a committed outcome (fundamentals_status set, or — for
+  rows fetched before that column existed — any fundamentals rows). Symbols with no
+  fundamentals (ETFs/funds → 556, delisted/warrants → 400) are committed as
+  fundamentals_status='none' so they are NOT re-hit each run. Genuine errors go to
+  state/etrade/failures.jsonl; `fetch --retry-failed` reruns just those.
+
+Reference full run (2026-08, 15,886 symbols): 6,801 ok / 9,014 no-data, ~5.48M
+fundamentals rows + ~48k filings, single bearer token, ~8 symbols/sec.
+═══════════════════════════════════════════════════════════════════════════════
+
 The `_normalize_*` helpers below were finalized against real sampled responses
 (GOOG/GOOGL, 2026-08) — see the fixtures under tests/fixtures/etrade/. They stay
 defensive (unexpected shape yields zero rows rather than a crash) since the upstream

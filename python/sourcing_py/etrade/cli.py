@@ -4,7 +4,10 @@ Dispatched from `sourcing_py.__main__` when the first arg is `etrade`:
 
     sourcing-py etrade build-symbols [--days 90 | --fromdate D1 [--todate D2]]
     sourcing-py etrade ingest-eod [--days N | --fromdate D1 [--todate D2]]
+    sourcing-py etrade login [--once]
+    sourcing-py etrade map-industries [--trading-db PATH]
     sourcing-py etrade fetch [--symbols A,B | --all] [--resume] [--retry-failed]
+    sourcing-py etrade derive-features [--symbols A,B]
 """
 
 from __future__ import annotations
@@ -12,13 +15,17 @@ from __future__ import annotations
 import sys
 
 from ..common.errors import ConfigError
-from . import eod, fundamentals, symbols
+from . import eod, features, fundamentals, industry, symbols
+from . import login as login_mod
 
 _USAGE = (
     "usage:\n"
     "  sourcing-py etrade build-symbols [--days N | --fromdate D1 [--todate D2]]\n"
     "  sourcing-py etrade ingest-eod [--days N | --fromdate D1 [--todate D2]]  (default: all files)\n"
-    "  sourcing-py etrade fetch [--symbols A,B | --all] [--resume] [--retry-failed]"
+    "  sourcing-py etrade login [--once]   (puppeteer login -> state/etrade/session.json)\n"
+    "  sourcing-py etrade map-industries [--trading-db PATH]  (sector/industry from MBin)\n"
+    "  sourcing-py etrade fetch [--symbols A,B | --all] [--resume] [--retry-failed]\n"
+    "  sourcing-py etrade derive-features [--symbols A,B]  (day_idx, filing flags, VWAP; re-run after ingest-eod)"
 )
 
 
@@ -68,6 +75,31 @@ def _cmd_ingest_eod(p: dict) -> int:
     return 0
 
 
+def _cmd_login(p: dict) -> int:
+    try:
+        return login_mod.login(once=bool(p.get("once")))
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _cmd_map_industries(p: dict) -> int:
+    trading_db = p["trading-db"] if p.get("trading-db") and p["trading-db"] is not True else None
+    try:
+        summary = industry.map_industries(trading_db_path=trading_db)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"mapped industries from {summary['trading_db']}: "
+        f"{summary['sectors']} sectors, {summary['industries']} industries; "
+        f"{summary['memberships']} memberships across {summary['symbols_matched']} symbols "
+        f"({summary['symbols_matched']}/{summary['source_symbols']} source symbols matched, "
+        f"{summary['symbols_unmatched']} not in our table)"
+    )
+    return 0
+
+
 def _cmd_fetch(p: dict) -> int:
     syms = [s.strip() for s in str(p["symbols"]).split(",")] if p.get("symbols") else None
     try:
@@ -88,6 +120,22 @@ def _cmd_fetch(p: dict) -> int:
     return 1 if (summary.get("aborted") or summary["failed"]) else 0
 
 
+def _cmd_derive_features(p: dict) -> int:
+    syms = [s.strip() for s in str(p["symbols"]).split(",")] if p.get("symbols") else None
+    summary = features.derive_features(symbols=syms)
+    print(
+        f"derived features for {summary['bars']:,} bars across {summary['symbols']:,} symbols; "
+        f"{summary['calendar_sessions']:,} calendar sessions, "
+        f"{summary['filings_snapped']:,} filings mapped"
+    )
+    if summary["bars_missing_day_idx"]:
+        print(
+            f"  {summary['bars_missing_day_idx']:,} bar(s) had a non-session date (no day_idx)",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def main(argv: list[str]) -> int:
     """argv is everything AFTER the `etrade` verb."""
     if not argv:
@@ -104,7 +152,13 @@ def main(argv: list[str]) -> int:
         return _cmd_build_symbols(params)
     if sub == "ingest-eod":
         return _cmd_ingest_eod(params)
+    if sub == "login":
+        return _cmd_login(params)
+    if sub == "map-industries":
+        return _cmd_map_industries(params)
     if sub == "fetch":
         return _cmd_fetch(params)
+    if sub == "derive-features":
+        return _cmd_derive_features(params)
     print(f"unknown etrade subcommand {sub!r}\n{_USAGE}", file=sys.stderr)
     return 2

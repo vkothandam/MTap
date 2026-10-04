@@ -9,6 +9,13 @@ dependencies = [
     "jsonschema>=4.21",
     "selectolax>=0.3",
     "duckdb>=1.0",
+    # News processing layer (sourcing_py/news): RSS parsing, main-article extraction,
+    # and local FinBERT sentiment. torch is large but the user opted for it as a core dep.
+    "feedparser>=6.0",
+    "trafilatura>=1.8",
+    "transformers>=4.40",
+    "torch>=2.2",
+    "exchange-calendars>=4.5",
 ]
 
 [project.optional-dependencies]

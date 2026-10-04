@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>AAPL - Yahoo Finance</title>
+    <language>en-US</language>
+    <item>
+      <title>Apple unveils new iPhone, shares climb</title>
+      <link>https://news.google.com/rss/articles/redirect-apple</link>
+      <guid>guid-apple-1</guid>
+      <pubDate>Tue, 18 Aug 2026 12:00:00 GMT</pubDate>
+      <description>Apple Inc. announced a new product line today.</description>
+    </item>
+    <item>
+      <title>Bagmane Developers expands Bangalore campus</title>
+      <link>https://news.google.com/rss/articles/redirect-bagmane</link>
+      <guid>guid-bagmane-1</guid>
+      <pubDate>Wed, 19 Aug 2026 12:00:00 GMT</pubDate>
+      <description>Bagmane group real-estate news, unrelated to any listed ticker.</description>
+    </item>
+  </channel>
+</rss>

@@ -155,11 +155,18 @@ collector** to call the authenticated wsod REST API (balance sheet, income state
 SEC filings) — see [python/sourcing_py/etrade/README.md](../../../../python/sourcing_py/etrade/README.md).
 
 That collector does **not** log in itself: it reads the session this service produces.
-So its Phase 2 (`sourcing-py etrade fetch`) is **gated on the login here being merged and
-having written `session.json`** — until then it fails fast with a clear message. Its
-Phase 1 (`build-symbols`, from local `daily_summary` files) needs no session and runs
-independently. The login/OTP flow above is therefore a prerequisite for the fundamentals
-scrape, not just for the streaming poller.
+Its Phase 2 (`sourcing-py etrade fetch`) is **gated on a `session.json` existing** — it
+fails fast with a clear message otherwise. As a convenience the Python side can launch
+this service for you: `sourcing-py etrade login` runs `npm run serve -- etrade`, waits for
+the session to be written, and reports readiness (see the Python README). Its Phase 1
+(`build-symbols`, from local `daily_summary` files) needs no session and runs
+independently.
+
+> **Auth note.** This service persists **cookies + `stk1`/`stk2`**, but the wsod
+> *fundamentals* REST API the Python collector calls was sampled using a **bearer token**
+> (`authorization: Bearer …`). The bearer path is the verified one; whether the cookie/`stk`
+> session alone authenticates that API is unverified. If the collector gets 401/403, seed a
+> fresh bearer token into `session.json` as `{"accessToken": "<tok>"}`.
 
 ## Troubleshooting
 

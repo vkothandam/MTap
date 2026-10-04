@@ -7,6 +7,7 @@ Dispatched from `sourcing_py.__main__` when the first arg is `etrade`:
     sourcing-py etrade login [--once]
     sourcing-py etrade map-industries [--trading-db PATH]
     sourcing-py etrade fetch [--symbols A,B | --all] [--resume] [--retry-failed]
+    sourcing-py etrade fetch-splits [--fromdate D]
     sourcing-py etrade derive-features [--symbols A,B]
     sourcing-py etrade export-tft [--out PATH] [--include-inference] [--min-bars N] ...
 """
@@ -16,7 +17,7 @@ from __future__ import annotations
 import sys
 
 from ..common.errors import ConfigError
-from . import eod, export, features, fundamentals, industry, symbols
+from . import eod, export, features, fundamentals, industry, splits, symbols
 from . import login as login_mod
 
 _USAGE = (
@@ -26,6 +27,7 @@ _USAGE = (
     "  sourcing-py etrade login [--once]   (puppeteer login -> state/etrade/session.json)\n"
     "  sourcing-py etrade map-industries [--trading-db PATH]  (sector/industry from MBin)\n"
     "  sourcing-py etrade fetch [--symbols A,B | --all] [--resume] [--retry-failed]\n"
+    "  sourcing-py etrade fetch-splits [--fromdate D]  (Massive splits -> stock_splits; before derive-features)\n"
     "  sourcing-py etrade derive-features [--symbols A,B]  (day_idx, filing flags, VWAP; re-run after ingest-eod)\n"
     "  sourcing-py etrade export-tft [--out PATH] [--include-inference] [--issue-types CS,DR]\n"
     "      [--min-bars 120] [--min-median-vwap 1] [--min-median-volume 50000]  (TFT panel.parquet)"
@@ -123,13 +125,28 @@ def _cmd_fetch(p: dict) -> int:
     return 1 if (summary.get("aborted") or summary["failed"]) else 0
 
 
+def _cmd_fetch_splits(p: dict) -> int:
+    try:
+        summary = splits.fetch_splits(fromdate=p.get("fromdate"))
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"fetched {summary['splits_fetched']:,} splits (execution_date >= {summary['fromdate']}, "
+        f"{summary['pages']} page(s)); {summary['splits_total']:,} in DB, "
+        f"{summary['tickers_in_universe']:,} tickers in our symbol table"
+    )
+    return 0
+
+
 def _cmd_derive_features(p: dict) -> int:
     syms = [s.strip() for s in str(p["symbols"]).split(",")] if p.get("symbols") else None
     summary = features.derive_features(symbols=syms)
     print(
         f"derived features for {summary['bars']:,} bars across {summary['symbols']:,} symbols; "
         f"{summary['calendar_sessions']:,} calendar sessions, "
-        f"{summary['filings_snapped']:,} filings mapped"
+        f"{summary['filings_snapped']:,} filings mapped, "
+        f"{summary['bars_split_adjusted']:,} bars split-adjusted"
     )
     if summary["bars_missing_day_idx"]:
         print(
@@ -193,6 +210,8 @@ def main(argv: list[str]) -> int:
         return _cmd_map_industries(params)
     if sub == "fetch":
         return _cmd_fetch(params)
+    if sub == "fetch-splits":
+        return _cmd_fetch_splits(params)
     if sub == "derive-features":
         return _cmd_derive_features(params)
     if sub == "export-tft":

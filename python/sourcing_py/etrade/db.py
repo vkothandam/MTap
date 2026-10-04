@@ -100,6 +100,8 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     vwap_end_week        DOUBLE,    -- current day .. last session of current ISO week (incl.)
     vwap_nx_qtr          DOUBLE,    -- current day .. next 10-K/10-Q filing day (incl.)
     vwap_pct_prev_day    DOUBLE,    -- vwap % change vs previous trading day (fraction; NULL on 1st bar)
+    split_factor         DOUBLE,    -- price multiplier for splits not yet applied upstream (1.0 = none);
+                                    --   adjusted price = raw * factor, adjusted volume = raw / factor
     features_computed_at TIMESTAMP, -- when derive-features last wrote this row
     PRIMARY KEY (symbol, date)
 );
@@ -124,6 +126,15 @@ CREATE TABLE IF NOT EXISTS fundamentals (
     thousand_multiplier BOOLEAN,   -- upstream scaling flag that applies to `value`
     fetched_at          TIMESTAMP,
     PRIMARY KEY (xid, statement, period_type, fiscal_end, line_item)
+);
+
+CREATE TABLE IF NOT EXISTS stock_splits (
+    id             TEXT PRIMARY KEY, -- upstream Massive split id
+    ticker         TEXT,             -- = daily_bars.symbol
+    execution_date DATE,             -- first session that trades on the post-split basis
+    split_from     DOUBLE,           -- shares before (e.g. 1 for a 10-for-1, 10 for a 1-for-10)
+    split_to       DOUBLE,           -- shares after
+    fetched_at     TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS sec_filings (
@@ -157,6 +168,7 @@ _MIGRATIONS = (
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS vwap_nx_qtr DOUBLE",
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS vwap_pct_prev_day DOUBLE",
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS features_computed_at TIMESTAMP",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS split_factor DOUBLE",
 )
 
 

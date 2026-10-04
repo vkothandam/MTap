@@ -39,6 +39,7 @@ erDiagram
         DOUBLE vwap_end_week
         DOUBLE vwap_nx_qtr
         DOUBLE vwap_pct_prev_day
+        DOUBLE split_factor
         TIMESTAMP features_computed_at
     }
     fundamentals {
@@ -75,6 +76,14 @@ erDiagram
         VARCHAR sector_name
         TIMESTAMP updated_at
     }
+    stock_splits {
+        VARCHAR id PK
+        VARCHAR ticker
+        DATE execution_date
+        DOUBLE split_from
+        DOUBLE split_to
+        TIMESTAMP fetched_at
+    }
     symbol_industry {
         VARCHAR symbol PK
         VARCHAR industry_code PK
@@ -108,6 +117,7 @@ erDiagram
     trading_calendar ||--o{ daily_bars : "date -> day_idx"
     symbols ||--o{ fundamentals : "xid / symbol"
     symbols ||--o{ sec_filings : "xid / symbol"
+    symbols ||--o{ stock_splits : "ticker -> symbol"
 ```
 
 ## News processing store

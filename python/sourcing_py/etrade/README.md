@@ -174,9 +174,29 @@ and Phase 2 filings (the 10-K/10-Q flags, `results_window`, `vwap_nx_qtr`).
 
 ```bash
 cd python
+uv run sourcing-py etrade fetch-splits                       # Massive splits -> stock_splits (~40s free tier)
 uv run sourcing-py etrade derive-features                    # all symbols
 uv run sourcing-py etrade derive-features --symbols GOOGL,AAPL   # scope to a subset
 ```
+
+**Split adjustment.** EOD bars are downloaded with `adjusted=true`, which only applies the
+splits known at download time. Bars stored earlier are never re-downloaded, so a later split
+would leave them on the old share basis. `fetch-splits` refreshes `stock_splits` from Massive
+`/v3/reference/splits`, by default for every execution date from the first bar onward.
+
+`derive-features` then sets `daily_bars.split_factor` on each bar. The factor is the product
+of `split_from / split_to` over splits that meet all three conditions:
+
+- executed after the bar's date
+- executed after the bar's `ingested_at` date (so splits Massive already applied are skipped)
+- executed on or before today (announced future splits are ignored)
+
+Raw OHLCV stays untouched. Every derived VWAP column, and the exporter, use
+`price × split_factor` and `volume ÷ split_factor`.
+
+Known gap: in a few cases Massive's own adjustment missed a split. The download-time rule
+can't detect these. As of 2026-10-04 there were 12, all but 2 of them delisted or renamed
+tickers. In the CS universe the two are BVC (2026-01-05) and CLBK (2026-07-21).
 
 The trading-day grid comes from the generic `sourcing_py/utils/trading_calendar.py` helper
 (wraps `exchange_calendars`' authoritative **XNYS** calendar), materialized into the
@@ -195,10 +215,12 @@ The trading-day grid comes from the generic `sourcing_py/utils/trading_calendar.
   forward window is empty.
 - **`vwap_pct_prev_day`** — backward-looking vwap % change vs the previous trading day
   (`(vwap − prev_vwap)/prev_vwap`, a fraction: 0.05 = +5%). NULL on a symbol's first bar.
+- **`split_factor`** — price multiplier for splits not yet applied upstream (1.0 = none).
+  See *Split adjustment* above.
 
 > **Full, idempotent recompute.** Every derived column is reset and rewritten on each run
 > (one transaction, set-based SQL). Because the forward-looking columns for existing rows
-> change as new bars land, **re-run `derive-features` after each `ingest-eod`/`fetch`.**
+> change as new bars land, **re-run `fetch-splits` + `derive-features` after each `ingest-eod`/`fetch`.**
 
 ## Phase 2a — TFT panel export (no login)
 
@@ -208,12 +230,12 @@ git SHA). The Parquet file and its sidecar are the **only** contract with the ML
 
 ```bash
 cd python
-uv run sourcing-py etrade derive-features              # first: refreshes the target column
+uv run sourcing-py etrade fetch-splits && uv run sourcing-py etrade derive-features  # first
 uv run sourcing-py etrade export-tft --include-inference
 uv run sourcing-py etrade export-tft --out /tmp/panel.parquet --min-bars 250 --issue-types CS
 ```
 
-- One row per `(symbol, day_idx)` with **raw values**. Per-symbol scaling happens at
+- One row per `(symbol, day_idx)` with **split-adjusted, otherwise raw values**. Per-symbol scaling happens at
   training time (`GroupNormalizer`).
 - **Universe** (flags shown with their defaults): `--issue-types CS,DR`, `--min-bars 120`,
   `--min-median-vwap 1`, `--min-median-volume 50000`.

@@ -11,11 +11,12 @@ import json
 from datetime import date
 from pathlib import Path
 
+import httpx
 import pyarrow.parquet as pq
 import pytest
 
 from sourcing_py.common.errors import ConfigError
-from sourcing_py.etrade import db, eod, export, features, fundamentals, industry, symbols
+from sourcing_py.etrade import db, eod, export, features, fundamentals, industry, splits, symbols
 from sourcing_py.etrade.client import EtradeClient
 from sourcing_py.news import db as news_db
 from sourcing_py.utils import trading_calendar as tc
@@ -847,3 +848,104 @@ def test_export_tft_requires_derive_features(tmp_path):
         _ohlc_bar(con, "AAA", date(2024, 1, 16), 10.0)
     with pytest.raises(RuntimeError, match="derive-features"):
         _export(tmp_path, dbp)
+
+
+# --- stock splits (splits.fetch_splits + derive-features split_factor) ---------------------
+
+
+def _split(con, ticker, execution_date, split_from, split_to, sid=None):
+    con.execute(
+        "INSERT INTO stock_splits (id, ticker, execution_date, split_from, split_to) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [sid or f"{ticker}-{execution_date}", ticker, execution_date, split_from, split_to],
+    )
+
+
+def _bar_ingested(con, symbol, d, vwap, volume, ingested_at):
+    con.execute(
+        "INSERT INTO daily_bars (symbol, date, open, high, low, close, vwap, volume, "
+        "transactions, ingested_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 10, ?)",
+        [symbol, d, vwap, vwap * 1.1, vwap * 0.9, vwap, vwap, volume, ingested_at],
+    )
+
+
+def test_fetch_splits_pages_and_replaces_window(tmp_path, monkeypatch):
+    monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
+    monkeypatch.setenv("MASSIVE_BASE_URL", "https://massive.test")
+    monkeypatch.setenv("MASSIVE_RATE_LIMIT_PER_MIN", "0")
+    seen = []
+
+    def handler(request):
+        seen.append(request.url)
+        assert request.url.params["apiKey"] == "test-key"
+        if "cursor" not in request.url.params:
+            assert request.url.params["execution_date.gte"] == "2024-01-01"
+            return httpx.Response(200, json={
+                "status": "OK",
+                "results": [
+                    {"id": "a", "ticker": "AAA", "execution_date": "2024-01-22",
+                     "split_from": 1, "split_to": 10},
+                    {"id": "bad", "ticker": "ZZZ", "execution_date": "2024-01-22"},
+                ],
+                "next_url": "https://massive.test/v3/reference/splits?cursor=p2",
+            })
+        return httpx.Response(200, json={"status": "OK", "results": [
+            {"id": "b", "ticker": "BBB", "execution_date": "2024-02-01",
+             "split_from": 10, "split_to": 1},
+        ]})
+
+    dbp = tmp_path / "f.duckdb"
+    with db.connect(dbp) as con:
+        _symbol(con, "AAA")
+        _split(con, "OLD", "2024-01-10", 1, 2, sid="cancelled")  # inside window, gone upstream
+        _split(con, "KEEP", "2023-06-01", 1, 2, sid="keep")      # before window, untouched
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        summary = splits.fetch_splits(fromdate="2024-01-01", db_path=dbp, client=client)
+    assert len(seen) == 2
+    assert summary["pages"] == 2 and summary["splits_fetched"] == 2
+    assert summary["tickers_in_universe"] == 1
+    with db.connect(dbp) as con:
+        got = con.execute(
+            "SELECT id, ticker, split_from, split_to FROM stock_splits ORDER BY id"
+        ).fetchall()
+    assert got == [("a", "AAA", 1.0, 10.0), ("b", "BBB", 10.0, 1.0), ("keep", "KEEP", 1.0, 2.0)]
+
+
+def test_split_factor_back_adjusts_only_unapplied_splits(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 1, 26))
+    split_day = sess[4]  # 2024-01-22
+    with db.connect(dbp) as con:
+        _symbol(con, "AAA")
+        # AAA: each bar downloaded on its own day, so a later 1-for-10 reverse split was never
+        # applied upstream: raw vwap 1.0 before, 10.0 after.
+        for d in sess:
+            pre = d < split_day
+            _bar_ingested(con, "AAA", d, 1.0 if pre else 10.0, 1000.0 if pre else 100.0, d)
+        # BBB: backfilled after the split, so upstream already adjusted the history.
+        for d in sess:
+            _bar_ingested(con, "BBB", d, 10.0, 100.0, date(2024, 2, 1))
+        _split(con, "AAA", split_day, 10, 1)
+        _split(con, "BBB", split_day, 10, 1)
+        _split(con, "AAA", date(2099, 1, 1), 1, 2)  # announced, not executed: ignored
+    summary = features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        aaa = {d: (f, nx, pct) for d, f, nx, pct in con.execute(
+            "SELECT date, split_factor, vwap_nx_1d, vwap_pct_prev_day FROM daily_bars "
+            "WHERE symbol = 'AAA'"
+        ).fetchall()}
+        bbb = con.execute(
+            "SELECT DISTINCT split_factor FROM daily_bars WHERE symbol = 'BBB'"
+        ).fetchall()
+    assert summary["bars_split_adjusted"] == 4
+    assert aaa[sess[0]][0] == pytest.approx(10.0) and aaa[split_day][0] == 1.0
+    assert aaa[sess[3]][1] == pytest.approx(10.0)  # eve of split: no artificial 10x jump
+    assert aaa[sess[1]][1] == pytest.approx(10.0)  # pre-split forward vwap on post basis
+    assert aaa[split_day][2] == pytest.approx(0.0)  # no fake +900% return on split day
+    assert bbb == [(1.0,)]
+
+    _, rows = _export(tmp_path, dbp)
+    first = next(r for r in rows if r["symbol"] == "AAA" and r["date"] == sess[0])
+    assert first["today_vwap"] == pytest.approx(10.0)
+    assert first["volume_velocity"] == pytest.approx(1.0)  # 1000 raw shares -> 100 adjusted
+    assert first["transactions_per_volume"] == pytest.approx(10 / 100)

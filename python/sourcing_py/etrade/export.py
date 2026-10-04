@@ -1,7 +1,7 @@
 """Phase 2a — export the TFT training panel (panel.parquet + panel.meta.json).
 
-One row per (symbol, day_idx) over a liquid common-stock/ADR universe, with raw
-(un-normalized) values: TFT's GroupNormalizer does the per-symbol scaling at training time.
+One row per (symbol, day_idx) over a liquid common-stock/ADR universe, with split-adjusted
+(daily_bars.split_factor) but otherwise raw, un-normalized values: TFT's GroupNormalizer does the per-symbol scaling at training time.
 The Parquet file plus its meta sidecar is the ONLY contract with the downstream ML code.
 
 Leakage rule: every input column is known at the close of day t. The forward VWAPs other
@@ -73,16 +73,21 @@ def _git_sha() -> str | None:
 
 _PANEL_SQL = """
 CREATE OR REPLACE TEMP TABLE _panel AS
-WITH bars AS (
-    SELECT b.*,
-        AVG(b.volume) OVER (PARTITION BY b.symbol ORDER BY b.day_idx
+WITH adj AS (
+    SELECT symbol, date, day_idx, transactions, vwap_nx_1d, vwap_pct_prev_day, is_10k, is_10q,
+        open * f AS open, high * f AS high, low * f AS low, close * f AS close,
+        vwap * f AS vwap, volume / f AS volume
+    FROM (SELECT *, COALESCE(split_factor, 1.0) AS f FROM daily_bars WHERE day_idx IS NOT NULL)
+),
+bars AS (
+    SELECT a.*,
+        AVG(a.volume) OVER (PARTITION BY a.symbol ORDER BY a.day_idx
                             RANGE BETWEEN 19 PRECEDING AND CURRENT ROW) AS vol_ma20
-    FROM daily_bars b
-    WHERE b.day_idx IS NOT NULL
+    FROM adj a
 ),
 universe AS (
     SELECT b.symbol
-    FROM daily_bars b JOIN symbols s ON s.symbol = b.symbol
+    FROM bars b JOIN symbols s ON s.symbol = b.symbol
     WHERE list_contains(?::VARCHAR[], s.issue_type) AND b.vwap IS NOT NULL
     GROUP BY b.symbol
     HAVING count(*) >= ? AND median(b.vwap) >= ? AND median(b.volume) >= ?

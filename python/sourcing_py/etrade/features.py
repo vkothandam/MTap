@@ -16,6 +16,10 @@ features the downstream TFT panel needs, and writes them back onto `daily_bars`:
                    and up to the next 10-K/10-Q filing day.
   vwap_pct_prev_day — backward-looking vwap % change vs the previous trading day
                    ((vwap - prev_vwap)/prev_vwap, a fraction; NULL on a symbol's first bar).
+  split_factor   — price multiplier from `stock_splits` for splits that executed after both
+                   the bar's date and its download (`adjusted=true` already applied earlier
+                   ones). All VWAP columns above are computed on split-adjusted prices and
+                   volumes (price * factor, volume / factor).
 
 The recompute is FULL and idempotent — every derived column is reset and rewritten each
 run — because the forward-looking columns for existing rows change as new bars land, so
@@ -96,6 +100,29 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
                 f"FROM trading_calendar c WHERE b.date = c.date{s('b')}"
             )
 
+            # 1b. split_factor (reset, then the product of pending splits per bar). Future
+            #     (announced, not yet executed) splits are ignored.
+            con.execute(f"UPDATE daily_bars SET split_factor = 1.0{where_scope}")
+            con.execute(
+                f"UPDATE daily_bars b SET split_factor = f.factor FROM ("
+                f"  SELECT b.symbol, b.date, exp(sum(ln(sp.split_from / sp.split_to))) AS factor"
+                f"  FROM daily_bars b JOIN stock_splits sp ON sp.ticker = b.symbol"
+                f"    AND sp.execution_date > b.date"
+                f"    AND sp.execution_date > COALESCE(CAST(b.ingested_at AS DATE), b.date)"
+                f"    AND sp.execution_date <= current_date"
+                f"  WHERE true{s('b')}"
+                f"  GROUP BY b.symbol, b.date"
+                f") f WHERE b.symbol = f.symbol AND b.date = f.date"
+            )
+            bars_split_adjusted = con.execute(
+                f"SELECT count(*) FROM daily_bars WHERE split_factor <> 1.0{and_scope}"
+            ).fetchone()[0]
+            con.execute(
+                "CREATE OR REPLACE TEMP VIEW _adj_bars AS SELECT symbol, date, day_idx, "
+                "vwap * COALESCE(split_factor, 1.0) AS vwap, "
+                "volume / COALESCE(split_factor, 1.0) AS volume FROM daily_bars"
+            )
+
             # 2. Snapped filing days: the trading day each filing becomes actionable (t=0).
             con.execute(
                 f"CREATE OR REPLACE TEMP TABLE _filing_days AS "
@@ -159,7 +186,7 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
                 f"    SUM(vwap*volume) OVER nx10 / NULLIF(SUM(volume) OVER nx10, 0) AS nx10,"
                 f"    SUM(vwap*volume) OVER wk   / NULLIF(SUM(volume) OVER wk, 0)   AS wk,"
                 f"    (vwap - LAG(vwap) OVER pv) / NULLIF(LAG(vwap) OVER pv, 0)     AS pct"
-                f"  FROM daily_bars WHERE day_idx IS NOT NULL{and_scope}"
+                f"  FROM _adj_bars WHERE day_idx IS NOT NULL{and_scope}"
                 f"  WINDOW"
                 f"    nx1  AS (PARTITION BY symbol ORDER BY day_idx RANGE BETWEEN 1 FOLLOWING AND 1 FOLLOWING),"
                 f"    nx10 AS (PARTITION BY symbol ORDER BY day_idx RANGE BETWEEN 1 FOLLOWING AND 10 FOLLOWING),"
@@ -181,7 +208,7 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
                 f"    FROM daily_bars b WHERE b.day_idx IS NOT NULL{s('b')}"
                 f"  )"
                 f"  SELECT nf.symbol, nf.date, SUM(bb.vwap*bb.volume)/NULLIF(SUM(bb.volume), 0) AS v"
-                f"  FROM nf JOIN daily_bars bb ON bb.symbol = nf.symbol"
+                f"  FROM nf JOIN _adj_bars bb ON bb.symbol = nf.symbol"
                 f"    AND bb.day_idx >= nf.day_idx AND bb.day_idx <= nf.next_fday"
                 f"  WHERE nf.next_fday IS NOT NULL"
                 f"  GROUP BY nf.symbol, nf.date"
@@ -196,6 +223,7 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
             ).fetchone()
 
             con.execute("DROP TABLE IF EXISTS _filing_days")
+            con.execute("DROP VIEW IF EXISTS _adj_bars")
             con.execute("COMMIT")
         except Exception:
             con.execute("ROLLBACK")
@@ -210,4 +238,5 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
         "calendar_sessions": calendar_sessions,
         "filings_snapped": filings_snapped,
         "bars_missing_day_idx": missing,
+        "bars_split_adjusted": bars_split_adjusted,
     }

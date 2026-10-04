@@ -55,6 +55,7 @@ STORES = [
             ("daily_bars", "trading_calendar", "||--o{", "date -> day_idx"),
             ("fundamentals", "symbols", "||--o{", "xid / symbol"),
             ("sec_filings", "symbols", "||--o{", "xid / symbol"),
+            ("stock_splits", "symbols", "||--o{", "ticker -> symbol"),
         ],
     },
     {

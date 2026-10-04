@@ -40,23 +40,31 @@ These differ from earlier assumptions, so check them before tuning anything:
 ## Step 1: exporter (`sourcing-py etrade export-tft`) — DONE 2026-10-04
 
 The first real run produced 1,773,489 rows across 3,730 symbols (3,685 of them inference
-rows). It covers day_idx 1164–1663, the file is 109 MB, and the export takes about 1.4 s.
+rows; after split adjustment 1,765,809 / 3,712). It covers day_idx 1164–1663, the file is 109 MB, and the export takes about 1.4 s.
 There are no duplicate keys. The only NULLs are the target on inference rows and
 `vwap_pct_prev_day` on each symbol's first bar, so the ML side should fill that with 0.
 
-**Open data issue: corporate actions.** 993 rows across 469 symbols have a next-day move
-above 50%, up to 11.8×. For example, WOLF on 2025-09-26 went from $1.33 to $17.08. Massive's
-`adjusted=true` only adjusts as of each day's fetch, so splits that happen later are never
-applied to earlier daily files. The stored history is therefore unadjusted across reverse
-splits and restructurings. Fix options:
+**Large jumps are real moves, not missed splits (checked 2026-10-04).** 993 rows across 469
+symbols move more than 50% overnight. The whole history was downloaded in one backfill on
+2026-08-16/17 with `adjusted=true`, so every earlier split is already applied. Known splits
+(SMCI, LRCX, ORLY, IBKR) trade smoothly across their split dates.
 
-- (a) Source a splits table (Polygon-style `/v3/reference/splits`) and back-adjust in
-  derive-features.
-- (b) Exclude or mask rows near jumps where `|return| > X`, as an exporter flag or in the
-  ML loss.
-- (c) Re-fetch the history with fresh `adjusted=true`.
+The jumps are news events on very high volume: SPRO ×3 on ×2,675 volume, plus QURE, URGN and
+OTLK on FDA and trial-result days. A missed split would move volume inversely to price
+instead. The one structural break is **WOLF 2025-09-26→29**, its Chapter 11 exit, when old
+shares were cancelled.
 
-(a) is the correct fix. (b) is a stopgap.
+- **ML side:** treat these as heavy tails. Use the log normalizer, consider winsorizing the
+  return in the loss or metrics, and optionally drop restructuring breaks.
+- **Splits (done 2026-10-04):** `sourcing-py etrade fetch-splits` loads Massive splits into
+  `stock_splits`. `derive-features` then sets `daily_bars.split_factor`, back-adjusting each
+  bar for splits that executed after it was downloaded. The first real run adjusted 54,006
+  bars across 142 symbols, and the panel shrank to 1,765,809 rows / 3,712 symbols because
+  adjusted price/volume moved a few symbols out of the universe.
+  - Of 1,489 splits inside the bar range, 1,254 were already smooth in the raw data,
+    confirming the backfill adjusted them.
+  - 12 were missed by Massive's own adjustment. BVC and CLBK are the only CS symbols among
+    them, and they are not handled yet.
 
 
 New module `python/sourcing_py/etrade/export.py`. It runs DuckDB SQL, then
@@ -149,11 +157,12 @@ ml/
 ```bash
 cd python
 uv run pytest tests/test_etrade.py -q
-uv run sourcing-py etrade derive-features          # after any ingest-eod / fetch
+uv run sourcing-py etrade fetch-splits             # then derive-features, after any ingest-eod / fetch
+uv run sourcing-py etrade derive-features
 uv run python scripts/gen_schema_docs.py           # after any DDL change (CI runs --check)
 uv run python -c "import duckdb; c=duckdb.connect('/Users/vkothandaraman/development/pprojects/MTap/state/etrade/fundamentals.duckdb', read_only=True); print(c.execute('SELECT count(*) FROM daily_bars').fetchone())"
 ```
 
 The DB path resolves from the repo root (`ETRADE_DB_PATH`). A cwd-relative path from
-`python/` will not find it. Re-run `derive-features` after every `ingest-eod` / `fetch`
+`python/` will not find it. Re-run `fetch-splits` + `derive-features` after every `ingest-eod` / `fetch`
 before exporting.

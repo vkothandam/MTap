@@ -18,9 +18,11 @@ data/
 *.parquet
 *.jsonl
 
-# Local run state (rate-limiter locks, etc.)
-state/*
-!state/fundamentals.duckdb
+# Local run state (DuckDB stores, session cookies, rate-limiter locks, logs)
+state/
+*.duckdb
+*.duckdb.wal
+*.log
 
 # Secrets / env
 .env
@@ -32,3 +34,4 @@ shared/config/settings.toml
 .DS_Store
 .idea/
 .vscode/
+.obsidian/workspace*.json

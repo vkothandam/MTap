@@ -9,16 +9,34 @@ that. Its only input is a run directory on disk (the **forecast-run contract** b
 move to its own repo or into MBin unchanged. Any model that writes these files is graded the
 same way, so the modelling can change and every run still gets the same evaluation.
 
+## Quick start
+
 ```bash
 cd dashboard
-uv sync --extra dev
-uv run forecast-dash --runs ../ml/runs          # opens http://localhost:8501
+uv sync --extra dev                             # first time only
+uv run forecast-dash --runs ../ml/runs          # start: opens http://localhost:8501
+```
+
+In another terminal, to stop it:
+```bash
+Ctrl+C                                          # stop the dashboard server
+```
+
+To use a custom port, different run, or skip telemetry:
+```bash
 uv run forecast-dash --runs ../ml/runs/<run_id> --port 8502
+FORECAST_DASH_RUNS=../ml/runs uv run forecast-dash --port 8503
+```
+
+To run tests:
+```bash
 uv run pytest -q && uv run ruff check .
 ```
 
-`--runs` can also come from `FORECAST_DASH_RUNS`. It may point at a single run or at a
-directory of runs; with a directory of runs, the newest is shown first.
+Notes:
+- `--runs` can also come from `FORECAST_DASH_RUNS` env var. It may point at a single run or at a
+  directory of runs; with a directory of runs, the newest is shown first.
+- The server runs in the foreground. Ctrl+C stops it.
 
 ## Forecast-run contract
 

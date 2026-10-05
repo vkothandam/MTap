@@ -44,10 +44,12 @@ def _calendar_features(end: date, calendar: str) -> pa.Table:
     # Extend past the last bar so the newest session still has a "next session".
     rows = tc.trading_calendar(end=end + timedelta(days=30), calendar=calendar)
     cols: dict[str, list] = {k: [] for k in (
-        "day_idx", "day_of_week", "month", "is_month_end", "is_quarter_end", "sessions_gap_next"
+        "date", "day_idx", "day_of_week", "month", "is_month_end", "is_quarter_end",
+        "sessions_gap_next",
     )}
     for (d, idx), nxt in pairwise(rows):
         nd = nxt[0]
+        cols["date"].append(d)
         cols["day_idx"].append(idx)
         cols["day_of_week"].append(d.isoweekday())
         cols["month"].append(d.month)
@@ -55,9 +57,19 @@ def _calendar_features(end: date, calendar: str) -> pa.Table:
         cols["is_quarter_end"].append(int((nd.month - 1) // 3 != (d.month - 1) // 3 or nd.year != d.year))
         cols["sessions_gap_next"].append((nd - d).days)
     return pa.table({
+        "date": pa.array(cols["date"], pa.date32()),
         "day_idx": pa.array(cols["day_idx"], pa.int64()),
-        **{k: pa.array(v, pa.int16()) for k, v in cols.items() if k != "day_idx"},
+        **{k: pa.array(v, pa.int16()) for k, v in cols.items() if k not in ("date", "day_idx")},
     })
+
+
+def _next_session(cal: pa.Table, after: date | None) -> dict | None:
+    """Known calendar features of the first session after `after`: the decoder row a frozen
+    model needs to forecast the day after the panel ends."""
+    if after is None:
+        return None
+    nxt = next((r for r in cal.to_pylist() if r["date"] > after), None)
+    return {**nxt, "date": nxt["date"].isoformat()} if nxt else None
 
 
 def _git_sha() -> str | None:
@@ -158,7 +170,8 @@ def export_tft(
         if not n_indexed:
             raise RuntimeError("no bars have a day_idx; run `sourcing-py etrade derive-features` first")
 
-        con.register("_cal", _calendar_features(last_date, calendar))
+        cal = _calendar_features(last_date, calendar)
+        con.register("_cal", cal)
         if news_path.exists():
             con.execute(f"ATTACH '{_sql_str(news_path)}' AS news (READ_ONLY)")
             sentiment = "news.symbol_sentiment_daily"
@@ -195,6 +208,7 @@ def export_tft(
         "day_idx_range": [di_lo, di_hi],
         "date_range": [d_lo.isoformat() if d_lo else None, d_hi.isoformat() if d_hi else None],
         "calendar": calendar,
+        "next_session": _next_session(cal, d_hi),
         "filters": {
             "issue_types": list(issue_types),
             "min_bars": min_bars,

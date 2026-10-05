@@ -64,7 +64,8 @@ shares were cancelled.
   - Of 1,489 splits inside the bar range, 1,254 were already smooth in the raw data,
     confirming the backfill adjusted them.
   - 12 were missed by Massive's own adjustment. BVC and CLBK are the only CS symbols among
-    them, and they are not handled yet.
+    them. **Deliberately left as-is** (user decision, 2026-10-04): look at training and test
+    results first, then revisit. Detecting "raw jump = split ratio" was prototyped and reverted.
 
 
 New module `python/sourcing_py/etrade/export.py`. It runs DuckDB SQL, then
@@ -108,7 +109,39 @@ Rules:
   the `'unknown'` fills, and the absence of leakage columns.
 - Run `gen_schema_docs.py` only if DDL changes (it shouldn't).
 
-## Step 2: training program (`ml/`)
+## Step 2: training program (`ml/`) — BUILT 2026-10-04
+
+Built as planned below, with these changes (details in [ml/README.md](../ml/README.md)):
+
+- **Series = today's value, forecast one step ahead.** Using `target_tomorrow_vwap` as the TFT
+  series would leak tomorrow's price into the encoder. It is used as the scoring label instead.
+- **Default target = return (`vwap_pct_prev_day`), 19 quantiles P5..P95.** This follows the
+  user's 2026-10-04 request to forecast a percentile distribution and check calibration:
+  P(next-day VWAP move ≥ +1/2/3% or ≤ −1/2/3%) at 60/70/80/90% call levels, plus
+  quantile calibration and a probability-bucket grid, pooled over all test folds.
+- **`EncoderNormalizer` and 1/median-price loss weights.** The first price-target trial with
+  `GroupNormalizer` lost badly to naive (MAPE 220% vs 2.6%). The fixes brought it to
+  +2.4% (price) and +4.5% (return) MAPE skill on 200 symbols.
+- **Folds:** each test block is preceded by a 20-session early-stopping block, so test data is
+  never used to stop training or pick checkpoints.
+
+### Step 2b: per-stock calibration and tomorrow's forecast — BUILT 2026-10-04
+
+User decisions:
+- **Report only.** The model's probabilities are never recalibrated. The report shows, per
+  stock / industry / day, how often each (move, probability bucket) call came true, so
+  positive and negative bias can be read off directly.
+- **Frozen model.** `tft-vwap-predict` runs a saved checkpoint on the newest panel rows. There
+  is no retraining or online updating: "only the momentum and its certainty".
+
+What was built:
+- `tft-vwap-report <run>`: grid / ladder / bias CSVs under `runs/<run>/report/`.
+- `tft-vwap-predict <run>`: next-session forecast, with screener and `--symbol` modes. Each
+  probability is shown next to that stock's historical hit rate in the same bucket.
+- The exporter writes `meta["next_session"]` (the calendar row for the session after the
+  panel), which supplies the decoder's known inputs. This is additive; `schema_version` stays 1.
+
+### Original plan
 
 ```
 ml/

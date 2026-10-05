@@ -839,6 +839,11 @@ def test_export_tft_inference_rows_news_join_and_meta(tmp_path):
     assert meta["rows"] == len(sess) and meta["news_rows"] == 1
     assert meta["date_range"] == [sess[0].isoformat(), sess[-1].isoformat()]
     assert meta["filters"]["include_inference"] is True
+    # 2024-01-26 is a Friday: tomorrow's decoder row is Monday the 29th, the next day_idx
+    assert meta["next_session"] == {
+        "date": "2024-01-29", "day_idx": by[sess[-1]]["day_idx"] + 1, "day_of_week": 1,
+        "month": 1, "is_month_end": 0, "is_quarter_end": 0, "sessions_gap_next": 1,
+    }
 
 
 def test_export_tft_requires_derive_features(tmp_path):

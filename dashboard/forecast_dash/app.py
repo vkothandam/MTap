@@ -145,11 +145,46 @@ def _pct_cols(df: pd.DataFrame, cols) -> dict:
     return {c: st.column_config.NumberColumn(c, format="percent") for c in cols if c in df}
 
 
+def _help_button(title: str, content: str):
+    """Display an info icon with a help popover or expander."""
+    with st.popover("ℹ️ Help", use_container_width=False):
+        st.markdown(f"### {title}\n{content}")
+
+
 # ---- tabs -----------------------------------------------------------------------------------
 
 def tab_calibration(v: View, min_n: int):
     if not _need(v):
         return
+    col1, col2 = st.columns([1, 20])
+    with col1:
+        _help_button(
+            "Calibration",
+            """**Purpose:** Check if the model's probability estimates match reality.
+
+**Charts:**
+- **Reliability diagram (top):** Each dot is a probability bucket. X-axis = model's avg forecast
+  probability. Y-axis = what actually happened (% that came true). Points on the diagonal =
+  calibrated. Below diagonal (red) = overconfident. Larger dots = more data.
+
+- **Deviation heatmap (middle):** Shows the error per event and bucket. Red (positive) = model
+  overconfident. Blue (negative) = too cautious. Darker color = bigger error.
+
+- **Ladder (bottom):** At each confidence level (60%–95%), the model says the move will be X.
+  This chart shows how often the actual move cleared it. Ideal = diagonal line.
+
+**Table columns:**
+- `bucket`: probability range (5–10%, 10–20%, etc.)
+- `n`: number of forecasts in this bucket
+- `mean_prob`: what model said on average
+- `hit_rate`: % that actually happened
+- `deviation`: came true − said (< 0 = overconfident)
+- `z`: statistical significance of the deviation
+- `ci_lo`, `ci_hi`: 95% confidence interval on hit rate
+""")
+    with col2:
+        st.write("")  # spacer
+
     g = calib.grid(v.events(), v.edges)
     st.plotly_chart(charts.reliability(g, min_n=min_n), width="stretch")
     st.plotly_chart(charts.heatmap(g, min_n=min_n), width="stretch")
@@ -167,6 +202,34 @@ def tab_calibration(v: View, min_n: int):
 def tab_threshold(v: View):
     if not _need(v):
         return
+    col1, col2 = st.columns([1, 20])
+    with col1:
+        _help_button(
+            "Threshold Explorer",
+            """**Purpose:** Find the call level where the model is reliable.
+
+Pick an event (e.g., "+1% upside") and a confidence threshold. The app shows:
+- How many calls meet that threshold
+- How often they came true (with 95% CI)
+- How often the event happened anyway (base rate)
+
+**Key insight:** A call is only useful if its hit rate beats the base rate.
+
+**Charts:**
+1. **Hit rate vs call level:** As you raise the confidence threshold (from 50% to 95%), the hit
+   rate goes up but the number of calls drops (grey bars, log scale). Find the sweet spot.
+2. **Hit rate vs move size:** At the chosen confidence level, how does accuracy vary by move
+   magnitude? Larger moves often have different reliability than smaller ones.
+
+**Table columns:**
+- `calls`: number of forecasts with P ≥ threshold
+- `came_true`: % of calls that actually happened (hit rate)
+- `said`: model's mean forecast probability
+- `deviation`: came true − said
+""")
+    with col2:
+        st.write("")
+
     c1, c2 = st.columns(2)
     move = c1.selectbox("Event", v.moves, index=len(v.moves) - 1 if v.moves[-1] > 0 else 0,
                         format_func=calib.event_label, key="thr_move")
@@ -210,6 +273,36 @@ def tab_stocks(v: View):
     if len(v.idx) == 0:
         st.info("No test forecasts match the filters.")
         return
+    col1, col2 = st.columns([1, 20])
+    with col1:
+        _help_button(
+            "Across Stocks",
+            """**Purpose:** Find stocks where the model is consistently biased.
+
+**Funnel plot (top):** Each point is a stock.
+- X-axis: number of forecasts for that stock
+- Y-axis: bias = 0.5 − mean PIT (how wrong the model is on average)
+- Grey bands: ±2σ noise (where random variation lands)
+- Stocks outside the band have real, statistically significant bias
+
+Larger dots = more data (more reliable signal). Red = optimistic (model too bullish).
+Blue = pessimistic (model too bearish).
+
+**Click to select:** Use box or lasso select to pick stocks and view them in the Stock
+detail tab.
+
+**Bias by industry (middle):** Same bias calculation, grouped by sector/industry.
+
+**Table columns:**
+- `n`: forecasts for this stock
+- `mean_pit`: mean probability integral transform (0.5 = calibrated)
+- `bias`: 0.5 − mean PIT (+ optimistic, − pessimistic)
+- `bias_z`: statistical significance (|z| ≥ 2 = flagged)
+- `label`: "calibrated", "optimistic", or "pessimistic"
+""")
+    with col2:
+        st.write("")
+
     u = v.pit()
     b = calib.bias(u, v.keys[["symbol", "industry_code"]])
     min_n = st.slider("Min forecasts per stock", 1, max(1, int(b["n"].max())),
@@ -238,6 +331,34 @@ def tab_stocks(v: View):
 def tab_days(v: View):
     if not _need(v):
         return
+    col1, col2 = st.columns([1, 20])
+    with col1:
+        _help_button(
+            "By Day",
+            """**Purpose:** Find days when the model missed badly (regime days).
+
+**Time series plot (top):**
+- Grey band: ±2σ noise (random variation expected)
+- Black line: actual bias per day (cross-section across all stocks)
+- Red/blue dots: regime days (|z| ≥ 2), when the whole market moved together
+
+Regime days are often caused by market-wide factors (earnings, macro news) that the model
+didn't anticipate.
+
+**Lower panel:** Count of forecasts per day. More data = more reliable.
+
+**Optional overlay:** Pick an event (e.g., "+1% upside") to see mean probability vs
+actual hit rate per day, color-coded by regime days.
+
+**Interpretation:**
+- Calibrated forecast: line stays in the grey band
+- Optimistic bias (red): actuals fell below the forecast
+- Pessimistic bias (blue): actuals rose above
+- Clustered regime days: market-wide factor affecting the model
+""")
+    with col2:
+        st.write("")
+
     move = st.selectbox("Overlay event (mean said vs came true, per day)", [None, *v.moves],
                         format_func=lambda m: "none" if m is None else calib.event_label(m))
     prob = hit = None
@@ -257,6 +378,33 @@ def tab_stock(v: View, min_n: int):
         return
     if st.session_state.get("detail_symbol") not in syms:
         st.session_state["detail_symbol"] = syms[0]
+    col1, col2 = st.columns([1, 20])
+    with col1:
+        _help_button(
+            "Stock Detail",
+            """**Purpose:** Deep dive into one stock's forecast history.
+
+**Fan chart (top):** Shows the probability bands over time (as % move).
+- Shaded areas: P5–P95 (5th to 95th percentile) and P25–P75 (25th to 75th)
+- Blue line: median forecast (P50)
+- Dots: actual moves (black = inside band, red = outside)
+
+Red dots mean the actual move fell outside the 90% probability band. Many red dots
+= calibration problem on this stock.
+
+**PIT histogram (bottom left):** Distribution of how the actual move ranked relative
+to the forecast. Flat = calibrated. Skewed left = model too bullish. Skewed right =
+too bearish. U shape = bands too narrow.
+
+**Ladder (bottom right):** At each confidence level, shows the moves the model said
+the stock would clear. Compares forecast vs actual.
+
+**Grid & reliability:** Shows the same calibration check as the main Calibration tab,
+but just for this stock.
+""")
+    with col2:
+        st.write("")
+
     sym = st.selectbox("Stock", syms, key="detail_symbol")
     rows = np.flatnonzero(v.keys["symbol"].to_numpy() == sym)
     keys, r_q, r_act = v.keys.iloc[rows], v.r_q[rows], v.r_act[rows]
@@ -298,6 +446,32 @@ def tab_tomorrow(v: View):
         st.info("No forecast_<date>.parquet in this run. Produce one with the model's predict "
                 "command (for ml/: `uv run tft-vwap-predict <run>`).")
         return
+    col1, col2 = st.columns([1, 20])
+    with col1:
+        _help_button(
+            "Tomorrow",
+            """**Purpose:** Tomorrow's predicted moves vs historical accuracy on similar calls.
+
+**Screener table (top):** Lists all stocks with their forecast probabilities, filtered
+by confidence threshold and move size.
+
+**Columns:**
+- `prob`: model's forecast probability for this event
+- `bucket`: which probability bucket it falls in (5–10%, 10–20%, etc.)
+- `hist_hit_rate`: % of time this stock had that outcome in the same bucket (test data)
+- `hist_n`: how many test forecasts in that bucket
+- `all_hit_rate`: for all stocks, how often that outcome happened in the same bucket
+- `all_n`: how many test forecasts across all stocks
+
+**Read:** "Model says 70%, this stock came true 65% in the 70–80% bucket (n=45), all stocks
+came true 68% (n=2300)." Higher `hist_hit_rate` = more trustworthy.
+
+**Spread chart (bottom):** One stock's probability across move sizes, overlaid with
+its historical hit rate (same bucket, diamonds) and all stocks' hit rate (X marks).
+""")
+    with col2:
+        st.write("")
+
     f = st.selectbox("Forecast", files, format_func=lambda p: p.stem.removeprefix("forecast_"))
     keys, r_q, levels = get_forecast(str(f))
     c1, c2, c3 = st.columns(3)
@@ -345,6 +519,35 @@ def tab_tomorrow(v: View):
 
 
 def tab_compare(v: View, min_n: int):
+    col1, col2 = st.columns([1, 20])
+    with col1:
+        _help_button(
+            "Compare Runs",
+            """**Purpose:** Compare calibration metrics across model versions or training runs.
+
+**Common rows option (top):** If checked, only rows present in *all* chosen runs are used.
+This gives a fair comparison when runs tested different folds or stocks. If unchecked,
+each run is evaluated on all its own rows (may not be directly comparable).
+
+**Reliability overlay:** Overlays the calibration curves from multiple runs, so you can
+see which version is more accurate per bucket.
+
+**Summary table (bottom):** Side-by-side comparison of run-level metrics:
+- `rows`: number of test forecasts
+- `pinball`: quantile loss (lower = better; measures forecast accuracy)
+- `naive_pinball`: loss if we forecast "0% move" at every quantile
+- `pinball_skill`: 1 − pinball/naive (% improvement over naive; higher = better)
+- `coverage`: actual % of moves that fell within the P5–P95 interval
+- `coverage_nominal`: target coverage (90% for P5–P95)
+- `bias`: mean bias (0 = calibrated, + = optimistic, − = pessimistic)
+- `median_width`: size of the P5–P95 band
+- `ece`: mean |deviation| over the grid (lower = better)
+
+Use this to decide which version to deploy.
+""")
+    with col2:
+        st.write("")
+
     root = Path(v.path).parent
     names = [p.name for p in discover(root)] or [v.run.name]
     chosen = st.multiselect("Runs to compare", names, default=[v.run.name])
@@ -389,7 +592,40 @@ def tab_compare(v: View, min_n: int):
 
 def main():
     st.set_page_config(page_title="Forecast calibration", layout="wide")
-    st.title("Forecast calibration")
+    col1, col2 = st.columns([1, 20])
+    with col1:
+        _help_button(
+            "Forecast Calibration Dashboard",
+            """**What is this?**
+This app grades quantile forecasts. For each (stock, day), the model predicted a distribution
+of the next-day price move. This app asks: "When the model said P(+1%) = 70%, how often did
++1% actually happen?"
+
+**How to read it:**
+- Pick a run (a trained model), one or more folds (test time blocks), a move size, and filters
+  (stocks, industries, date range).
+- Browse the tabs to see how calibrated the forecasts are: probability vs reality, per stock,
+  per day, and compared to other model versions.
+
+**Key concept: calibration**
+A forecast is calibrated if its probabilities match reality. If it says 70% should happen 70%
+of the time. Not 50% or 80%.
+
+**Sidebar filters** apply to every tab:
+- `Run`: pick a model run or forecasts saved with it
+- `Folds`: test time blocks (use different parts of history)
+- `Side`: upside (+), downside (−), or both
+- `Move sizes`: what % change you care about
+- `Probability bucket width`: resolution for grouping (5% or 10%)
+- `Industries`, `Stocks`: narrow down to particular sectors or companies
+- `Test days`: date range
+- `Min n per grid point`: hide thin slices of data (fewer than N forecasts)
+
+Adjust filters to slice the data any way you want; every tab updates instantly.
+""")
+    with col2:
+        st.title("Forecast calibration")
+
     v = sidebar()
     if v is None:
         return

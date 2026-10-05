@@ -31,7 +31,13 @@ def score_frame(index: pd.DataFrame, q: np.ndarray, df: pd.DataFrame, cfg) -> pd
     """Attach the label + baseline to raw model outputs (`q`: one column per quantile, in
     target units) and keep only forecasts that land on real panel rows."""
     out = index.reset_index(drop=True).copy()
+    # Drop duplicates from encoder windows (pytorch-forecasting keeps all encoder rows)
+    out = out.drop_duplicates(subset=["symbol", "day_idx"], keep="last")
+    out = out.reset_index(drop=True)
     q = np.sort(q, axis=1)  # QuantileLoss doesn't forbid crossing; rearrange to monotone
+    # Re-align q after duplicate drop
+    orig_len = len(index)
+    q = q[index.drop_duplicates(subset=["symbol", "day_idx"], keep="last").index.to_numpy()]
     for i, level in enumerate(cfg.quantiles):
         out[qcol(level)] = q[:, i]
     prev = df[["symbol", "day_idx", "today_vwap", "target_tomorrow_vwap"]].rename(

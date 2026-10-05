@@ -80,7 +80,11 @@ def train_fold(df: pd.DataFrame, cfg: TrainConfig, fold: Fold, fold_dir: Path) -
           "enable_progress_bar": False}
     es_frame = forecast_frame(best, es_ds, df, cfg, pk)
     test_frame = forecast_frame(best, test_ds, df, cfg, pk)
-    test_frame.to_parquet(fold_dir / "test_predictions.parquet", index=False)
+    # row keys travel with the forecasts, so a run can be graded without the panel
+    keys = [c for c in ("date", "industry_code") if c in df.columns]
+    test_frame.merge(df[["symbol", "day_idx", *keys]], on=["symbol", "day_idx"], how="left",
+                     validate="one_to_one").to_parquet(fold_dir / "test_predictions.parquet",
+                                                       index=False)
 
     result = {
         "fold": asdict(fold),

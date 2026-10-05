@@ -30,12 +30,15 @@ def load_test_forecasts(run_dir: Path, cfg: TrainConfig) -> pd.DataFrame:
         [pd.read_parquet(p).assign(fold=int(p.parent.name.split("_")[1])) for p in paths],
         ignore_index=True,
     )
-    if cfg.panel.exists():
-        keys = pd.read_parquet(cfg.panel, columns=["symbol", "day_idx", "date", "industry_code"])
-        keys["industry_code"] = keys["industry_code"].fillna("unknown").astype(str)
+    need = [c for c in (DAY_KEY, "industry_code") if c not in frame.columns]  # older runs
+    if need and cfg.panel.exists():
+        keys = pd.read_parquet(cfg.panel, columns=["symbol", "day_idx", *need])
         frame = frame.merge(keys, on=["symbol", "day_idx"], how="left")
-    else:  # panel moved: fall back to day_idx as the day key
-        frame[DAY_KEY], frame["industry_code"] = frame["day_idx"], "unknown"
+    if DAY_KEY not in frame.columns:  # panel moved: fall back to day_idx as the day key
+        frame[DAY_KEY] = frame["day_idx"]
+    if "industry_code" not in frame.columns:
+        frame["industry_code"] = "unknown"
+    frame["industry_code"] = frame["industry_code"].fillna("unknown").astype(str)
     return frame
 
 

@@ -91,7 +91,11 @@ the report and predict commands use the current defaults even on older runs.
 
 This command re-scores a finished run's saved `fold_*/test_predictions.parquet`. Nothing is
 retrained. `train` runs it automatically at the end. `--moves` and `--prob-buckets` change the
-grid.
+grid. To explore the same numbers interactively (any move, band, stock, industry or day range,
+and run-vs-run comparison), use `../dashboard` (`uv run forecast-dash --runs ../ml/runs`). It
+reads only the run files; see the forecast-run contract in `dashboard/README.md`.
+`test_predictions.parquet` carries `date` and `industry_code`, so a run can be graded without
+the panel. Older runs get them joined from the panel in `config.json`.
 
 - **Grid** (`grid_{overall,by_symbol,by_industry,by_day}.csv`): one row per event (move ≥ +m or
   ≤ −m) and forecast-probability bucket (5–10%, 10–20%, …, 90–95%). Each row has:

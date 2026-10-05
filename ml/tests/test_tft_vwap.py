@@ -108,6 +108,7 @@ def test_train_smoke_writes_results(panel_path, tmp_path, target, normalizer):
     assert (run_dir / "fold_1" / "best.ckpt").exists()
     preds = pd.read_parquet(run_dir / "fold_1" / "test_predictions.parquet")
     assert (preds["q10"] <= preds["q90"]).all() and preds["day_idx"].min() >= 1140
+    assert preds["date"].notna().all() and preds["industry_code"].notna().all()
     assert not (run_dir / "fold_0").exists()
     assert {"quantiles", "signals", "grid"} <= set(summary["pooled_calibration"])
     signals = pd.read_csv(run_dir / "calibration_signals.csv")

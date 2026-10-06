@@ -14,6 +14,12 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# Streamlit re-executes this script on every interaction but keeps the modules it imported: an
+# edit to charts.py etc. would otherwise need a server restart (`from forecast_dash import charts`
+# keeps returning the old module). Drop them so every run uses the code on disk.
+for _name in [m for m in sys.modules if m == "forecast_dash" or m.startswith("forecast_dash.")]:
+    del sys.modules[_name]
+
 from forecast_dash import calib, charts, insights
 from forecast_dash.contract import Run, discover, load_forecast, load_run
 from forecast_dash.help_text import HELP

@@ -28,6 +28,17 @@ def test_app_renders_every_tab(tmp_path, monkeypatch):
     assert not at.exception, [e.value for e in at.exception]
 
 
+def test_app_picks_up_edited_modules(run_dir, monkeypatch):
+    """A long-running server must use the code on disk, not the modules of its first run."""
+    import sys
+
+    monkeypatch.setenv("FORECAST_DASH_RUNS", str(run_dir.parent))
+    at = AppTest.from_file(str(PKG / "app.py"), default_timeout=120).run()
+    del sys.modules["forecast_dash.charts"].call_heatmap  # as if charts.py predates the app
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+
+
 def test_app_with_no_runs(tmp_path, monkeypatch):
     monkeypatch.setenv("FORECAST_DASH_RUNS", str(tmp_path))
     at = AppTest.from_file(str(PKG / "app.py"), default_timeout=60).run()

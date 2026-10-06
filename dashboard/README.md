@@ -18,7 +18,7 @@ uv run forecast-dash --runs ../ml/runs          # start: opens http://localhost:
 ```
 
 To stop it, press Ctrl+C in the terminal where it runs. If it was started in the background or
-that terminal is gone: `pkill -f "streamlit run.*forecast_dash"`.
+that terminal is gone: `pkill -f forecast-dash`.
 
 To use a custom port, different run, or skip telemetry:
 ```bash

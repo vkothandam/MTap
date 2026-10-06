@@ -17,10 +17,8 @@ uv sync --extra dev                             # first time only
 uv run forecast-dash --runs ../ml/runs          # start: opens http://localhost:8501
 ```
 
-In another terminal, to stop it:
-```bash
-Ctrl+C                                          # stop the dashboard server
-```
+To stop it, press Ctrl+C in the terminal where it runs. If it was started in the background or
+that terminal is gone: `pkill -f "streamlit run.*forecast_dash"`.
 
 To use a custom port, different run, or skip telemetry:
 ```bash
@@ -36,7 +34,6 @@ uv run pytest -q && uv run ruff check .
 Notes:
 - `--runs` can also come from `FORECAST_DASH_RUNS` env var. It may point at a single run or at a
   directory of runs; with a directory of runs, the newest is shown first.
-- The server runs in the foreground. Ctrl+C stops it.
 
 ## Forecast-run contract
 
@@ -95,15 +92,21 @@ Notes:
 
 ## Tabs
 
+Every tab opens with an **In short** box: plain-English findings computed from the current
+filters (`forecast_dash/insights.py`). ✅ fine · ⚠️ watch · ❌ problem · ℹ️ context. The
+"ℹ️ About this page" popover next to each title explains every chart and column
+(`forecast_dash/help_text.py`).
+
 | Tab | What it shows | How to read it |
 | --- | --- | --- |
+| Summary | The executive summary. Headline numbers (forecasts, quantile skill vs naive, P5–P95 coverage, bias, ECE). A call-reliability heatmap (event × call level, came true / said). Calls by side vs the base rate. Quantile calibration. A per-fold stability table. The full calls table. Call levels and the headline level are selectable | Start here. The In short box says whether the distribution beats naive, whether the bands are the right width, which way the model leans, how each side's calls at the headline level held up, the most and least trustworthy call, and whether the folds (time periods) agree. If they don't, pooled numbers mix regimes. |
 | Calibration | Reliability curves (one per event), deviation heatmap, ladder bars | Points on the diagonal are calibrated. Below it, or red cells, mean the model said more than happened (overconfident). Blue cells mean it was too cautious. Bubble size grows with n, and the error bars are 95% CIs. |
 | Threshold explorer | Pick an event and a call level c. Headline figures for calls with P ≥ c, a hit-rate-vs-c curve, a hit-rate-vs-move curve, and a per-stock table with min-calls and min-accuracy filters | Look for the call level where the hit rate is high enough and there are still enough calls (grey bars, log axis). Compare it with the base rate: a call is only useful if it beats how often the event happens anyway. |
-| Across stocks | Funnel plot of per-stock bias vs n with ±2σ noise bounds, bias by industry, a sortable table | Stocks outside the funnel have real bias. Expect about 4.5% outside from noise alone, and the header shows that expected count. Box- or lasso-selecting a point opens it in Stock detail. |
+| Across stocks | Funnel plot of per-stock bias vs n with ±2σ noise bounds, bias by industry, a sortable table | Stocks outside the funnel have real bias. Expect about 4.5% outside from noise alone, and the In short box shows that expected count. Box- or lasso-selecting a point opens it in Stock detail. |
 | By day | Cross-sectional PIT bias per day with the noise band, regime days marked, and an optional event's came-true − said per day | Regime days are days when the whole market moved against the forecast together. Calibration errors grouped on a few days point to a market-level factor, not a per-stock fault. |
 | Stock detail | One stock: fan chart (P5–P95 and P25–P75 bands, P50, actual dots; red dots fall outside the outer band), PIT histogram, ladder, that stock's grid | A flat PIT histogram means calibrated. Mass on the left means actuals fell below the forecast (optimistic). A U shape means the bands are too narrow. |
 | Tomorrow | Screener on `forecast_<date>.parquet` by side, move and P ≥. It shows each stock's historical came-true rate in the same probability bucket (that stock and all stocks), plus one stock's probability-per-move curve against history and its ladder | Read "model says 72%" next to "this stock came true 58% (n=31) in the 70–80% bucket". That historical rate is the answer to "how far do I trust this number". |
-| Compare runs | Reliability overlay for one event across runs, and a summary table | By default only (stock, day) rows present in every run are used, so the comparison is fair. Lower pinball and ECE are better. Coverage should be near nominal and bias near 0. |
+| Compare runs | Reliability overlay for one event across runs, a summary table, and calls by run and side at each call level | In short names the winner per metric (or says there is no clear winner), which run's calls held best at the chosen call level, and warns when the rows differ or are too few. By default only (stock, day) rows present in every run are used, so the comparison is fair. Lower pinball and ECE are better. Coverage should be near nominal and bias near 0. |
 
 ## Layout
 
@@ -112,7 +115,9 @@ forecast_dash/
   contract.py   discover runs, load + validate, convert to fractional moves, panel fallback join
   calib.py      pure numpy/pandas maths (above)
   charts.py     pure functions: tables -> plotly Figures
+  insights.py   pure functions: tables -> ranked plain-English findings (the In short boxes)
+  help_text.py  the "About this page" text for each tab
   app.py        Streamlit UI: sidebar, tabs, caching (st.cache_resource, per run and per move)
   cli.py        forecast-dash entry point -> streamlit run app.py
-tests/          maths, contract, charts, AppTest smoke over every tab, import boundary
+tests/          maths, contract, charts, insights, AppTest smoke over every tab, import boundary
 ```

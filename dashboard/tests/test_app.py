@@ -14,13 +14,16 @@ def test_app_renders_every_tab(tmp_path, monkeypatch):
     monkeypatch.setenv("FORECAST_DASH_RUNS", str(root))
     at = AppTest.from_file(str(PKG / "app.py"), default_timeout=120).run()
     assert not at.exception, [e.value for e in at.exception]
-    assert len(at.tabs) == 7
+    assert len(at.tabs) == 8
     assert all(len(t.get("plotly_chart")) >= 1 for t in at.tabs), [t.label for t in at.tabs]
+    in_short = {t.label: [m.value for m in t.markdown if m.value.startswith("**In short**")]
+                for t in at.tabs}
+    assert all(in_short.values()), in_short
+    assert "metrics" in in_short["Compare runs"][0]
     # change filters: one side, a custom move, 5% buckets, one stock
     at.sidebar.radio[0].set_value("up")
     at.sidebar.number_input[0].set_value(1.3)
     at.sidebar.select_slider[0].set_value(0.05)
-    at.sidebar.multiselect(key=None) if False else None
     at.run()
     assert not at.exception, [e.value for e in at.exception]
 

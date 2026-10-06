@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -11,6 +13,7 @@ from .calib import SIDE_UP
 
 PCT = ".0%"
 IDEAL = {"dash": "dash", "color": "grey", "width": 1}
+COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b"]
 
 
 def _layout(fig: go.Figure, title: str, height: int = 460, **kw) -> go.Figure:
@@ -47,12 +50,17 @@ def reliability(g: pd.DataFrame, title: str = "Said vs came true", min_n: int = 
     return _layout(fig, title, height=520)
 
 
-def heatmap(g: pd.DataFrame, title: str = "Deviation (came true - said)", min_n: int = 1
-            ) -> go.Figure:
+def _num(label) -> float:
+    return float(re.search(r"\d+(\.\d+)?", str(label)).group())
+
+
+def heatmap(g: pd.DataFrame, title: str = "Deviation (came true - said)", min_n: int = 1,
+            x: str = "bucket", xtitle: str = "model probability bucket") -> go.Figure:
+    """Events x `x` (probability bucket, or call level), coloured by came true - said."""
     g = g[g["n"] >= min_n]
     order = g.sort_values("move", key=lambda m: m.where(m < 0, 1 + m))["event"].unique()
-    buckets = sorted(g["bucket"].unique(), key=lambda b: float(b.split("%")[0]))
-    piv = lambda col: g.pivot(index="event", columns="bucket", values=col).reindex(
+    buckets = sorted(g[x].unique(), key=_num)
+    piv = lambda col: g.pivot(index="event", columns=x, values=col).reindex(
         index=order, columns=buckets)
     dev, hit, said, n = piv("deviation"), piv("hit_rate"), piv("mean_prob"), piv("n")
     text = (hit.map(lambda v: "" if pd.isna(v) else f"{v:.0%}") + " / "
@@ -66,7 +74,7 @@ def heatmap(g: pd.DataFrame, title: str = "Deviation (came true - said)", min_n:
         hovertemplate="%{y} at %{x}<br>came true / said: %{text}<br>n=%{customdata:,}"
                       "<br>deviation %{z:+.1%}<extra></extra>",
     ))
-    fig.update_xaxes(title="model probability bucket")
+    fig.update_xaxes(title=xtitle, type="category")
     return _layout(fig, title + "  —  red: overconfident, blue: too cautious",
                    height=max(320, 34 * len(order) + 120))
 
@@ -253,3 +261,46 @@ def spread_chart(t: pd.DataFrame, symbol: str) -> go.Figure:
     fig.update_xaxes(title="move size |m| (up: >= +m, down: <= −m)", tickformat=".1%")
     fig.update_yaxes(title="probability", tickformat=PCT, range=[0, 1])
     return _layout(fig, f"{symbol}: tomorrow's probability per move vs history", height=500)
+
+
+def call_heatmap(calls: pd.DataFrame, min_n: int = 1) -> go.Figure:
+    """insights.call_table as event x call level: came true / said per cell."""
+    c = calls.assign(call=[f"P ≥ {v:.0%}" for v in calls["confidence"]])
+    return heatmap(c, "Calls: came true / said", min_n=min_n, x="call", xtitle="call level")
+
+
+def call_chart(roll: pd.DataFrame, title: str = "Calls by side: came true vs said") -> go.Figure:
+    """insights.side_rollup (optionally with a `run` column): one solid came-true line and one
+    dotted said line per side (and run), plus the base rate."""
+    fig = go.Figure()
+    keys = ["run", "side"] if "run" in roll.columns else ["side"]
+    for i, (k, d) in enumerate(roll.groupby(keys, sort=False)):
+        name = " · ".join(f"{x}side" if x in ("up", "down") else str(x)
+                          for x in (k if isinstance(k, tuple) else (k,)))
+        color = COLORS[i % len(COLORS)]
+        fig.add_trace(go.Scatter(
+            x=d["confidence"], y=d["hit_rate"], mode="lines+markers", name=f"{name}: came true",
+            line={"color": color}, customdata=d["n"],
+            hovertemplate="P ≥ %{x:.0%}: came true %{y:.1%} (n=%{customdata:,})<extra></extra>"))
+        fig.add_trace(go.Scatter(x=d["confidence"], y=d["mean_prob"], mode="lines",
+                                 name=f"{name}: said", line={"color": color, "dash": "dot"}))
+        fig.add_trace(go.Scatter(x=d["confidence"], y=d["base_rate"], mode="lines",
+                                 name=f"{name}: base rate",
+                                 line={"color": color, "dash": "dash", "width": 1}))
+    fig.update_xaxes(title="call level: P(event) >= c", tickformat=PCT)
+    fig.update_yaxes(title="rate", tickformat=PCT, range=[0, 1])
+    return _layout(fig, title, height=440)
+
+
+def quantile_chart(qt: pd.DataFrame, title: str = "Quantile calibration: share of actual "
+                                                  "moves below each forecast quantile"
+                   ) -> go.Figure:
+    fig = go.Figure(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", line=IDEAL, name="ideal",
+                               hoverinfo="skip"))
+    fig.add_trace(go.Scatter(
+        x=qt["level"], y=qt["observed"], mode="lines+markers", name="observed",
+        customdata=qt["gap"],
+        hovertemplate="P%{x:.0%}: %{y:.1%} below (gap %{customdata:+.1%})<extra></extra>"))
+    fig.update_xaxes(title="forecast quantile", tickformat=PCT, range=[0, 1])
+    fig.update_yaxes(title="actual moves below it", tickformat=PCT, range=[0, 1])
+    return _layout(fig, title, height=420)

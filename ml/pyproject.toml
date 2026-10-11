@@ -21,6 +21,7 @@ dev = [
 tft-vwap = "tft_vwap.train:main"
 tft-vwap-report = "tft_vwap.report:main"
 tft-vwap-predict = "tft_vwap.predict:main"
+tft-vwap-grade = "tft_vwap.grade:main"
 
 [build-system]
 requires = ["hatchling"]

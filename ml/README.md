@@ -15,6 +15,8 @@ uv run tft-vwap --target vwap                                       # forecast t
 uv run tft-vwap-report runs/<run_id> --symbol AAPL                  # per-stock calibration report
 uv run tft-vwap-predict runs/<run_id> --side up --move 0.01 --confidence 0.7   # tomorrow's screener
 uv run tft-vwap-predict runs/<run_id> --symbol AAPL                 # tomorrow's spread for one stock
+uv run tft-vwap-predict runs/<run_id> --asof 2026-10-02             # forecast a past session (10-05)
+uv run tft-vwap-grade runs/<run_id>                                 # grade forecasts that have happened
 ```
 
 `--panel` defaults to `../out/tft/panel.parquet`. Export with `--include-inference` so the
@@ -158,6 +160,15 @@ its calendar comes from `panel.meta.json["next_session"]`, so export with
   - no flags: count of stocks per event and call level
   - `--symbol X`: X's ladder and full probability spread vs history
   - `--side up|down --move m --confidence c`: screener, every stock with P(event) ≥ c
+- `--asof D` forecasts the panel session after D from the panel cut at D. The decoder's
+  calendar comes from that real next row, so the forecast is what the model would have said on
+  D's evening. Every forecast file has an `asof` column with its reference session.
+- After writing, predict runs `tft-vwap-grade`. For every `forecast_<date>.parquet` whose date
+  is now in the panel, it writes `actuals.parquet`: `date, symbol, actual_move` (vwap(date) /
+  vwap(asof) − 1, both from the same export) and `actual_vwap` (the forecast's `today_vwap` ×
+  (1 + move), so a split in between doesn't distort the grade). The dashboard's Forecast vs
+  actual tab reads it. To grade yesterday's forecast, refresh and re-export the panel, then run
+  `tft-vwap-grade runs/<run_id>`.
 
 ## Outputs
 
@@ -168,6 +179,7 @@ runs/<UTC stamp>-<target>-<N>sym/
   calibration_{signals,quantiles,grid}.csv   # pooled over the test folds
   report/           # tft-vwap-report: grid_*, ladder_*, bias_* CSVs
   forecast_<date>.{parquet,csv}, forecast_<date>_moves.csv   # tft-vwap-predict
+  actuals.parquet   # tft-vwap-grade: date, symbol, actual_move, actual_vwap
   fold_<k>/
     best.ckpt                 # best early-stop checkpoint
     metrics.json              # early-stop + test metrics, test calibration, epochs, timings

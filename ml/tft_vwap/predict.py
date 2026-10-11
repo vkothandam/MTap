@@ -3,6 +3,7 @@
     uv run tft-vwap-predict runs/<run_id>                                  # counts per move / call
     uv run tft-vwap-predict runs/<run_id> --symbol AAPL                    # one stock's spread
     uv run tft-vwap-predict runs/<run_id> --side up --move 0.01 --confidence 0.7   # screener
+    uv run tft-vwap-predict runs/<run_id> --asof 2026-10-02     # forecast a past session, to grade
 
 The checkpoint is only read: no training, no weight updates. Its stored dataset parameters (the
 fitted encoders/normalisers) are applied to the newest panel rows, and one future row per symbol
@@ -12,6 +13,9 @@ bucket came true (report/grid_by_symbol.csv), and the all-stock figure (grid_ove
 
 Writes runs/<run_id>/forecast_<date>.{parquet,csv} (one row per symbol: quantiles, ladder) and
 forecast_<date>_moves.csv (one row per symbol and move: probability + historical hit rates).
+<date> is the forecast session; `asof` is the session whose bars it was made from. --asof D
+cuts the panel at D, so the session after D (already in the panel) can be graded against what
+happened. Every run then refreshes actuals.parquet (see grade.py).
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from .calibration import SIDE_DOWN, SIDE_UP, bucket_labels, bucket_of, ladder
 from .config import KNOWN_REALS, TrainConfig, from_run
 from .dataset import prepare, read_meta
 from .evaluate import prob_below, qcol
+from .grade import grade
 from .report import build_report, event_label
 
 
@@ -53,20 +58,38 @@ def future_rows(df: pd.DataFrame, next_session: dict) -> pd.DataFrame:
     return fut
 
 
+def session_after(df: pd.DataFrame, day_idx: int) -> dict:
+    """The calendar of the session after `day_idx`, read off the panel's own rows there (same
+    keys as meta next_session)."""
+    rows = df[df["day_idx"] == day_idx + 1]
+    if rows.empty:
+        raise ValueError(f"no panel rows on day_idx {day_idx + 1}: nothing to forecast after it")
+    r = rows.iloc[0]
+    return {"date": pd.Timestamp(r["date"]).date().isoformat(), "day_idx": day_idx + 1,
+            **{c: float(r[c]) for c in KNOWN_REALS}}
+
+
 def forecast(run_dir: Path, *, fold: int | None = None, cfg: TrainConfig | None = None,
-             panel: Path | None = None) -> tuple[pd.DataFrame, dict]:
-    """(per-symbol forecast frame with return quantiles + ladder, next_session)."""
+             panel: Path | None = None, asof: str | None = None) -> tuple[pd.DataFrame, dict]:
+    """(per-symbol forecast frame with return quantiles + ladder, next_session). With `asof`,
+    the panel is cut at that session (the latest one on or before it) and the forecast is for
+    the session after it."""
     run_dir = Path(run_dir)
     cfg = cfg or from_run(run_dir, panel=panel)
     fold = latest_fold(run_dir) if fold is None else fold
-    meta = read_meta(cfg.panel)
-    nxt = meta.get("next_session")
-    if not nxt:
-        raise ValueError(f"{cfg.panel}: meta has no next_session; re-export with "
-                         "`sourcing-py etrade export-tft --include-inference`")
-
     df = prepare(pd.read_parquet(cfg.panel), symbols=cfg.symbols, seed=cfg.seed,
                  series_breaks=cfg.series_breaks)
+    if asof is None:
+        nxt = read_meta(cfg.panel).get("next_session")
+        if not nxt:
+            raise ValueError(f"{cfg.panel}: meta has no next_session; re-export with "
+                             "`sourcing-py etrade export-tft --include-inference`")
+    else:
+        on_or_before = df.loc[pd.to_datetime(df["date"]) <= pd.Timestamp(asof), "day_idx"]
+        if on_or_before.empty:
+            raise ValueError(f"--asof {asof} is before the panel starts")
+        nxt = session_after(df, int(on_or_before.max()))
+        df = df[df["day_idx"] < nxt["day_idx"]]
     last = int(df["day_idx"].max())
     active = df.loc[df["day_idx"] == last, "symbol"]
     hist = df[df["symbol"].isin(active) & (df["day_idx"] > last - cfg.encoder_length)]
@@ -90,7 +113,8 @@ def forecast(run_dir: Path, *, fold: int | None = None, cfg: TrainConfig | None 
     out["today_vwap"] = out["symbol"].map(today["today_vwap"])
     r_q = q if cfg.target == "return" else q / out["today_vwap"].to_numpy()[:, None] - 1
     out.insert(0, "date", nxt["date"])
-    out.insert(1, "fold", fold)
+    out.insert(1, "asof", pd.Timestamp(today["date"].iloc[0]).date().isoformat())
+    out.insert(2, "fold", fold)
     for i, level in enumerate(cfg.quantiles):
         out[qcol(level)] = r_q[:, i]  # fractional move vs today's vwap
     for name, move in ladder(r_q, cfg.quantiles, cfg.confidences).items():
@@ -185,6 +209,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--move", type=float, help="screener move size, e.g. 0.01 for 1%%")
     p.add_argument("--confidence", type=float, default=0.7, help="screener minimum probability")
     p.add_argument("--top", type=int, default=50)
+    p.add_argument("--asof", help="forecast the session after this date (YYYY-MM-DD) from the "
+                                  "panel as it stood then (default: after the panel's last day)")
     a = p.parse_args(argv)
     if (a.side is None) != (a.move is None):
         p.error("--side and --move go together")
@@ -193,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     warnings.filterwarnings("ignore", module=r"lightning\..*")
     run_dir = a.run_dir
     cfg = from_run(run_dir, panel=a.panel)
-    fc, nxt = forecast(run_dir, fold=a.fold, cfg=cfg)
+    fc, nxt = forecast(run_dir, fold=a.fold, cfg=cfg, asof=a.asof)
     screen_move = None if a.move is None else abs(a.move) * (1 if a.side == SIDE_UP else -1)
     moves = sorted({*cfg.moves, *([screen_move] if screen_move is not None else [])})
     grid_sym, grid_all = _load_grids(run_dir)
@@ -223,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
             print("\nstocks per event and call level (P(event) >= level)")
             print(_counts(mt, cfg.confidences).to_string())
     print(f"\nwrote {stem}.parquet/.csv and {stem.name}_moves.csv")
+    act = grade(run_dir, cfg.panel)
+    print(f"actuals.parquet: {act['date'].nunique()} forecast day(s) graded, {len(act):,} rows")
     return 0
 
 

@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tft_vwap import calibration, dataset, evaluate, predict, report, train
+from tft_vwap import calibration, dataset, evaluate, grade, predict, report, train
 from tft_vwap.config import TrainConfig, from_run
 
 
@@ -138,6 +138,41 @@ def test_train_smoke_writes_results(panel_path, tmp_path, target, normalizer):
                          "--confidence", "0.0"]) == 0
     moves = pd.read_csv(run_dir / f"forecast_{nxt['date']}_moves.csv")
     assert len(moves) == 6 * 12 and {"hist_hit_rate", "all_hit_rate"} <= set(moves.columns)
+
+    # --asof: forecast a session already in the panel, from the panel as it stood the day before
+    panel = pd.read_parquet(panel_path)
+    asof_day = panel.loc[panel["day_idx"] == 1147, "date"].iloc[0].date().isoformat()
+    assert predict.main([str(run_dir), "--asof", asof_day]) == 0
+    past, pnxt = predict.forecast(run_dir, asof=asof_day)
+    row = panel[panel["day_idx"] == 1148].iloc[0]
+    assert pnxt["day_idx"] == 1148 and pnxt["date"] == row["date"].date().isoformat()
+    assert all(pnxt[c] == float(row[c]) for c in ("day_of_week", "month", "sessions_gap_next"))
+    assert (past["asof"] == asof_day).all()
+    today = panel[panel["day_idx"] == 1147].set_index("symbol")["today_vwap"]
+    assert np.allclose(past["today_vwap"], past["symbol"].map(today))
+    assert hashlib.sha256(ckpt.read_bytes()).hexdigest() == digest
+    act = pd.read_parquet(run_dir / "actuals.parquet")
+    assert set(act["date"]) == {pnxt["date"]}  # tomorrow's forecast isn't gradable yet
+
+
+def test_grade_uses_forecast_basis_and_skips_future_days(tmp_path):
+    panel = pd.DataFrame({"symbol": ["A", "A", "B", "B"],
+                          "date": pd.to_datetime(["2026-10-02", "2026-10-05"] * 2),
+                          "today_vwap": [10.0, 11.0, 20.0, 19.0]})
+    panel.to_parquet(tmp_path / "panel.parquet", index=False)
+    run = tmp_path / "run"
+    run.mkdir()
+    # A's forecast was made before a 2-for-1 split, so its today_vwap is on the old basis (20)
+    pd.DataFrame({"date": "2026-10-05", "asof": "2026-10-02", "symbol": ["A", "B", "C"],
+                  "today_vwap": [20.0, 20.0, 5.0]}).to_parquet(run / "forecast_2026-10-05.parquet")
+    pd.DataFrame({"date": "2026-10-06", "symbol": ["A"], "today_vwap": [11.0]}).to_parquet(
+        run / "forecast_2026-10-06.parquet")
+    out = grade.grade(run, tmp_path / "panel.parquet").set_index("symbol")
+    assert list(out.index) == ["A", "B"]  # C has no bars; 10-06 hasn't happened
+    assert out.loc["A", "actual_move"] == pytest.approx(0.1)
+    assert out.loc["A", "actual_vwap"] == pytest.approx(22.0)
+    assert out.loc["B", "actual_vwap"] == pytest.approx(19.0)
+    assert (run / "actuals.parquet").exists()
 
 
 def test_prob_below_interpolates_and_clamps():

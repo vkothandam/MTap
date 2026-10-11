@@ -1,10 +1,33 @@
 # Copy to settings.toml and fill in. settings.toml is gitignored — never commit secrets.
 # Any value here can also be overridden by an environment variable (see comments).
 
+[storage]
+# The two roots. Env MTAP_DATA_ROOT / MTAP_STATE_ROOT win; the repo .env is the usual
+# place to set them per machine. Defaults: data = repo root, state = ./state.
+# data_root = "/Volumes/mtap/mtap"     # NAS: large write-once parquet
+# state_root = "~/mtap-state"          # local: DuckDB, session, logs, unuploaded segments
+# nas_url = "smb://user@synology.local/mtap"   # env MTAP_NAS_URL
+# Unuploaded feed segments beyond this many GB are reported by `storage check`.
+max_local_segments_gb = 20
+
 [destination]
-# Base directory for emitted parquet/jsonl output. Relative paths resolve from repo root.
-# Override with env OUT_ROOT.
+# Base directory for emitted parquet/jsonl output. Relative paths resolve under the
+# data root (the repo root unless MTAP_DATA_ROOT is set). Override with env OUT_ROOT.
 out_root = "./out"
+
+[intraday]
+# Feeds that publish to Redis mtap:evt:INTRADAY_FEED (env INTRADAY_FEEDS, comma list).
+feeds = ["etrade_watchlist"]
+# Env REDIS_URL.
+redis_url = "redis://127.0.0.1:6379"
+# Storage consumer (sourcing-py intraday store --follow): rows are buffered for up to
+# flush_s seconds / flush_rows rows, fsynced into the open hourly segment, then acked.
+flush_s = 5
+flush_rows = 20000
+# A segment with no new rows for this long is closed and uploaded early.
+idle_close_s = 600
+# How often a failed NAS upload is retried.
+upload_retry_s = 300
 
 [massive]
 # Massive.com market-data REST API.

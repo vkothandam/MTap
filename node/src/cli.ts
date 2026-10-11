@@ -2,6 +2,7 @@
 // CLI entry point:
 //   sourcing-node run <source>    one-shot batch source (fetch -> extract -> write)
 //   sourcing-node serve <service> long-running service (e.g. the E*TRADE scraper)
+import "./common/dotenv.js"; // first: fills process.env from the repo .env
 import { loadSource } from "./common/config.js";
 import { createSource } from "./registry.js";
 import { createService } from "./serviceRegistry.js";

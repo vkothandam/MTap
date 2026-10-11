@@ -20,7 +20,7 @@ def throttle(provider: str, min_interval: float) -> float:
     if min_interval <= 0:
         return 0.0
 
-    state_dir = config.repo_root() / "state" / "rate"
+    state_dir = config.state_root() / "rate"
     state_dir.mkdir(parents=True, exist_ok=True)
     lock_path = state_dir / f"{provider}.lock"
 

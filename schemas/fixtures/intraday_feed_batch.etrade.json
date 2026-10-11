@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "source": "etrade_watchlist",
+  "kind": "snapshot",
+  "ts_utc": "2026-10-14T14:31:02.118Z",
+  "feed_seq": 0,
+  "rows": [
+    {
+      "symbol": "AAPL", "ts_utc": "2026-10-14T14:31:02.118Z", "source": "etrade_watchlist", "kind": "snapshot",
+      "feed_seq": 0, "source_meta": { "watchlist_id": "215565674306", "watchlist": "Experimental" },
+      "price": 273.06, "volume_cum": 1581211, "day_open": 272.5, "prev_close": 273.76,
+      "bid": 273.05, "ask": 273.07, "bid_size": 200, "ask_size": 1400, "vol_10d_src": 37081931
+    },
+    {
+      "symbol": "MSFT", "ts_utc": "2026-10-14T14:31:02.118Z", "source": "etrade_watchlist", "kind": "snapshot",
+      "feed_seq": 0, "source_meta": { "watchlist_id": "215565674306", "watchlist": "Experimental" },
+      "price": 512.1, "volume_cum": 0, "prev_close": 512.1,
+      "bid_size": 0, "ask_size": 0, "vol_10d_src": 21000000
+    }
+  ],
+  "_key": "intraday:poll:0123456789abcdef01234567",
+  "_ts": 1791988262200
+}

@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { REPO_ROOT } from "./config.js";
+import { stateRoot } from "./config.js";
 
 // MTap-internal session store: persists the E*TRADE browser cookies and the
-// stk1/stk2 request headers to state/<scope>/session.json so a login survives
+// stk1/stk2 request headers to <state root>/<scope>/session.json so a login survives
 // restarts. This replaces the `sourcing` scope of MBin's DB-backed SessionStore
 // — MTap now owns the live browser session end to end. state/ is gitignored
 // (the file holds live session material).
@@ -36,7 +36,7 @@ export class SessionStore {
   private cache: EtradeSession | null = null;
 
   constructor(scope = "etrade") {
-    this.path = process.env.SESSION_PATH ?? join(REPO_ROOT, "state", scope, "session.json");
+    this.path = process.env.SESSION_PATH ?? join(stateRoot(), scope, "session.json");
   }
 
   /** Last persisted session, or null if none has been written yet. */

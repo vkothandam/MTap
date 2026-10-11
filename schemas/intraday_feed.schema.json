@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "intraday_feed",
+  "title": "intraday_feed record (canonical, v1)",
+  "description": "One symbol at one feed event, as received. Every intraday feed adapter (E*TRADE watchlist now, Massive WebSocket later) publishes these rows to the Redis stream mtap:evt:INTRADAY_FEED, batched in the envelope under definitions.batch. A feed fills only what it has; anything else is absent or null. See intraday_feed.md for the per-feed field mapping.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["symbol", "ts_utc", "source", "kind"],
+  "properties": {
+    "symbol": { "type": "string", "minLength": 1, "description": "Ticker as the feed reports it." },
+    "ts_utc": { "type": "string", "format": "date-time", "description": "Event time, ISO-8601 UTC with milliseconds. For snapshot feeds this is the poll time." },
+    "source": { "type": "string", "enum": ["etrade_watchlist", "massive_ws", "massive_minute_aggs"], "description": "Which feed produced the row." },
+    "kind": { "type": "string", "enum": ["snapshot", "agg_1s", "agg_1m"], "description": "snapshot: a point-in-time quote poll (cumulative volume). agg_*: an interval aggregate (interval OHLC + volume)." },
+    "feed_seq": { "type": ["integer", "null"], "description": "Per-source batch sequence, monotonic within one adapter process." },
+    "price": { "type": ["number", "null"], "description": "Last trade price (snapshot) or the interval close (agg)." },
+    "open_i": { "type": ["number", "null"], "description": "Interval open (agg feeds only)." },
+    "high_i": { "type": ["number", "null"], "description": "Interval high (agg feeds only)." },
+    "low_i": { "type": ["number", "null"], "description": "Interval low (agg feeds only)." },
+    "volume_cum": { "type": ["number", "null"], "description": "Day's cumulative volume so far." },
+    "volume_i": { "type": ["number", "null"], "description": "Interval volume (agg feeds only)." },
+    "vwap_session": { "type": ["number", "null"], "description": "The feed's own session VWAP so far, if it publishes one." },
+    "vwap_i": { "type": ["number", "null"], "description": "Interval VWAP (agg feeds only)." },
+    "day_open": { "type": ["number", "null"], "description": "Today's official open; null before the open." },
+    "prev_close": { "type": ["number", "null"], "description": "Previous session's close." },
+    "trades_i": { "type": ["integer", "null"], "description": "Trades in the interval (agg feeds only)." },
+    "bid": { "type": ["number", "null"] },
+    "ask": { "type": ["number", "null"] },
+    "bid_size": { "type": ["number", "null"] },
+    "ask_size": { "type": ["number", "null"] },
+    "vol_10d_src": { "type": ["number", "null"], "description": "The feed's own 10-day average volume (E*TRADE MAIN only); a cross-check, not a model input." },
+    "source_meta": { "type": ["object", "null"], "description": "Feed-specific provenance, e.g. {watchlist_id, watchlist}." }
+  },
+  "definitions": {
+    "batch": {
+      "description": "One Redis stream entry: the rows of one poll (E*TRADE) or one second (Massive). The Bus adds _key and _ts.",
+      "type": "object",
+      "required": ["schema_version", "source", "kind", "ts_utc", "rows"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "source": { "type": "string" },
+        "kind": { "type": "string" },
+        "ts_utc": { "type": "string", "format": "date-time" },
+        "feed_seq": { "type": ["integer", "null"] },
+        "rows": { "type": "array", "items": { "$ref": "#" } },
+        "_key": { "type": "string" },
+        "_ts": { "type": "integer" }
+      }
+    }
+  }
+}

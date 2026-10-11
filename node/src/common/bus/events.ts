@@ -7,6 +7,7 @@ export const EVENTS = {
   AUTH_OTP_SUBMITTED: "authOtpSubmitted", // internal to MTap
   SESSION_EXPIRED: "sessionExpired",
   SESSION_REFRESHED: "sessionRefreshed",
+  INTRADAY_FEED: "INTRADAY_FEED", // canonical intraday rows (schemas/intraday_feed.schema.json)
 } as const;
 
 export type EventName = (typeof EVENTS)[keyof typeof EVENTS];

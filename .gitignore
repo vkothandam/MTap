@@ -12,9 +12,13 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# Output data
+# Output data (also the NAS layout when MTAP_DATA_ROOT is the repo root)
 out/
 data/
+/intraday_feed/
+/bars_1m/
+/backup/
+.mtap-data-root
 *.parquet
 *.jsonl
 

@@ -1,0 +1,16 @@
+{
+  "type": "watchlist",
+  "watchlistId": "215584661306",
+  "watchlistName": "MidCap",
+  "csvPrefix": "MC",
+  "_key": "poll:fedcba9876543210fedcba98",
+  "_ts": 1791988270000,
+  "data": {
+    "watchListView": {
+      "columnHeaders": ["Symbol", "Last Price", "Change $", "Change %", "Price Paid", "Date Acquired", "Change since Added %", "Volume"],
+      "entryDetails": [
+        { "entryValuesList": ["AAL", "15.14", "0", "0", "14.96", "12/15/2025", "1.2032085561497325", "36630"] }
+      ]
+    }
+  }
+}

@@ -13,7 +13,7 @@
     "build": "tsc",
     "run-source": "tsx src/cli.ts",
     "serve": "tsx src/cli.ts serve",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test \"src/**/*.test.ts\"",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

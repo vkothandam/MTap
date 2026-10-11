@@ -17,7 +17,7 @@ from . import config
 
 
 def log_path(source: str) -> Path:
-    return config.repo_root() / "state" / "failures" / f"{source}.jsonl"
+    return config.state_root() / "failures" / f"{source}.jsonl"
 
 
 def record(source: str, date_iso: str, error: str) -> None:
@@ -61,7 +61,7 @@ def rewrite(source: str, entries: list[dict]) -> None:
 
 
 def symbol_log_path(scope: str) -> Path:
-    return config.repo_root() / "state" / scope / "failures.jsonl"
+    return config.state_root() / scope / "failures.jsonl"
 
 
 def record_symbol(scope: str, symbol: str, error: str) -> None:

@@ -44,8 +44,8 @@ cp .env.example .env
 > the E*TRADE password and the SMS-gateway app-password. MBin's OAuth *trading*
 > credentials (consumer key/secret) stay in MBin and are **not** needed here.
 
-Secrets are read from the process environment — export them, or launch with Node's
-env-file support: `node --env-file=.env dist/cli.js serve etrade`.
+Secrets are read from the process environment, which is filled from the repo-root `.env`
+at start-up (`src/common/dotenv.ts`; a variable already set in the environment wins).
 
 ## Start a session
 
@@ -78,6 +78,12 @@ The process runs until you stop it. Ctrl-C (SIGINT/SIGTERM) triggers a graceful
 5. Once authenticated it polls on timers — the main watchlist roughly every 2 s,
    midcap roughly every 20 s — refreshes the page about every 5 min, and
    republishes each tick as a `POLLED_DATA` event.
+6. With `etrade_watchlist` in `INTRADAY_FEEDS` (the default), `src/feeds/EtradeWatchlistFeed.ts`
+   maps each watchlist poll to one canonical `INTRADAY_FEED` batch
+   ([schemas/intraday_feed.md](../../../../schemas/intraday_feed.md)) and writes
+   `MTAP_STATE_ROOT/etrade/collector.heartbeat`. The Python storage consumer keeps every
+   row (`sourcing-py intraday store --follow`). On a schedule this all runs from
+   [scripts/schedule](../../../../scripts/README.md).
 
 ## Login + OTP flow
 

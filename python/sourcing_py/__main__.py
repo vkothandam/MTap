@@ -85,12 +85,22 @@ def main(argv: list[str] | None = None) -> int:
         from .news.cli import main as news_main
 
         return news_main(argv[1:])
+    if argv and argv[0] == "storage":
+        from .common.storage import main as storage_main
+
+        return storage_main(argv[1:])
+    if argv and argv[0] == "intraday":
+        from .intraday.cli import main as intraday_main
+
+        return intraday_main(argv[1:])
     if len(argv) < 2 or argv[0] != "run":
         print(
             "usage: sourcing-py run <source> "
             "[--date D | --fromdate D1 [--todate D2] | --retry-failed]\n"
             "       sourcing-py etrade <build-symbols|ingest-eod|fetch|derive-features> [options]\n"
-            "       sourcing-py news <aggregate|analyze|build-daily|run> [options]",
+            "       sourcing-py news <aggregate|analyze|build-daily|run> [options]\n"
+            "       sourcing-py storage <check|init>\n"
+            "       sourcing-py intraday <store --follow|upload --drain|summary|status> [options]",
             file=sys.stderr,
         )
         return 2

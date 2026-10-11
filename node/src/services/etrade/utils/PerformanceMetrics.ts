@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { REPO_ROOT } from "../../../common/config.js";
+import { stateRoot } from "../../../common/config.js";
 import { FileLogger } from "./FileLogger.js";
 import { TimeUtils } from "./TimeUtils.js";
 
@@ -8,7 +8,7 @@ import { TimeUtils } from "./TimeUtils.js";
 // scrape/utils/PerformanceMetrics.js. Not on the core scraper path (used by the
 // industry scraper / transformers); ported for parity.
 
-const DEFAULT_OUTPUT_DIR = join(REPO_ROOT, "state", "etrade", "metrics");
+const DEFAULT_OUTPUT_DIR = join(stateRoot(), "etrade", "metrics");
 
 export interface PerformanceMetricsOptions {
   moduleName?: string;

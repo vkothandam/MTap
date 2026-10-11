@@ -18,6 +18,8 @@ import { ENV, hasLoginCredentials } from "./env.js";
 import { OtpCoordinator } from "./otp.js";
 import { OtpServer } from "./otpServer.js";
 import { isDebugEnabled, agentLog } from "./debug.js";
+import { intradayFeeds } from "../../common/config.js";
+import { EtradeWatchlistFeed } from "../../feeds/EtradeWatchlistFeed.js";
 
 // The long-running E*TRADE scraper, ported from MBin scrape/index.js
 // (ETradeSourcer) to an MTap Service. It owns the only E*TRADE browser session:
@@ -96,6 +98,8 @@ export class EtradeService extends Service {
 
   private unsubscribeSessionExpired: (() => void) | null = null;
   private started = false;
+  // Canonical INTRADAY_FEED adapter over our own POLLED_DATA (INTRADAY_FEEDS=etrade_watchlist).
+  private intradayFeed: EtradeWatchlistFeed | null = null;
 
   constructor() {
     super();
@@ -134,6 +138,12 @@ export class EtradeService extends Service {
       );
     }
 
+    // Subscribe the intraday feed adapter before the first poll is published.
+    if (intradayFeeds().includes("etrade_watchlist")) {
+      this.intradayFeed = new EtradeWatchlistFeed(this.bus).start();
+      this.logger.info("Intraday feed adapter on: POLLED_DATA -> INTRADAY_FEED");
+    }
+
     // Bring up the OTP entry page before login so a challenge can be answered.
     await this.otpServer.start();
 
@@ -154,6 +164,8 @@ export class EtradeService extends Service {
       this.unsubscribeSessionExpired = null;
     }
     this.stopMonitoring();
+    this.intradayFeed?.stop();
+    this.intradayFeed = null;
     this.otpCoordinator.cancel("service stopping");
     await this.otpServer.stop();
     if (this.browser) {

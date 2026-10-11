@@ -2,8 +2,15 @@
 
 Layering, highest priority first:
   1. environment variables (OUT_ROOT, MASSIVE_API_KEY, ...)
-  2. shared/config/settings.toml   (gitignored — real secrets live here)
-  3. built-in defaults
+  2. the repo-root .env      (gitignored; fills only variables not already set)
+  3. shared/config/settings.toml   (gitignored — real secrets live here)
+  4. built-in defaults
+
+Two storage roots (see .env.example):
+  MTAP_DATA_ROOT   large write-once parquet (e.g. a NAS mount); out/ lives under it
+  MTAP_STATE_ROOT  local small state: DuckDB stores, session, locks, logs, segments
+Both default to the repo layout (./ and ./state), so an unconfigured checkout works
+exactly as before.
 """
 
 from __future__ import annotations
@@ -21,6 +28,41 @@ from .errors import ConfigError
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _REGISTRY = _REPO_ROOT / "shared" / "config" / "sources.json"
 _SETTINGS = _REPO_ROOT / "shared" / "config" / "settings.toml"
+_DOTENV = _REPO_ROOT / ".env"
+DATA_ROOT_MARKER = ".mtap-data-root"
+
+
+def _parse_dotenv(text: str) -> dict[str, str]:
+    """KEY=VALUE lines; '#' comments, optional `export `, optional surrounding quotes."""
+    out: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        out[key] = value
+    return out
+
+
+def load_dotenv(path: Path = _DOTENV) -> None:
+    """Fill os.environ from the repo .env without overriding what is already set.
+
+    Node (common/dotenv.ts) and the schedule scripts read the same file, so one .env
+    per machine configures every runtime.
+    """
+    if path.exists():
+        for key, value in _parse_dotenv(path.read_text()).items():
+            os.environ.setdefault(key, value)
+
+
+load_dotenv()
 
 
 @dataclass(frozen=True)
@@ -45,14 +87,85 @@ def settings() -> dict:
     return {}
 
 
-def out_root() -> Path:
-    """Destination base dir. env OUT_ROOT > [destination].out_root > ./out."""
-    env = os.environ.get("OUT_ROOT")
-    raw = env or settings().get("destination", {}).get("out_root")
+def _root(env_var: str, key: str, default: Path) -> Path:
+    raw = os.environ.get(env_var) or settings().get("storage", {}).get(key)
     if not raw:
-        return _REPO_ROOT / "out"
-    path = Path(raw)
+        return default
+    path = Path(raw).expanduser()
     return path if path.is_absolute() else _REPO_ROOT / path
+
+
+def data_root() -> Path:
+    """Large write-once data (NAS). env MTAP_DATA_ROOT > [storage].data_root > repo root."""
+    return _root("MTAP_DATA_ROOT", "data_root", _REPO_ROOT)
+
+
+def state_root() -> Path:
+    """Small local state. env MTAP_STATE_ROOT > [storage].state_root > ./state."""
+    return _root("MTAP_STATE_ROOT", "state_root", _REPO_ROOT / "state")
+
+
+def state_path(raw: str | Path) -> Path:
+    """Resolve a configured path. Absolute paths stand; a relative path under ./state/
+    resolves under state_root(); any other relative path resolves from the repo root."""
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    parts = path.parts[1:] if path.parts[:1] == (".",) else path.parts
+    if parts[:1] == ("state",):
+        return state_root().joinpath(*parts[1:])
+    return _REPO_ROOT / path
+
+
+def out_root() -> Path:
+    """Destination base dir. env OUT_ROOT > [destination].out_root > ./out, where a
+    relative path resolves under data_root() (the repo root unless MTAP_DATA_ROOT is set)."""
+    raw = os.environ.get("OUT_ROOT") or settings().get("destination", {}).get("out_root") or "out"
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else data_root() / path
+
+
+def storage_config() -> dict:
+    """[storage]: the two roots (above) plus NAS and local-buffer settings."""
+    section = settings().get("storage", {})
+    return {
+        "data_root": data_root(),
+        "state_root": state_root(),
+        "nas_url": os.environ.get("MTAP_NAS_URL") or section.get("nas_url") or "",
+        # Unuploaded feed segments beyond this size are an alert (the NAS has been down a while).
+        "max_local_segments_gb": float(
+            os.environ.get("MTAP_MAX_LOCAL_SEGMENTS_GB") or section.get("max_local_segments_gb") or 20
+        ),
+    }
+
+
+def intraday_config() -> dict:
+    """[intraday]: which feeds run, and how the storage consumer writes them.
+
+    env > [intraday] > defaults. `feeds` is a comma list in env INTRADAY_FEEDS.
+    """
+    section = settings().get("intraday", {})
+    feeds_env = os.environ.get("INTRADAY_FEEDS")
+    feeds = (
+        [f.strip() for f in feeds_env.split(",") if f.strip()]
+        if feeds_env
+        else section.get("feeds") or ["etrade_watchlist"]
+    )
+    return {
+        "feeds": feeds,
+        "primary_source": os.environ.get("INTRADAY_PRIMARY_SOURCE")
+        or section.get("primary_source")
+        or feeds[0],
+        "redis_url": os.environ.get("REDIS_URL") or section.get("redis_url") or "redis://127.0.0.1:6379",
+        # Rows buffered in memory before a flush to the open segment (each flush is fsynced,
+        # then the stream entries are acked).
+        "flush_rows": int(os.environ.get("INTRADAY_FLUSH_ROWS") or section.get("flush_rows") or 20000),
+        "flush_s": float(os.environ.get("INTRADAY_FLUSH_S") or section.get("flush_s") or 5),
+        # An open segment with no new rows for this long is closed and uploaded early
+        # (end of day, collector stopped).
+        "idle_close_s": float(os.environ.get("INTRADAY_IDLE_CLOSE_S") or section.get("idle_close_s") or 600),
+        "upload_retry_s": float(section.get("upload_retry_s") or 300),
+    }
 
 
 def massive_config() -> dict:
@@ -90,18 +203,12 @@ def etrade_config() -> dict:
     # (stocks_per_sec * calls/stock), so workers just supply enough parallelism to reach
     # that ceiling despite per-request network latency. Default 10; env/settings override.
     workers = os.environ.get("ETRADE_WORKERS") or section.get("workers") or 10
-    db_raw = (
-        os.environ.get("ETRADE_DB_PATH")
-        or section.get("db_path")
-        or str(_REPO_ROOT / "state" / "etrade" / "fundamentals.duckdb")
+    db_path = state_path(
+        os.environ.get("ETRADE_DB_PATH") or section.get("db_path") or "state/etrade/fundamentals.duckdb"
     )
-    db_path = Path(db_raw)
-    if not db_path.is_absolute():
-        db_path = _REPO_ROOT / db_path
-    session_raw = os.environ.get("SESSION_PATH") or section.get("session_path")
-    session_path = Path(session_raw) if session_raw else _REPO_ROOT / "state" / "etrade" / "session.json"
-    if not session_path.is_absolute():
-        session_path = _REPO_ROOT / session_path
+    session_path = state_path(
+        os.environ.get("SESSION_PATH") or section.get("session_path") or "state/etrade/session.json"
+    )
     # Sibling MBin repo's SQLite trading DB — the source of the sector/industry mapping
     # (Industries + Symbol_Industry tables). Default assumes MBin/ next to this repo.
     trading_raw = (
@@ -134,14 +241,9 @@ def news_config() -> dict:
     db_path, ATTACHed read-only), so no separate symbol store is configured here.
     """
     section = settings().get("news", {})
-    db_raw = (
-        os.environ.get("NEWS_DB_PATH")
-        or section.get("db_path")
-        or str(_REPO_ROOT / "state" / "news" / "news.duckdb")
+    db_path = state_path(
+        os.environ.get("NEWS_DB_PATH") or section.get("db_path") or "state/news/news.duckdb"
     )
-    db_path = Path(db_raw)
-    if not db_path.is_absolute():
-        db_path = _REPO_ROOT / db_path
     requests_per_sec = (
         os.environ.get("NEWS_REQUESTS_PER_SEC") or section.get("requests_per_sec") or 2
     )

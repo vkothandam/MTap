@@ -23,6 +23,13 @@ type StreamRead = Array<{ name: string; messages: StreamEntry[] }> | null;
 const STREAM_PREFIX = "mtap:evt:";
 const REPLY_EVENT = "__reply__";
 const DEFAULT_MAXLEN = 5000;
+// Per-stream length caps, sized so Redis (RAM only, no persistence) stays small.
+// INTRADAY_FEED: ~0.55 entries/s across both watchlists (mostly ~0.2 MB MAIN batches),
+// so 4000 ≈ the last two hours (~0.8 GB of the 2 GB cap): the window the durable
+// `storage` consumer can fall behind and still catch up.
+// POLLED_DATA entries are raw watchlist responses (~0.3 MB); MBin consumes them live.
+// Override any stream with env REDIS_STREAM_MAXLEN_<EVENT>.
+const EVENT_MAXLEN: Record<string, number> = { INTRADAY_FEED: 4000, POLLED_DATA: 300 };
 const READ_COUNT = 50;
 const BLOCK_MS = 5000;
 const RECONNECT_BACKOFF_MS = 500;
@@ -68,6 +75,12 @@ export class RedisBus implements Transport {
     });
   }
 
+  private maxLenFor(event: string): number {
+    const env = Number(process.env[`REDIS_STREAM_MAXLEN_${event}`]);
+    if (Number.isFinite(env) && env > 0) return env;
+    return EVENT_MAXLEN[event] ?? this.maxLen;
+  }
+
   publish(event: string, payload: BusMessage): void {
     const key = streamKey(event);
     this.ready
@@ -76,7 +89,7 @@ export class RedisBus implements Transport {
           key,
           "*",
           { data: JSON.stringify(payload) },
-          { TRIM: { strategy: "MAXLEN", strategyModifier: "~", threshold: this.maxLen } },
+          { TRIM: { strategy: "MAXLEN", strategyModifier: "~", threshold: this.maxLenFor(event) } },
         ),
       )
       .catch((err: Error) => console.error(`[RedisBus] publish ${event} failed:`, err.message));
@@ -127,6 +140,12 @@ export class RedisBus implements Transport {
       } catch (err) {
         if (sub.stopped || this.stopped) break;
         console.error(`[RedisBus] read ${event} failed:`, (err as Error).message);
+        // Redis keeps nothing on disk: after a restart the stream and group are gone.
+        if (String((err as Error).message).includes("NOGROUP")) {
+          await this.ensureGroup(conn, key, group, { broadcast, replay }).catch((e: Error) =>
+            console.error(`[RedisBus] re-creating group ${key}/${group} failed:`, e.message),
+          );
+        }
         await sleep(RECONNECT_BACKOFF_MS);
         continue;
       }

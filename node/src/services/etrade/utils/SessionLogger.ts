@@ -1,6 +1,6 @@
 import { createWriteStream, existsSync, mkdirSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
-import { REPO_ROOT } from "../../../common/config.js";
+import { stateRoot } from "../../../common/config.js";
 import { isDebugEnabled } from "../debug.js";
 import { TimeUtils } from "./TimeUtils.js";
 
@@ -8,7 +8,7 @@ import { TimeUtils } from "./TimeUtils.js";
 // keepalive) monitoring. Ported from MBin scrape/utils/SessionLogger.js.
 // Writes to state/etrade/logs/session-YYYY-MM-DD.log.
 
-const DEFAULT_LOG_DIR = join(REPO_ROOT, "state", "etrade", "logs");
+const DEFAULT_LOG_DIR = join(stateRoot(), "etrade", "logs");
 
 export interface SessionLoggerOptions {
   logDir?: string;

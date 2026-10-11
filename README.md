@@ -34,6 +34,7 @@ schemas/          language-neutral output contract (the heart of the repo)
 python/           Python sources + shared common lib (uv)
 node/             Node.js sources + shared common lib (TypeScript)
 shared/config/    source registry, credential layout (no secrets)
+scripts/          new-Mac setup, LaunchAgents + wake/sleep schedule, NAS mount (scripts/README.md)
 docs/             generated reference — see database-schema.md (DuckDB ER diagrams)
 ```
 

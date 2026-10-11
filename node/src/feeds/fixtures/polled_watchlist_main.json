@@ -1,0 +1,18 @@
+{
+  "type": "watchlist",
+  "watchlistId": "215565674306",
+  "watchlistName": "Experimental",
+  "csvPrefix": "",
+  "_key": "poll:0123456789abcdef01234567",
+  "_ts": 1791988262118,
+  "data": {
+    "watchListView": {
+      "columnHeaders": ["Symbol", "Actions", "Volume", "Ask", "Bid", "Ask Size", "Bid Size", "Qty", "Open", "Previous Close", "Change %", "10 Day Volume", "Last Trade", "Day's Gain %"],
+      "columnValues": [
+        { "entryValuesList": ["AAPL", "", "1,581,211", "273.07", "273.05", "1400", "200", "100", "272.5", "273.76", "-0.3%", "37081931", "273.06", "0"] },
+        { "entryValuesList": ["MSFT", "", "0", "--", "--", "0", "0", "0", "0", "512.10", "0", "21000000", "512.10", "0"] },
+        { "entryValuesList": ["", "", "1", "1", "1", "1", "1", "1", "1", "1", "1", "1", "1", "1"] }
+      ]
+    }
+  }
+}

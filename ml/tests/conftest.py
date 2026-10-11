@@ -40,15 +40,24 @@ def synthetic_panel(n_symbols=6, n_days=150, start=1000, seed=0, gap_symbol="S1"
     df["transactions_per_volume"] = rng.uniform(0.001, 0.02, len(df))
     df["daily_sentiment"] = df["sentiment_volume"] = df["has_news"] = 0.0
     df["is_10k"] = df["is_10q"] = 0
-    # a filing every 63 sessions, staggered by symbol; nothing filed before the first one
+    # a results release every 63 sessions, staggered by symbol; none before the first one.
+    # The estimate runs a session early, so the exact and point-in-time windows differ.
     since = (df["day_idx"] + 7 * df["symbol"].str[1:].astype(int)) % 63
     first = df["day_idx"] - since >= start
-    df["days_since_filing"] = since.where(first)
-    df["days_to_filing_est"] = (63 - since).where(first)
-    df["results_window_pit"] = np.select(
-        [~first, since == 0, since <= 3, since <= 15, 63 - since <= 1, 63 - since <= 10],
-        ["Normal_Trading", "Earnings_Day", "Post_Earnings_Reaction", "Post_Earnings_Drift",
-         "Earnings_Eve", "Pre_Earnings_Runup"], "Normal_Trading")
+    df["days_since_results"] = since.where(first)
+    df["days_to_results"] = 63 - since
+    df["days_to_results_is_est"] = 0
+    df["days_to_results_est"] = (62 - since).where(first)
+
+    def window(till):
+        return np.select(
+            [first & (since == 0), first & (since <= 3), first & (since <= 15),
+             till.between(2, 10), till.between(-10, 1)],
+            ["Earnings_Day", "Post_Earnings_Reaction", "Post_Earnings_Drift",
+             "Pre_Earnings_Runup", "Earnings_Eve"], "Normal_Trading")
+
+    df["results_window"] = window(df["days_to_results"])
+    df["results_window_pit"] = window(df["days_to_results_est"])
     df["is_10q"] = (first & (since == 0)).astype(int)
     return df
 
@@ -68,5 +77,5 @@ def panel_path(tmp_path, panel_df):
            "month": ((last + 1) // 21) % 12 + 1, "is_month_end": 0, "is_quarter_end": 0,
            "sessions_gap_next": 1}
     (tmp_path / "panel.meta.json").write_text(
-        json.dumps({"schema_version": 2, "next_session": nxt}))
+        json.dumps({"schema_version": 3, "next_session": nxt}))
     return path

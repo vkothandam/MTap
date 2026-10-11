@@ -5,13 +5,22 @@ One row per (symbol, day_idx) over a liquid common-stock/ADR universe, with spli
 The Parquet file plus its meta sidecar is the ONLY contract with the downstream ML code.
 
 Leakage rule: every input column is known at the close of day t. The forward VWAPs other
-than the target (vwap_nx_10d / vwap_end_week / vwap_nx_qtr) and results_window (whose
-pre-earnings buckets come from an upcoming filing date) are deliberately not exported. The
-earnings window is exported in its point-in-time form instead: results_window_pit,
-days_since_filing and days_to_filing_est use only the filings made by day t, with the next
-filing date estimated from the year-ago one (NULL when a symbol has no filing yet).
+than the target (vwap_nx_10d / vwap_end_week / vwap_nx_qtr) are deliberately not exported.
 
-Schema 2 added results_window_pit, days_since_filing and days_to_filing_est.
+The earnings windows come in two forms (see features.py, results_announcements):
+  - results_window, days_since_results, days_to_results, days_to_results_is_est: the pre
+    windows use the actual date of the next scheduled results release. Companies announce
+    those dates weeks ahead, so in practice they are known on day t; where the next release
+    is not in the data yet (the latest quarter, the inference row) days_to_results falls
+    back to the estimate and days_to_results_is_est = 1.
+  - results_window_pit, days_to_results_est: strictly from releases made by day t, the next
+    date estimated from the year-ago release.
+days_since_results is shared. The day counts are NULL when a symbol has no release yet
+(and nothing to estimate from); days_to_results counts to the first release before it.
+
+Schema 2 added results_window_pit and the filing-based day counts. Schema 3 dates the
+windows from the 8-K results releases instead of the 10-K/10-Q filings, renames the day
+counts and adds results_window, days_to_results and days_to_results_is_est.
 """
 
 from __future__ import annotations
@@ -30,7 +39,7 @@ from ..news import db as news_db
 from ..utils import trading_calendar as tc
 from . import db
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _DEFAULTS = {
     "issue_types": ("CS", "DR"),
@@ -92,7 +101,8 @@ _PANEL_SQL = """
 CREATE OR REPLACE TEMP TABLE _panel AS
 WITH adj AS (
     SELECT symbol, date, day_idx, transactions, vwap_nx_1d, vwap_pct_prev_day, is_10k, is_10q,
-        results_window_pit, days_since_filing, days_to_filing_est,
+        results_window, days_since_results, days_to_results, days_to_results_is_est,
+        results_window_pit, days_to_results_est,
         open * f AS open, high * f AS high, low * f AS low, close * f AS close,
         vwap * f AS vwap, volume / f AS volume
     FROM (SELECT *, COALESCE(split_factor, 1.0) AS f FROM daily_bars WHERE day_idx IS NOT NULL)
@@ -135,9 +145,12 @@ SELECT
     (COALESCE(n.n_articles, 0) > 0)::SMALLINT      AS has_news,
     b.is_10k,
     b.is_10q,
+    b.results_window,
+    b.days_since_results,
+    b.days_to_results,
+    b.days_to_results_is_est,
     b.results_window_pit,
-    b.days_since_filing,
-    b.days_to_filing_est
+    b.days_to_results_est
 FROM bars b
 JOIN universe u ON u.symbol = b.symbol
 JOIN symbols s ON s.symbol = b.symbol

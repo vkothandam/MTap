@@ -11,7 +11,11 @@ export step. Schema:
                  flags, results_window classification, and forward VWAP aggregates.
   fundamentals — long/tidy: one row per (statement, period, fiscal_end, line_item);
                  dedupes the repeated column labels that verbose JSON would carry.
-  sec_filings  — one row per filing (10-K / 10-Q).
+  sec_filings  — one row per filing (10-K / 10-Q), from E*TRADE.
+  sec_edgar_tickers / sec_edgar_filings — SEC EDGAR ticker -> CIK map and each company's
+                 8-K / 10-K / 10-Q / 20-F / 40-F filings with acceptance times (edgar.py).
+  results_announcements — derived: one row per financial-results release and the session
+                 that reacts to it (features.py).
   trading_calendar — date dimension: one row per NYSE (XNYS) session with a global,
                      contiguous day_idx (1 = first session >= 2020-01-01). The source of
                      truth for daily_bars.day_idx; built by etrade/features.py.
@@ -94,10 +98,12 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     day_idx              BIGINT,    -- global trading-day index (-> trading_calendar.date)
     is_10k               SMALLINT,  -- 1 on the (snapped) trading day of a 10-K filing, else 0
     is_10q               SMALLINT,  -- 1 on the (snapped) trading day of a 10-Q filing, else 0
-    results_window       TEXT,      -- earnings-window class relative to nearest filing (t); hindsight
-    days_since_filing    INTEGER,   -- sessions since the latest 10-K/10-Q filed by this day (0 = filing day)
-    days_to_filing_est   INTEGER,   -- sessions to the expected next 10-K/10-Q (year-ago + 364d; < 0 overdue)
-    results_window_pit   TEXT,      -- results_window from the two above: known at this day's close
+    results_window       TEXT,      -- earnings window vs the results releases (results_announcements)
+    days_since_results   INTEGER,   -- sessions since the latest release by this day (0 = release session)
+    days_to_results      INTEGER,   -- sessions to the next scheduled release; the estimate if not in the data yet
+    days_to_results_is_est SMALLINT, -- 1 when days_to_results is the estimate
+    days_to_results_est  INTEGER,   -- sessions to the expected next release (year-ago + 364d; < 0 overdue)
+    results_window_pit   TEXT,      -- results_window from days_since_results + days_to_results_est
     vwap_nx_1d           DOUBLE,    -- vol-weighted vwap over the next 1 trading day
     vwap_nx_10d          DOUBLE,    -- vol-weighted vwap over the next 10 trading days
     vwap_end_week        DOUBLE,    -- current day .. last session of current ISO week (incl.)
@@ -149,6 +155,39 @@ CREATE TABLE IF NOT EXISTS sec_filings (
     fetched_at   TIMESTAMP,
     PRIMARY KEY (xid, form_type, html_doc_key)
 );
+
+CREATE TABLE IF NOT EXISTS sec_edgar_tickers (
+    symbol     TEXT PRIMARY KEY,  -- = symbols.symbol
+    cik        BIGINT,            -- SEC Central Index Key (tickers can share one: GOOG/GOOGL)
+    sec_ticker TEXT,              -- as SEC writes it, e.g. 'BRK-B' for BRK.B
+    title      TEXT,              -- SEC company name
+    fetched_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sec_edgar_filings (
+    cik         BIGINT,
+    accession   TEXT,       -- e.g. '0000320193-26-000071'
+    form        TEXT,       -- '8-K' | '10-K' | '10-Q' | '20-F' | '40-F' (+ '/A' amendments)
+    filing_date DATE,       -- EDGAR filing date
+    report_date DATE,       -- 8-K: event date; 10-K/10-Q: period end
+    accepted_at TIMESTAMP,  -- acceptance time (New York) from the filing's header; 8-K results releases only
+    items       TEXT,       -- 8-K item codes, e.g. '2.02,9.01' (2.02 = results release)
+    primary_doc TEXT,       -- main document file name in the filing
+    fetched_at  TIMESTAMP,
+    PRIMARY KEY (cik, accession)
+);
+
+CREATE TABLE IF NOT EXISTS results_announcements (
+    symbol      TEXT,
+    day_idx     BIGINT,     -- the session that first reacts to the release (t = 0)
+    date        DATE,       -- that session's date
+    source      TEXT,       -- '8-K 2.02' | '10-K' | '10-Q' (EDGAR) | 'etrade 10-K' | 'etrade 10-Q'
+    scheduled   BOOLEAN,    -- the quarter's results release; false = an extra 2.02 (e.g. preliminary)
+    accepted_at TIMESTAMP,  -- EDGAR acceptance time (New York); NULL for E*TRADE dates
+    timing      TEXT,       -- 'before_open' | 'market_hours' | 'after_close'; NULL if unknown
+    accession   TEXT,
+    PRIMARY KEY (symbol, day_idx)
+);
 """
 
 # Additive column migrations for DBs created before a column existed. DuckDB's
@@ -172,9 +211,14 @@ _MIGRATIONS = (
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS vwap_pct_prev_day DOUBLE",
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS features_computed_at TIMESTAMP",
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS split_factor DOUBLE",
-    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS days_since_filing INTEGER",
-    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS days_to_filing_est INTEGER",
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS results_window_pit TEXT",
+    # Earnings windows moved from 10-K/10-Q filing dates to the results releases.
+    "ALTER TABLE daily_bars DROP COLUMN IF EXISTS days_since_filing",
+    "ALTER TABLE daily_bars DROP COLUMN IF EXISTS days_to_filing_est",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS days_since_results INTEGER",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS days_to_results INTEGER",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS days_to_results_is_est SMALLINT",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS days_to_results_est INTEGER",
 )
 
 

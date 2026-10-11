@@ -187,6 +187,33 @@ def news_config() -> dict:
     }
 
 
+def edgar_config() -> dict:
+    """SEC EDGAR (sourcing_py/etrade/edgar.py), with env overrides.
+
+    SEC asks every client to send a User-Agent naming the requester and a contact email,
+    and to stay under 10 requests/second; it blocks clients that don't.
+    """
+    section = settings().get("edgar", {})
+    user_agent = (
+        os.environ.get("EDGAR_USER_AGENT")
+        or section.get("user_agent")
+        or "MTap vijayan.kothandaraman@gmail.com"
+    )
+    requests_per_sec = os.environ.get("EDGAR_REQUESTS_PER_SEC") or section.get("requests_per_sec") or 8
+    return {
+        "user_agent": user_agent,
+        "requests_per_sec": min(float(requests_per_sec), 10.0),
+        "workers": int(os.environ.get("EDGAR_WORKERS") or section.get("workers") or 4),
+        "tickers_url": section.get("tickers_url") or "https://www.sec.gov/files/company_tickers.json",
+        "archives_url": (
+            section.get("archives_url") or "https://www.sec.gov/Archives/edgar/data"
+        ).rstrip("/"),
+        "submissions_url": (
+            section.get("submissions_url") or "https://data.sec.gov/submissions"
+        ).rstrip("/"),
+    }
+
+
 def load_source(name: str) -> SourceConfig:
     registry = json.loads(_REGISTRY.read_text())
     sources = registry.get("sources", {})

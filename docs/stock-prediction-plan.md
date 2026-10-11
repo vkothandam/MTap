@@ -50,10 +50,12 @@ land). All work is set-based SQL in one transaction.
 - **`is_10k` / `is_10q`** — 1 on the trading day a 10-K/10-Q was filed (the announcement day,
   t=0); a filing landing on a weekend/holiday snaps forward to the next session. This is the
   materialized announcement-date signal that §5.2's as-of join relies on.
-- **`results_window`** — earnings-window classification relative to the **nearest** filing t
+- **`results_window`** — earnings-window classification relative to a results announcement t
   (offsets in trading days): `Pre_Earnings_Runup` (t−10..t−2), `Earnings_Eve` (t−1),
   `Earnings_Day` (t=0), `Post_Earnings_Reaction` (t+1..t+3), `Post_Earnings_Drift` (t+4..t+15),
-  else `Normal_Trading`. Ties in |offset| resolve toward the upcoming filing.
+  else `Normal_Trading`. Since 2026-10 the announcements are the SEC 8-K item 2.02 results
+  releases (`fetch-edgar`, `results_announcements`), not the 10-K/10-Q filings; see
+  `python/sourcing_py/etrade/README.md` and `ml/FEATURES.md` §6.
 - **Forward VWAP aggregates** (volume-weighted `SUM(vwap*volume)/SUM(volume)`): `vwap_nx_1d`
   (next trading day), `vwap_nx_10d` (next 10 trading days), `vwap_end_week` (current day
   through the last session of the current ISO week), `vwap_nx_qtr` (current day through the

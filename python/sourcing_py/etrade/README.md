@@ -170,11 +170,13 @@ Reference full run (2026-08, 15,886 symbols, single bearer token, `ETRADE_STOCKS
 
 Compute the calendar-aligned, point-in-time feature columns the downstream TFT panel needs
 and write them back onto `daily_bars`. Depends on Phase 1a bars (all four VWAPs, `day_idx`)
-and Phase 2 filings (the 10-K/10-Q flags, `results_window`, `vwap_nx_qtr`).
+and Phase 2 filings (the 10-K/10-Q flags, `vwap_nx_qtr`), plus the SEC EDGAR results releases
+(the earnings windows).
 
 ```bash
 cd python
 uv run sourcing-py etrade fetch-splits                       # Massive splits -> stock_splits (~40s free tier)
+uv run sourcing-py etrade fetch-edgar                        # SEC filings + release times (see below)
 uv run sourcing-py etrade derive-features                    # all symbols
 uv run sourcing-py etrade derive-features --symbols GOOGL,AAPL   # scope to a subset
 ```
@@ -198,6 +200,41 @@ Known gap: in a few cases Massive's own adjustment missed a split. The download-
 can't detect these. As of 2026-10-04 there were 12, all but 2 of them delisted or renamed
 tickers. In the CS universe the two are BVC (2026-01-05) and CLBK (2026-07-21).
 
+**Results releases (SEC EDGAR).** A company's earnings press release is furnished on an
+8-K with item 2.02 ("Results of Operations and Financial Condition"), usually days or weeks
+before the 10-K/10-Q. `fetch-edgar` maps every CS/DR symbol to its SEC CIK
+(`company_tickers.json`; SEC writes BRK-B for our BRK.B) and stores each company's 8-K,
+10-K, 10-Q, 20-F and 40-F filings (with amendments) from 400 days before the first bar
+(`data.sec.gov/submissions`, incl. the older history files). For every 8-K with item 2.02 it
+then fetches the acceptance time from the filing's EDGAR header (`<ACCEPTANCE-DATETIME>`, New
+York time). That is one small request per release, ~1 hour for the full universe the first
+time; later runs only fetch the new ones. The submissions JSON's own `acceptanceDateTime` is
+not used: it is labelled UTC but for some filings is Eastern time plus twice the offset.
+
+- SEC requires a User-Agent with a contact email and at most 10 requests/second:
+  `[edgar] user_agent / requests_per_sec / workers` in `settings.toml` (or
+  `EDGAR_USER_AGENT`, `EDGAR_REQUESTS_PER_SEC`, `EDGAR_WORKERS`). Defaults: 8 req/s, 4 workers.
+- `--symbols A,B` refreshes a subset; `--since YYYY-MM-DD` changes the history start.
+- Exits 1 if any company or release time failed to fetch; re-running retries just those.
+- ADRs that file 6-K/20-F (no 2.02) and preferreds have no releases; see the fallbacks below.
+
+`derive-features` turns them into **`results_announcements`**, one row per (symbol, results
+session):
+
+- **t = 0** is the session that first trades on the news: the acceptance day's session if
+  accepted before the 16:00 close, otherwise the next session (a Friday-evening release reacts
+  on Monday). `timing` is `before_open` (< 09:30), `market_hours` or `after_close`. Without a
+  fetched time the filing date's session is used.
+- **Scheduled vs unscheduled.** A release belongs to the first 10-K/10-Q filed from one
+  session before it to 50 sessions after it. The last release of each group is the quarter's
+  scheduled results; earlier ones (preliminary results, guidance updates under 2.02) are
+  `scheduled = false`. Only scheduled releases are anticipated by the exact pre windows
+  (`days_to_results`). Whether a release was the scheduled one is only known from later
+  filings, so the point-in-time estimate doesn't use it.
+- **Fallbacks:** a 10-K/10-Q that no release belongs to is its own announcement (source
+  `10-K`/`10-Q`); a symbol with no EDGAR filings at all uses E*TRADE's `sec_filings` dates
+  (source `etrade 10-K`/`etrade 10-Q`).
+
 The trading-day grid comes from the generic `sourcing_py/utils/trading_calendar.py` helper
 (wraps `exchange_calendars`' authoritative **XNYS** calendar), materialized into the
 `trading_calendar` dimension table. Columns written on `daily_bars`:
@@ -206,21 +243,26 @@ The trading-day grid comes from the generic `sourcing_py/utils/trading_calendar.
   2020-01-01); shared across symbols, the source of truth for cross-symbol calendar alignment.
 - **`is_10k` / `is_10q`** — `1` on the trading day a 10-K/10-Q was filed (t=0); a filing that
   lands on a weekend/holiday snaps forward to the next session.
-- **`results_window`** — earnings-window class vs. the **nearest** filing (offsets in trading
-  days): `Pre_Earnings_Runup` (t−10..t−2), `Earnings_Eve` (t−1), `Earnings_Day` (t=0),
-  `Post_Earnings_Reaction` (t+1..t+3), `Post_Earnings_Drift` (t+4..t+15), else `Normal_Trading`.
-  Hindsight only: the pre-earnings buckets use the actual upcoming filing.
-- **`days_since_filing` / `days_to_filing_est` / `results_window_pit`** — the point-in-time
-  version, from the 10-K/10-Q filings made by each day: sessions since the latest filing (0 on
-  the filing day), sessions to the expected next filing (the year-ago filing + 364 days, same
-  weekday; negative once overdue; NULL with no filing yet), and the same labels from those two.
-  The post windows come from the actual filing and the pre windows from the expected one. An
-  overdue filing (up to 10 sessions) reads as `Earnings_Eve`. The expected date is within ±5
-  sessions of the real filing ~86% of the time (see `ml/FEATURES.md`).
+- **Earnings windows**, in sessions relative to a results announcement (t = 0):
+  `Pre_Earnings_Runup` (t−10..t−2), `Earnings_Eve` (t−1), `Earnings_Day` (t=0),
+  `Post_Earnings_Reaction` (t+1..t+3), `Post_Earnings_Drift` (t+4..t+15), else
+  `Normal_Trading`. The post windows (from the latest announcement, any kind) are checked
+  first, so a recent release wins over an upcoming one.
+  - **`days_since_results`** — sessions since the latest announcement (0 on its day; NULL
+    before the first).
+  - **`days_to_results`** / **`results_window`** — sessions to the next **scheduled**
+    announcement's actual date. Companies announce these dates weeks ahead, so this is known
+    on the day in practice. Where the next one isn't in the data yet (the latest quarter), the
+    estimate below is used and **`days_to_results_is_est`** = 1.
+  - **`days_to_results_est`** / **`results_window_pit`** — strictly point in time: the
+    expected next announcement is a year-ago one + 364 days (same weekday),
+    skipping anniversaries within 20 sessions after the latest announcement (that quarter's,
+    already out); negative once overdue, and up to 10 sessions overdue reads as
+    `Earnings_Eve`.
 - **Forward VWAPs** (volume-weighted `SUM(vwap*volume)/SUM(volume)`): `vwap_nx_1d` (next
   trading day), `vwap_nx_10d` (next 10), `vwap_end_week` (through the last session of the
   current ISO week), `vwap_nx_qtr` (through the next 10-K/10-Q filing day). NULL where the
-  forward window is empty.
+  forward window is empty. `vwap_nx_qtr` still runs to the next E*TRADE 10-K/10-Q filing.
 - **`vwap_pct_prev_day`** — backward-looking vwap % change vs the previous trading day
   (`(vwap − prev_vwap)/prev_vwap`, a fraction: 0.05 = +5%). NULL on a symbol's first bar.
 - **`split_factor`** — price multiplier for splits not yet applied upstream (1.0 = none).
@@ -262,11 +304,11 @@ uv run sourcing-py etrade export-tft --out /tmp/panel.parquet --min-bars 250 --i
   - news: `daily_sentiment`, `sentiment_volume`, `has_news`. Joined from the news DB
     (read-only ATTACH) and zero-filled.
   - filings: `is_10k`, `is_10q`
-  - earnings calendar (point in time): `results_window_pit`, `days_since_filing`,
-    `days_to_filing_est` (schema 2)
+  - earnings calendar (schema 3): `results_window`, `days_since_results`, `days_to_results`,
+    `days_to_results_is_est` (exact scheduled dates, estimate past the data), and
+    `results_window_pit`, `days_to_results_est` (strictly point in time)
 - **Not exported, because they leak the future:** `vwap_nx_10d`, `vwap_end_week`,
-  `vwap_nx_qtr`, and `results_window`, whose pre-earnings buckets come from an upcoming
-  filing (`results_window_pit` replaces it).
+  `vwap_nx_qtr`.
 
 ## Storage schema
 
@@ -279,8 +321,9 @@ symbols(symbol PK, xid, issue_type, exchange, company_name, auto_invest,
 daily_bars(symbol, date, open, high, low, close, volume, vwap, transactions,
            window_start_ms, source, ingested_at, run_id, loaded_at,
            -- Phase 1c derived features (features.py; rewritten in full each derive-features run):
-           day_idx, is_10k, is_10q, results_window, days_since_filing,
-           days_to_filing_est, results_window_pit, vwap_nx_1d, vwap_nx_10d,
+           day_idx, is_10k, is_10q, results_window, days_since_results,
+           days_to_results, days_to_results_is_est, days_to_results_est,
+           results_window_pit, vwap_nx_1d, vwap_nx_10d,
            vwap_end_week, vwap_nx_qtr, vwap_pct_prev_day, features_computed_at,
            PRIMARY KEY (symbol, date))  -- Phase 1a: one EOD OHLCV bar per symbol/day
 
@@ -298,6 +341,17 @@ fundamentals(xid, symbol, statement['balance_sheet'|'income_statement'],
 sec_filings(xid, symbol, form_type['10-K'|'10-Q'], date_filed, html_doc_key, fetched_at)
              -- one row per filing; html_doc_key is the opaque doc id (embeds the accession).
              -- Filings attach to the primary share class (e.g. GOOGL, not GOOG).
+
+sec_edgar_tickers(symbol PK, cik, sec_ticker, title, fetched_at)
+             -- fetch-edgar: our symbol -> SEC CIK (several symbols can share a CIK)
+sec_edgar_filings(cik, accession, form, filing_date, report_date, accepted_at, items,
+                  primary_doc, fetched_at, PRIMARY KEY (cik, accession))
+             -- 8-K/10-K/10-Q/20-F/40-F (+ /A); items = 8-K item codes ('2.02,9.01');
+             -- accepted_at (New York time) only for 8-Ks with item 2.02
+results_announcements(symbol, day_idx, date, source, scheduled, accepted_at, timing,
+                      accession, PRIMARY KEY (symbol, day_idx))
+             -- derive-features: one row per results session (t = 0); source '8-K 2.02',
+             -- '10-K'/'10-Q' (no release found) or 'etrade 10-K'/'etrade 10-Q' (no EDGAR)
 ```
 
 The long/tidy `fundamentals` layout keeps the store compact and makes selective

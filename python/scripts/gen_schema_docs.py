@@ -56,6 +56,10 @@ STORES = [
             ("fundamentals", "symbols", "||--o{", "xid / symbol"),
             ("sec_filings", "symbols", "||--o{", "xid / symbol"),
             ("stock_splits", "symbols", "||--o{", "ticker -> symbol"),
+            ("sec_edgar_tickers", "symbols", "||--o|", "symbol"),
+            ("sec_edgar_filings", "sec_edgar_tickers", "}o--o{", "cik"),
+            ("results_announcements", "symbols", "||--o{", "symbol"),
+            ("results_announcements", "trading_calendar", "||--o{", "day_idx"),
         ],
     },
     {

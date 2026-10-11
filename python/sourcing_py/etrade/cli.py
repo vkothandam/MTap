@@ -8,6 +8,7 @@ Dispatched from `sourcing_py.__main__` when the first arg is `etrade`:
     sourcing-py etrade map-industries [--trading-db PATH]
     sourcing-py etrade fetch [--symbols A,B | --all] [--resume] [--retry-failed]
     sourcing-py etrade fetch-splits [--fromdate D]
+    sourcing-py etrade fetch-edgar [--symbols A,B] [--since D]
     sourcing-py etrade derive-features [--symbols A,B]
     sourcing-py etrade export-tft [--out PATH] [--include-inference] [--min-bars N] ...
 """
@@ -17,7 +18,7 @@ from __future__ import annotations
 import sys
 
 from ..common.errors import ConfigError
-from . import eod, export, features, fundamentals, industry, splits, symbols
+from . import edgar, eod, export, features, fundamentals, industry, splits, symbols
 from . import login as login_mod
 
 _USAGE = (
@@ -28,6 +29,7 @@ _USAGE = (
     "  sourcing-py etrade map-industries [--trading-db PATH]  (sector/industry from MBin)\n"
     "  sourcing-py etrade fetch [--symbols A,B | --all] [--resume] [--retry-failed]\n"
     "  sourcing-py etrade fetch-splits [--fromdate D]  (Massive splits -> stock_splits; before derive-features)\n"
+    "  sourcing-py etrade fetch-edgar [--symbols A,B] [--since D]  (SEC 8-K results releases; before derive-features)\n"
     "  sourcing-py etrade derive-features [--symbols A,B]  (day_idx, filing flags, VWAP; re-run after ingest-eod)\n"
     "  sourcing-py etrade export-tft [--out PATH] [--include-inference] [--issue-types CS,DR]\n"
     "      [--min-bars 120] [--min-median-vwap 1] [--min-median-volume 50000]  (TFT panel.parquet)"
@@ -139,6 +141,25 @@ def _cmd_fetch_splits(p: dict) -> int:
     return 0
 
 
+def _cmd_fetch_edgar(p: dict) -> int:
+    syms = [s.strip() for s in str(p["symbols"]).split(",")] if p.get("symbols") else None
+    summary = edgar.fetch_edgar(symbols=syms, since=p.get("since"))
+    print(
+        f"fetched {summary['filings_fetched']:,} filings (filed >= {summary['since']}) for "
+        f"{summary['ciks']:,} companies ({summary['extra_files']} older history file(s)); "
+        f"{summary['symbols_mapped']:,}/{summary['symbols']:,} symbols have a CIK"
+    )
+    print(
+        f"  {summary['releases_total']:,} 8-K results releases in DB, {summary['releases_timed']:,} "
+        f"with acceptance times ({summary['release_times_fetched']:,} fetched now, "
+        f"{summary['release_times_failed']:,} failed; re-run to retry)"
+    )
+    if summary["ciks_failed"]:
+        print(f"  {len(summary['ciks_failed'])} company(ies) failed: "
+              f"{dict(list(summary['ciks_failed'].items())[:5])}", file=sys.stderr)
+    return 1 if (summary["ciks_failed"] or summary["release_times_failed"]) else 0
+
+
 def _cmd_derive_features(p: dict) -> int:
     syms = [s.strip() for s in str(p["symbols"]).split(",")] if p.get("symbols") else None
     summary = features.derive_features(symbols=syms)
@@ -212,6 +233,8 @@ def main(argv: list[str]) -> int:
         return _cmd_fetch(params)
     if sub == "fetch-splits":
         return _cmd_fetch_splits(params)
+    if sub == "fetch-edgar":
+        return _cmd_fetch_edgar(params)
     if sub == "derive-features":
         return _cmd_derive_features(params)
     if sub == "export-tft":

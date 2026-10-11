@@ -64,3 +64,14 @@ name = "google"
 url_template = "https://news.google.com/rss/search?q={symbol}+stock&hl=en-US&gl=US&ceid=US:en"
 tag = "symbol"
 fetch_article = true
+
+[edgar]
+# SEC EDGAR submissions API (sourcing_py/etrade/edgar.py): 8-K item 2.02 results releases
+# with their acceptance time, plus 10-K/10-Q. SEC requires a User-Agent naming you and a
+# contact email. Override with env EDGAR_USER_AGENT.
+user_agent = "MTap vijayan.kothandaraman@gmail.com"
+# SEC caps clients at 10 requests/second (shared via the lock state/rate/sec.lock).
+# Override with env EDGAR_REQUESTS_PER_SEC.
+requests_per_sec = 8
+# Concurrent fetch workers; the throttle above still caps the aggregate rate.
+workers = 4

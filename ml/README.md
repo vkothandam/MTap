@@ -38,9 +38,11 @@ last session can serve as a forecast target.
   - statics: `symbol` (16-D embedding), `industry_code` (4-D), `exchange`, `issue_type`
   - known: the calendar features
   - observed: price/volume ratios and 10-K/10-Q flags, with `volume_velocity` log1p'd
-  - earnings calendar: sessions since the last filing and to the expected next one, plus the
-    Pre_Earnings_Runup / Earnings_Eve / Post_Earnings_Reaction / Post_Earnings_Drift flags,
-    all point in time. On by default; `--no-earnings` drops them.
+  - earnings calendar, dated from the 8-K results releases: sessions since the last release
+    and to the next one, plus the Pre_Earnings_Runup / Earnings_Eve / Earnings_Day /
+    Post_Earnings_Reaction / Post_Earnings_Drift flags. `--earnings exact` (default) counts to
+    the next release's actual (pre-announced) date, `pit` to the year-ago estimate, `off`
+    drops them.
   - sentiment: off unless `--use-sentiment` (the news history is still near-empty)
 
 ## Walk-forward evaluation

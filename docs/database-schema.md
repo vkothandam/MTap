@@ -34,8 +34,10 @@ erDiagram
         SMALLINT is_10k
         SMALLINT is_10q
         VARCHAR results_window
-        INTEGER days_since_filing
-        INTEGER days_to_filing_est
+        INTEGER days_since_results
+        INTEGER days_to_results
+        SMALLINT days_to_results_is_est
+        INTEGER days_to_results_est
         VARCHAR results_window_pit
         DOUBLE vwap_nx_1d
         DOUBLE vwap_nx_10d
@@ -65,6 +67,34 @@ erDiagram
         VARCHAR sector_code
         VARCHAR source_url
         TIMESTAMP updated_at
+    }
+    results_announcements {
+        VARCHAR symbol PK
+        BIGINT day_idx PK
+        DATE date
+        VARCHAR source
+        BOOLEAN scheduled
+        TIMESTAMP accepted_at
+        VARCHAR timing
+        VARCHAR accession
+    }
+    sec_edgar_filings {
+        BIGINT cik PK
+        VARCHAR accession PK
+        VARCHAR form
+        DATE filing_date
+        DATE report_date
+        TIMESTAMP accepted_at
+        VARCHAR items
+        VARCHAR primary_doc
+        TIMESTAMP fetched_at
+    }
+    sec_edgar_tickers {
+        VARCHAR symbol PK
+        BIGINT cik
+        VARCHAR sec_ticker
+        VARCHAR title
+        TIMESTAMP fetched_at
     }
     sec_filings {
         BIGINT xid PK
@@ -121,6 +151,10 @@ erDiagram
     symbols ||--o{ fundamentals : "xid / symbol"
     symbols ||--o{ sec_filings : "xid / symbol"
     symbols ||--o{ stock_splits : "ticker -> symbol"
+    symbols ||--o| sec_edgar_tickers : "symbol"
+    sec_edgar_tickers }o--o{ sec_edgar_filings : "cik"
+    symbols ||--o{ results_announcements : "symbol"
+    trading_calendar ||--o{ results_announcements : "day_idx"
 ```
 
 ## News processing store

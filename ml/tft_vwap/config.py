@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-SUPPORTED_SCHEMA_VERSIONS = (2,)
+SUPPORTED_SCHEMA_VERSIONS = (3,)
 
 # The model inputs by category; FEATURES.md describes every column.
 STATIC_CATEGORICALS = ("symbol", "industry_code", "exchange", "issue_type")
@@ -20,16 +20,27 @@ PRICE_VOLUME_REALS = (
 )
 FILING_REALS = ("is_10k", "is_10q")
 OBSERVED_REALS = PRICE_VOLUME_REALS + FILING_REALS
-# Financial-results calendar, point in time (only the filings made by day t). The flags are
-# one-hot from the panel's results_window_pit; Earnings_Day is FILING_REALS.
+# Financial-results calendar, dated from the results releases (TrainConfig.earnings):
+#   "exact": the pre windows count to the next scheduled release's actual date (announced
+#            ahead), falling back to the estimate where it isn't in the panel yet
+#   "pit":   strictly point in time, the next release estimated from the year-ago one
+# The flags are one-hot from the panel's results_window (exact) / results_window_pit (pit).
 EARNINGS_WINDOWS = {
     "Pre_Earnings_Runup": "is_pre_earnings_runup",
     "Earnings_Eve": "is_earnings_eve",
+    "Earnings_Day": "is_earnings_day",
     "Post_Earnings_Reaction": "is_post_earnings_reaction",
     "Post_Earnings_Drift": "is_post_earnings_drift",
 }
-EARNINGS_REALS = ("days_since_filing", "days_to_filing_est", *EARNINGS_WINDOWS.values())
-# the sessions the two counts are clipped to; also their value when unknown (no filing yet)
+EARNINGS_SOURCES = {"exact": "results_window", "pit": "results_window_pit"}
+EARNINGS_REALS = {
+    "exact": ("days_since_results", "days_to_results", "days_to_results_is_est",
+              *EARNINGS_WINDOWS.values()),
+    "pit": ("days_since_results", "days_to_results_est",
+            *(f"{c}_pit" for c in EARNINGS_WINDOWS.values())),
+}
+EARNINGS_MODES = ("exact", "pit", "off")
+# the sessions the day counts are clipped to; also their value when unknown (no release yet)
 EARNINGS_FAR = 63
 EARNINGS_OVERDUE = -10
 SENTIMENT_REALS = ("daily_sentiment", "sentiment_volume", "has_news")
@@ -52,7 +63,7 @@ class TrainConfig:
     # "group": one center/scale per symbol over the whole training span
     normalizer: str = "encoder"
     use_sentiment: bool = False
-    use_earnings: bool = True
+    earnings: str = "exact"  # EARNINGS_MODES
     symbols: int | None = None  # random subset of N symbols for fast iteration
     seed: int = 42
 
@@ -101,6 +112,8 @@ class TrainConfig:
             raise ValueError(f"target must be one of {sorted(TARGETS)}, got {self.target!r}")
         if self.normalizer not in ("encoder", "group"):
             raise ValueError(f"normalizer must be 'encoder' or 'group', got {self.normalizer!r}")
+        if self.earnings not in EARNINGS_MODES:
+            raise ValueError(f"earnings must be one of {EARNINGS_MODES}, got {self.earnings!r}")
         if 0.5 not in self.quantiles:
             raise ValueError("quantiles must include 0.5 (the point forecast)")
         self.quantiles = sorted(self.quantiles)
@@ -112,7 +125,7 @@ class TrainConfig:
     @property
     def observed_reals(self) -> list[str]:
         cols = [c for c in OBSERVED_REALS if c != self.target_col]
-        return (cols + (list(EARNINGS_REALS) if self.use_earnings else [])
+        return (cols + list(EARNINGS_REALS.get(self.earnings, ()))
                 + (list(SENTIMENT_REALS) if self.use_sentiment else []))
 
     def to_dict(self) -> dict:
@@ -124,7 +137,7 @@ class TrainConfig:
 # scoring-only settings: they never touch the model, so reports use the current defaults
 REPORT_FIELDS = frozenset({"moves", "confidences", "prob_buckets"})
 # model inputs added later: a run saved before the field existed was trained without them
-ADDED_INPUTS = {"use_earnings": False}
+ADDED_INPUTS = {"earnings": "off"}
 
 
 def from_run(run_dir: Path, **overrides) -> TrainConfig:

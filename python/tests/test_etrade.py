@@ -8,7 +8,7 @@ here (the normalizers are finalized against a real sampled response once login l
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import httpx
@@ -16,7 +16,17 @@ import pyarrow.parquet as pq
 import pytest
 
 from sourcing_py.common.errors import ConfigError
-from sourcing_py.etrade import db, eod, export, features, fundamentals, industry, splits, symbols
+from sourcing_py.etrade import (
+    db,
+    edgar,
+    eod,
+    export,
+    features,
+    fundamentals,
+    industry,
+    splits,
+    symbols,
+)
 from sourcing_py.etrade.client import EtradeClient
 from sourcing_py.news import db as news_db
 from sourcing_py.utils import trading_calendar as tc
@@ -553,6 +563,7 @@ def test_filing_flag_snaps_to_next_session(tmp_path):
 
 
 def test_results_window_classification(tmp_path):
+    # no EDGAR data: the E*TRADE 10-Q date is the release
     dbp = tmp_path / "f.duckdb"
     sess = tc.sessions(date(2024, 1, 16), date(2024, 3, 1))
     with db.connect(dbp) as con:
@@ -563,6 +574,8 @@ def test_results_window_classification(tmp_path):
         rw = {d.isoformat(): w for d, w in con.execute(
             "SELECT date, results_window FROM daily_bars"
         ).fetchall()}
+        source = con.execute("SELECT source FROM results_announcements").fetchall()
+    assert source == [("etrade 10-Q",)]
     assert rw["2024-01-16"] == "Pre_Earnings_Runup"        # t-4
     assert rw["2024-01-19"] == "Earnings_Eve"              # t-1
     assert rw["2024-01-22"] == "Earnings_Day"              # t0
@@ -572,45 +585,131 @@ def test_results_window_classification(tmp_path):
     assert all(v is not None for v in rw.values())         # every bar classified
 
 
-def test_results_window_nearest_filing_wins(tmp_path):
+def test_results_window_recent_release_wins(tmp_path):
     dbp = tmp_path / "f.duckdb"
     sess = tc.sessions(date(2024, 1, 16), date(2024, 2, 1))
     with db.connect(dbp) as con:
         _seed_ramp(con, "AAA", sess)
-        _insert_filing(con, "AAA", "10-Q", "2024-01-22", "k1")  # t0 for the earlier window
+        _insert_filing(con, "AAA", "10-Q", "2024-01-22", "k1")
         _insert_filing(con, "AAA", "10-K", "2024-01-26", "k2")  # 4 sessions later
     features.derive_features(db_path=dbp)
     with db.connect(dbp) as con:
         mid = con.execute(
-            "SELECT results_window FROM daily_bars WHERE date = '2024-01-24'"
-        ).fetchone()[0]
-    # 01-24 is +2 from the first filing and -2 from the second: a tie in |offset| that the
-    # tie-break resolves toward the upcoming filing -> classified relative to 01-26 (t-2).
-    assert mid == "Pre_Earnings_Runup"
+            "SELECT days_since_results, days_to_results, results_window FROM daily_bars "
+            "WHERE date = '2024-01-24'"
+        ).fetchone()
+    # 01-24 is +2 from the first release and -2 from the second: the post window wins
+    assert mid == (2, 2, "Post_Earnings_Reaction")
 
 
-_PIT_COLS = "date, days_since_filing, days_to_filing_est, results_window_pit"
+def _ny(ts: str) -> datetime:
+    """A naive New York time, as EDGAR acceptance times are stored."""
+    return datetime.fromisoformat(ts)
+
+
+def _edgar(con, symbol, form, filed, accepted=None, items=None, cik=1, acc=None):
+    """One sec_edgar_filings row (and the symbol's CIK mapping)."""
+    con.execute(
+        "INSERT INTO sec_edgar_tickers (symbol, cik) VALUES (?, ?) ON CONFLICT DO NOTHING",
+        [symbol, cik],
+    )
+    con.execute(
+        "INSERT INTO sec_edgar_filings (cik, accession, form, filing_date, accepted_at, items) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [cik, acc or f"{form}-{filed}", form, filed, accepted, items],
+    )
+
+
+def _announcements(dbp):
+    with db.connect(dbp) as con:
+        return {d.isoformat(): (src, sch, tm) for d, src, sch, tm in con.execute(
+            "SELECT date, source, scheduled, timing FROM results_announcements ORDER BY date"
+        ).fetchall()}
+
+
+def _windows(dbp, cols="results_window"):
+    with db.connect(dbp) as con:
+        return {d.isoformat(): (r[0] if len(r) == 1 else tuple(r)) for d, *r in con.execute(
+            f"SELECT date, {cols} FROM daily_bars ORDER BY date"
+        ).fetchall()}
+
+
+def test_release_session_from_acceptance_time(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    with db.connect(dbp) as con:
+        _seed_ramp(con, "AAA", tc.sessions(date(2024, 1, 16), date(2024, 8, 30)))
+        # Thu after the close -> Fri; before the open -> same day; Fri evening -> Mon
+        _edgar(con, "AAA", "8-K", "2024-02-01", _ny("2024-02-01 16:30"), "2.02,9.01")
+        _edgar(con, "AAA", "8-K", "2024-05-02", _ny("2024-05-02 07:00"), "2.02")
+        _edgar(con, "AAA", "8-K", "2024-08-02", _ny("2024-08-02 17:00"), "9.01,2.02")
+        _edgar(con, "AAA", "8-K", "2024-03-12", _ny("2024-03-12 08:00"), "5.02")  # not results
+        _edgar(con, "AAA", "10-Q", "2024-05-03")  # belongs to the 05-02 release
+        _insert_filing(con, "AAA", "10-Q", "2024-05-03", "k1")  # E*TRADE: ignored with EDGAR data
+    features.derive_features(db_path=dbp)
+    assert _announcements(dbp) == {
+        "2024-02-02": ("8-K 2.02", True, "after_close"),
+        "2024-05-02": ("8-K 2.02", True, "before_open"),
+        "2024-08-05": ("8-K 2.02", True, "after_close"),
+    }
+    rw = _windows(dbp)
+    assert (rw["2024-02-01"], rw["2024-02-02"], rw["2024-02-05"]) == (
+        "Earnings_Eve", "Earnings_Day", "Post_Earnings_Reaction")
+    assert (rw["2024-05-01"], rw["2024-05-02"]) == ("Earnings_Eve", "Earnings_Day")
+    assert rw["2024-03-12"] == "Normal_Trading"
+    assert (rw["2024-08-02"], rw["2024-08-05"]) == ("Earnings_Eve", "Earnings_Day")
+
+
+def test_release_without_time_uses_filing_date(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    with db.connect(dbp) as con:
+        _seed_ramp(con, "AAA", tc.sessions(date(2024, 1, 16), date(2024, 2, 29)))
+        _edgar(con, "AAA", "8-K", "2024-02-03", None, "2.02")  # Saturday, header not fetched
+    features.derive_features(db_path=dbp)
+    assert _announcements(dbp) == {"2024-02-05": ("8-K 2.02", True, None)}
+
+
+def test_scheduled_release_is_the_last_before_its_report(tmp_path):
+    dbp = tmp_path / "f.duckdb"
+    with db.connect(dbp) as con:
+        _seed_ramp(con, "AAA", tc.sessions(date(2024, 1, 2), date(2024, 6, 28)))
+        _edgar(con, "AAA", "8-K", "2024-01-10", _ny("2024-01-10 07:00"), "2.02")  # preliminary
+        _edgar(con, "AAA", "8-K", "2024-01-25", _ny("2024-01-25 16:05"), "2.02")  # full results
+        _edgar(con, "AAA", "10-K", "2024-02-20")
+        _edgar(con, "AAA", "10-Q", "2024-05-06")  # no release 8-K: the report is the release
+    features.derive_features(db_path=dbp)
+    assert _announcements(dbp) == {
+        "2024-01-10": ("8-K 2.02", False, "before_open"),
+        "2024-01-26": ("8-K 2.02", True, "after_close"),
+        "2024-05-06": ("10-Q", True, None),
+    }
+    w = _windows(dbp, "results_window, days_to_results")
+    assert w["2024-01-09"] == ("Normal_Trading", 12)  # an unscheduled release isn't anticipated
+    assert w["2024-01-10"][0] == "Earnings_Day"
+    assert w["2024-01-17"] == ("Post_Earnings_Drift", 7)  # recent release wins over the upcoming one
+    assert w["2024-01-25"] == ("Post_Earnings_Drift", 1)  # still within 15 of the prelim
+    assert w["2024-04-29"] == ("Pre_Earnings_Runup", 5)
+
+
+_PIT_COLS = "days_since_results, days_to_results_est, results_window_pit"
 
 
 def _pit(dbp, filings):
     """derive_features over 2024-01-16..2025-02-28 with `filings` [(form, date)]; returns
-    {date: (since, till, window)}."""
+    {date: (since, till_est, window_pit)}."""
     with db.connect(dbp) as con:
         _seed_ramp(con, "AAA", tc.sessions(date(2024, 1, 16), date(2025, 2, 28)))
         for i, (form, d) in enumerate(filings):
             _insert_filing(con, "AAA", form, d, f"k{i}")
     features.derive_features(db_path=dbp)
-    with db.connect(dbp) as con:
-        rows = con.execute(f"SELECT {_PIT_COLS} FROM daily_bars ORDER BY date").fetchall()
-    return {d.isoformat(): tuple(r) for d, *r in rows}
+    return _windows(dbp, _PIT_COLS)
 
 
-def test_results_window_pit_from_year_ago_filing(tmp_path):
+def test_results_window_pit_from_year_ago_release(tmp_path):
     # 10-Q on Mon 2024-02-05 -> expected next on Mon 2025-02-03 (364 days on); filed late,
     # on Thu 2025-02-06.
     pit = _pit(tmp_path / "f.duckdb", [("10-Q", "2024-02-05"), ("10-Q", "2025-02-06")])
     di = {d: tc.day_idx_for(date.fromisoformat(d)) for d in pit}
-    assert pit["2024-01-29"] == (None, None, "Normal_Trading")  # nothing filed yet
+    assert pit["2024-01-29"] == (None, None, "Normal_Trading")  # nothing released yet
     assert pit["2024-02-05"] == (0, di["2025-02-03"] - di["2024-02-05"], "Earnings_Day")
     assert pit["2024-02-07"][2] == "Post_Earnings_Reaction"
     assert pit["2024-02-12"][2] == "Post_Earnings_Drift"
@@ -622,24 +721,49 @@ def test_results_window_pit_from_year_ago_filing(tmp_path):
     assert pit["2025-02-07"][2] == "Post_Earnings_Reaction"
 
 
-def test_results_window_pit_uses_no_future_filing(tmp_path):
+def test_results_window_pit_uses_no_future_release(tmp_path):
     past = [("10-Q", "2024-02-05")]
     without = _pit(tmp_path / "a.duckdb", past)
     with_next = _pit(tmp_path / "b.duckdb", [*past, ("10-K", "2025-02-06")])
     before = [d for d in without if d < "2025-02-06"]
-    assert all(without[d] == with_next[d] for d in before)  # the 2025 filing changes nothing before it
-    hindsight = []  # unlike results_window, whose pre-buckets come from the future filing
-    for name in ("a", "b"):
-        with db.connect(tmp_path / f"{name}.duckdb") as con:
-            hindsight.append(con.execute(
-                "SELECT results_window FROM daily_bars WHERE date = '2025-01-29'").fetchone()[0])
-    assert hindsight == ["Normal_Trading", "Pre_Earnings_Runup"]
+    assert all(without[d] == with_next[d] for d in before)  # the 2025 release changes nothing before it
     assert without["2025-01-29"][2] == "Pre_Earnings_Runup"  # pit: from the expected date alone
+    # days_to_results uses the known next release, and the estimate when there is none
+    exact = [_windows(tmp_path / f"{n}.duckdb", "days_to_results, days_to_results_is_est")["2025-01-29"]
+             for n in ("a", "b")]
+    assert exact == [(3, 1), (6, 0)]
 
 
-def test_results_window_pit_skips_anniversary_of_quarter_already_filed(tmp_path):
-    # filed a week early (2025-01-27): the 2025-02-03 anniversary is that same quarter, so the
-    # next expected date is the new filing's own anniversary (the only one left), 2026-01-26
+_PRELIM_YEAR = [  # (form, filed, accepted, items): a preliminary 2.02 before the 2025 full year
+    ("8-K", "2024-01-25", "2024-01-25 07:00", "2.02"), ("10-K", "2024-02-20", None, None),
+    ("8-K", "2024-04-25", "2024-04-25 07:00", "2.02"), ("10-Q", "2024-04-30", None, None),
+    ("8-K", "2024-07-25", "2024-07-25 07:00", "2.02"), ("10-Q", "2024-07-30", None, None),
+    ("8-K", "2024-10-24", "2024-10-24 07:00", "2.02"), ("10-Q", "2024-10-29", None, None),
+    ("8-K", "2025-01-08", "2025-01-08 07:00", "2.02"),  # preliminary
+    ("8-K", "2025-01-23", "2025-01-23 07:00", "2.02"), ("10-K", "2025-02-20", None, None),
+]
+
+
+def test_results_window_pit_matches_a_run_on_the_day(tmp_path):
+    # the pit columns on day t must equal what a run on day t (filings up to t only) computes
+    def derive(dbp, cut=None):
+        with db.connect(dbp) as con:
+            _seed_ramp(con, "AAA", tc.sessions(date(2024, 1, 16), date(2025, 3, 31)))
+            for i, (form, filed, acc, items) in enumerate(_PRELIM_YEAR):
+                if cut is None or filed <= cut:
+                    _edgar(con, "AAA", form, filed, acc and _ny(acc), items, acc=f"a{i}")
+        features.derive_features(db_path=dbp)
+        return _windows(dbp, _PIT_COLS)
+
+    full = derive(tmp_path / "full.duckdb")
+    for cut in ("2024-11-15", "2025-01-08", "2025-01-15", "2025-01-23", "2025-02-03", "2025-02-20"):
+        on_day = derive(tmp_path / f"{cut}.duckdb", cut)
+        assert {d: v for d, v in full.items() if d <= cut} == {d: v for d, v in on_day.items() if d <= cut}, cut
+
+
+def test_results_window_pit_skips_anniversary_of_quarter_already_out(tmp_path):
+    # released a week early (2025-01-27): the 2025-02-03 anniversary is that same quarter, so
+    # the next expected date is the new release's own anniversary (the only one left), 2026-01-26
     pit = _pit(tmp_path / "f.duckdb", [("10-Q", "2024-02-05"), ("10-Q", "2025-01-27")])
     nxt = tc.day_idx_for(date(2026, 1, 26))
     assert pit["2025-02-03"] == (5, nxt - tc.day_idx_for(date(2025, 2, 3)), "Post_Earnings_Drift")
@@ -805,8 +929,9 @@ def test_export_tft_columns_formulas_and_fills(tmp_path):
         "is_quarter_end", "sessions_gap_next", "today_vwap", "vwap_pct_prev_day",
         "intraday_spread_pct", "close_position_pct", "open_position_pct", "volume_velocity",
         "transactions_per_volume", "daily_sentiment", "sentiment_volume", "has_news",
-        "is_10k", "is_10q", "results_window_pit", "days_since_filing", "days_to_filing_est",
-    ]  # exact set: no leaky forward VWAPs / hindsight results_window
+        "is_10k", "is_10q", "results_window", "days_since_results", "days_to_results",
+        "days_to_results_is_est", "results_window_pit", "days_to_results_est",
+    ]  # exact set: no leaky forward VWAPs
     by = {(r["symbol"], r["date"].isoformat()): r for r in rows}
     r = by[("AAA", "2024-01-16")]  # vwap 10, next session 11
     assert r["target_tomorrow_vwap"] == 11.0
@@ -1011,3 +1136,94 @@ def test_split_factor_back_adjusts_only_unapplied_splits(tmp_path):
     assert first["today_vwap"] == pytest.approx(10.0)
     assert first["volume_velocity"] == pytest.approx(1.0)  # 1000 raw shares -> 100 adjusted
     assert first["transactions_per_volume"] == pytest.approx(10 / 100)
+
+
+def _subs(*filings):
+    """A submissions-API filings block: filings are (accession, form, filed, items)."""
+    return {
+        "accessionNumber": [f[0] for f in filings],
+        "form": [f[1] for f in filings],
+        "filingDate": [f[2] for f in filings],
+        "reportDate": ["" for _ in filings],
+        "items": [f[3] for f in filings],
+        "primaryDocument": ["doc.htm" for _ in filings],
+    }
+
+
+def test_fetch_edgar_maps_tickers_reads_history_and_times_releases(tmp_path, monkeypatch):
+    monkeypatch.setenv("EDGAR_REQUESTS_PER_SEC", "0")
+    monkeypatch.setenv("EDGAR_WORKERS", "1")
+    seen = []
+
+    def handler(request):
+        url = str(request.url)
+        seen.append(url)
+        assert request.headers["user-agent"].startswith("MTap ")
+        if url.endswith("company_tickers.json"):
+            return httpx.Response(200, json={
+                "0": {"cik_str": 1, "ticker": "AAA", "title": "Aaa Inc"},
+                "1": {"cik_str": 2, "ticker": "BRK-B", "title": "Berkshire"},
+                "2": {"cik_str": 3, "ticker": "CCC", "title": "Ccc Corp"},
+            })
+        if url.endswith("CIK0000000001.json"):
+            return httpx.Response(200, json={"filings": {
+                "recent": _subs(
+                    ("0001-24-000002", "8-K", "2024-02-01", "2.02,9.01"),
+                    ("0001-24-000001", "10-Q", "2024-01-30", ""),
+                    ("0001-24-000003", "4", "2024-01-29", ""),  # form not kept
+                ),
+                "files": [
+                    {"name": "CIK0000000001-submissions-001.json", "filingFrom": "2023-01-01",
+                     "filingTo": "2023-12-31"},
+                    {"name": "CIK0000000001-submissions-002.json", "filingFrom": "2020-01-01",
+                     "filingTo": "2022-12-31"},  # wholly before `since`: not fetched
+                ],
+            }})
+        if url.endswith("CIK0000000001-submissions-001.json"):
+            return httpx.Response(200, json=_subs(
+                ("0001-23-000009", "8-K", "2023-10-26", "5.02"),
+                ("0001-23-000001", "10-K", "2023-03-01", ""),  # before `since`
+            ))
+        if url.endswith("CIK0000000002.json"):
+            return httpx.Response(200, json={"filings": {
+                "recent": _subs(("0002-24-000001", "10-K", "2024-02-26", "")), "files": []}})
+        if url.endswith("CIK0000000003.json"):
+            return httpx.Response(200, text="<html>rate limited</html>")  # not JSON
+        if url.endswith("/1/000124000002/0001-24-000002-index-headers.html"):
+            return httpx.Response(200, text="<ACCEPTANCE-DATETIME>20240201163028\n")
+        return httpx.Response(404)
+
+    dbp = tmp_path / "f.duckdb"
+    with db.connect(dbp) as con:
+        for sym in ("AAA", "BRK.B", "CCC", "ZZZ"):
+            _symbol(con, sym)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        summary = edgar.fetch_edgar(since="2023-07-01", db_path=dbp, client=client)
+    assert summary["symbols_mapped"] == 3 and summary["unmapped"] == ["ZZZ"]
+    assert list(summary["ciks_failed"]) == [3]  # one bad company doesn't lose the others
+    assert summary["extra_files"] == 1 and summary["filings_fetched"] == 4
+    assert (summary["releases_total"], summary["releases_timed"]) == (1, 1)
+    assert not any("submissions-002" in u for u in seen)
+    with db.connect(dbp) as con:
+        assert con.execute("SELECT symbol, cik FROM sec_edgar_tickers ORDER BY 1").fetchall() == [
+            ("AAA", 1), ("BRK.B", 2), ("CCC", 3)]
+        got = con.execute(
+            "SELECT accession, form, accepted_at FROM sec_edgar_filings ORDER BY accession"
+        ).fetchall()
+    assert got == [
+        ("0001-23-000009", "8-K", None),
+        ("0001-24-000001", "10-Q", None),
+        ("0001-24-000002", "8-K", _ny("2024-02-01 16:30:28")),
+        ("0002-24-000001", "10-K", None),
+    ]
+
+    seen.clear()  # a refresh keeps the acceptance time and doesn't fetch it again
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        again = edgar.fetch_edgar(since="2023-07-01", db_path=dbp, client=client)
+    assert again["release_times_fetched"] == 0 and again["releases_timed"] == 1
+    assert not any("index-headers" in u for u in seen)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:  # a shorter window
+        edgar.fetch_edgar(since="2024-01-15", db_path=dbp, client=client)
+    with db.connect(dbp) as con:  # keeps the filings before it
+        assert con.execute("SELECT count(*) FROM sec_edgar_filings").fetchone()[0] == 4

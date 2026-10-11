@@ -46,6 +46,15 @@ def test_make_folds_tile_the_tail(panel_df, tmp_path):
         dataset.make_folds(dataset.prepare(panel_df), _cfg(tmp_path, tmp_path, n_folds=13))
 
 
+def test_make_folds_can_end_before_the_panel(panel_df, tmp_path):
+    df = dataset.prepare(panel_df)
+    folds = dataset.make_folds(df, _cfg(tmp_path / "p.parquet", tmp_path, n_folds=3, test_end=1139))
+    assert [(f.es_start, f.test_start, f.test_end) for f in folds] == [
+        (1105, 1110, 1119), (1115, 1120, 1129), (1125, 1130, 1139)]
+    with pytest.raises(ValueError, match="past the panel"):
+        dataset.make_folds(df, _cfg(tmp_path / "p.parquet", tmp_path, test_end=1150))
+
+
 def _decoder_days(ds):
     days = []
     for x, _ in ds.to_dataloader(train=False, batch_size=256):

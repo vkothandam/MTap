@@ -47,8 +47,10 @@ last session can serve as a forecast target.
 
 ## Walk-forward evaluation
 
-`n_folds` test blocks of `fold_len` sessions (default 4 × 60) tile the end of the panel. For
-each fold:
+`n_folds` test blocks of `fold_len` sessions (default 4 × 60) tile the end of the panel, or
+end at `--test-end <day_idx>`. To compare a new run with an old one on a longer panel, pass
+the old run's last `test_end` (in its `config.json` folds). Then both are trained and
+tested on the same sessions. For each fold:
 
 | Segment | Targets | Use |
 |---|---|---|

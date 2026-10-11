@@ -67,12 +67,14 @@ class TrainConfig:
     symbols: int | None = None  # random subset of N symbols for fast iteration
     seed: int = 42
 
-    # walk-forward: `n_folds` test blocks of `fold_len` sessions ending at the last session;
-    # the `early_stop_len` sessions before each block drive early stopping (never the test).
+    # walk-forward: `n_folds` test blocks of `fold_len` sessions ending at the last session
+    # (or at `test_end`, a day_idx, to repeat an earlier run's folds on a longer panel); the
+    # `early_stop_len` sessions before each block drive early stopping (never the test).
     n_folds: int = 4
     fold_len: int = 60
     early_stop_len: int = 20
     only_folds: list[int] | None = None  # 0-based subset of folds to run
+    test_end: int | None = None
 
     encoder_length: int = 60
     min_encoder_length: int = 20

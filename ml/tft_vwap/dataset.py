@@ -85,6 +85,10 @@ def load_panel(cfg: TrainConfig) -> tuple[pd.DataFrame, dict]:
 
 def make_folds(df: pd.DataFrame, cfg: TrainConfig) -> list[Fold]:
     last = int(df["day_idx"].max())
+    if cfg.test_end is not None:
+        if cfg.test_end > last:
+            raise ValueError(f"test_end {cfg.test_end} is past the panel's last session {last}")
+        last = cfg.test_end
     folds = []
     for k in range(cfg.n_folds):
         test_end = last - (cfg.n_folds - 1 - k) * cfg.fold_len

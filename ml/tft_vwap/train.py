@@ -187,6 +187,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--symbols", type=int, default=None, help="random subset of N symbols")
     p.add_argument("--folds", default=None, help="comma list of 0-based folds to run")
     p.add_argument("--n-folds", type=int, default=d.n_folds)
+    p.add_argument("--test-end", type=int, default=None,
+                   help="day_idx of the last test session (default: the panel's last); "
+                        "pass an earlier run's to repeat its folds")
     p.add_argument("--max-epochs", type=int, default=d.max_epochs)
     p.add_argument("--limit-train-batches", type=int, default=d.limit_train_batches)
     p.add_argument("--batch-size", type=int, default=d.batch_size)
@@ -205,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
         panel=a.panel, out_dir=a.out, target=a.target, normalizer=a.normalizer,
         symbols=a.symbols,
         only_folds=[int(x) for x in a.folds.split(",")] if a.folds else None,
-        n_folds=a.n_folds, max_epochs=a.max_epochs, limit_train_batches=a.limit_train_batches,
+        n_folds=a.n_folds, test_end=a.test_end, max_epochs=a.max_epochs, limit_train_batches=a.limit_train_batches,
         batch_size=a.batch_size, hidden_size=a.hidden_size, learning_rate=a.learning_rate,
         accelerator=a.accelerator, num_workers=a.num_workers, use_sentiment=a.use_sentiment,
         earnings=a.earnings,

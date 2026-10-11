@@ -43,8 +43,17 @@ Notes:
     optional: date, industry_code
 <run>/config.json                         optional; {"config": {"panel": "<path>", ...}}
 <run>/forecast_<date>.parquet             optional; tomorrow: symbol, q05..q95 as fractional
-                                          moves (0.012 = +1.2%), optional industry_code, today_vwap
+                                          moves (0.012 = +1.2%), optional industry_code, today_vwap,
+                                          asof (the session the forecast was made from)
+<run>/actuals.parquet                     optional; date, symbol, actual_move, actual_vwap for
+                                          forecast days that have happened (tft-vwap-grade)
 ```
+
+- Prices in the Forecast tab are `today_vwap × (1 + q)`. If a forecast file has no `today_vwap`,
+  the $ columns are empty and only the % views apply.
+- Forecast vs actual joins each `forecast_<date>.parquet` to `actuals.parquet` on (date, symbol).
+  `actual_move` is the realised move vs the forecast's `asof` session; `actual_vwap` is on the
+  forecast's own price basis, so a split in between doesn't distort the grade.
 
 - The quantile levels are read from the column names (`qNN` → NN/100). At least 3 columns are
   needed, and every fold must use the same set.
@@ -94,8 +103,11 @@ Notes:
 
 Every tab opens with an **In short** box: plain-English findings computed from the current
 filters (`forecast_dash/insights.py`). ✅ fine · ⚠️ watch · ❌ problem · ℹ️ context. The
-"ℹ️ About this page" popover next to each title explains every chart and column
-(`forecast_dash/help_text.py`).
+"ℹ️ About this page" popover next to each title explains the page. Every chart, table and
+sub-panel has its own ⓘ (what it shows, how to read it, and for tables what each column means),
+every table column header has a hover tooltip (e.g. `ci_lo` / `ci_hi`, `lift`, `share`), and
+the metrics and controls have `?` tooltips. All of this text is in `forecast_dash/help_text.py`
+(`HELP`, `PANELS`, `COLUMNS`).
 
 | Tab | What it shows | How to read it |
 | --- | --- | --- |
@@ -105,7 +117,8 @@ filters (`forecast_dash/insights.py`). ✅ fine · ⚠️ watch · ❌ problem �
 | Across stocks | Funnel plot of per-stock bias vs n with ±2σ noise bounds, bias by industry, a sortable table | Stocks outside the funnel have real bias. Expect about 4.5% outside from noise alone, and the In short box shows that expected count. Box- or lasso-selecting a point opens it in Stock detail. |
 | By day | Cross-sectional PIT bias per day with the noise band, regime days marked, and an optional event's came-true − said per day | Regime days are days when the whole market moved against the forecast together. Calibration errors grouped on a few days point to a market-level factor, not a per-stock fault. |
 | Stock detail | One stock: fan chart (P5–P95 and P25–P75 bands, P50, actual dots; red dots fall outside the outer band), PIT histogram, ladder, that stock's grid | A flat PIT histogram means calibrated. Mass on the left means actuals fell below the forecast (optimistic). A U shape means the bands are too narrow. |
-| Tomorrow | Screener on `forecast_<date>.parquet` by side, move and P ≥. It shows each stock's historical came-true rate in the same probability bucket (that stock and all stocks), plus one stock's probability-per-move curve against history and its ladder | Read "model says 72%" next to "this stock came true 58% (n=31) in the 70–80% bucket". That historical rate is the answer to "how far do I trust this number". |
+| Forecast → Price ranges | Pick a forecast day (newest first; *open* = not graded yet, *graded* = actuals in). Screener on that `forecast_<date>.parquet`. Sliders: percentile band (default P10–P90), one-sided confidence (floor/cap $), max band width %, min price, and side / move / P ≥. The table gives each stock's VWAP range in $ (low, median, high, floor, cap, width), P(move) and its historical came-true rate in the same probability bucket. One stock: price-range chart, every percentile in $ and %, the $ ladder and the probability-per-move curve against history. On a graded day the table adds `actual_vwap` and `inside`, and the chart draws the actual. CSV download | The low–high range is where the model expects tomorrow's VWAP with the chosen central probability. Read "model says 72%" next to "this stock came true 58% (n=31) in the 70–80% bucket". That historical rate is the answer to "how far do I trust this number". |
+| Forecast → Forecast vs actual | Defaults to the day picked in Price ranges, if graded. Once a forecast day has happened and `tft-vwap-grade` has run: band coverage vs nominal, misses above/below, direction hit rate, bias, quantile skill vs naive, event calls said vs came true. Median-vs-actual scatter, PIT histogram, coverage and bias by day (with more than one graded day), a graded table with `outside_by`, and one stock's band and actual in $ for each graded day | Coverage near nominal with misses split evenly means the bands are honest. More misses above than below (negative bias) means the model was too pessimistic that day. One day is one market regime, so judge it over several days. |
 | Compare runs | Reliability overlay for one event across runs, a summary table, and calls by run and side at each call level | In short names the winner per metric (or says there is no clear winner), which run's calls held best at the chosen call level, and warns when the rows differ or are too few. By default only (stock, day) rows present in every run are used, so the comparison is fair. Lower pinball and ECE are better. Coverage should be near nominal and bias near 0. |
 
 ## Layout
@@ -116,7 +129,7 @@ forecast_dash/
   calib.py      pure numpy/pandas maths (above)
   charts.py     pure functions: tables -> plotly Figures
   insights.py   pure functions: tables -> ranked plain-English findings (the In short boxes)
-  help_text.py  the "About this page" text for each tab
+  help_text.py  the ⓘ text: per page, per chart / table / sub-panel, per column
   app.py        Streamlit UI: sidebar, tabs, caching (st.cache_resource, per run and per move)
   cli.py        forecast-dash entry point -> streamlit run app.py
 tests/          maths, contract, charts, insights, AppTest smoke over every tab, import boundary

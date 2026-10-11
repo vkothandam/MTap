@@ -52,6 +52,13 @@ def write_run(root, name="run-a", panel=None, with_keys=True, forecast=True, **k
             fc[f"q{round(lv * 100):02d}"] = 0.004 + 0.015 * zz  # fractional moves
         fc["up_70"] = 0.0
         fc.to_parquet(run / "forecast_2025-03-03.parquet", index=False)
+        # one earlier forecast day that has closed: actuals drawn from the forecast itself
+        past = fc.assign(date="2025-02-28", asof="2025-02-27")
+        past.to_parquet(run / "forecast_2025-02-28.parquet", index=False)
+        move = 0.004 + 0.015 * np.random.default_rng(7).standard_normal(len(syms))
+        pd.DataFrame({"date": "2025-02-28", "symbol": syms, "actual_move": move,
+                      "actual_vwap": 10.0 * (1 + move)}).to_parquet(run / "actuals.parquet",
+                                                                    index=False)
     return run
 
 

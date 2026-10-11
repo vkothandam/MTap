@@ -22,6 +22,13 @@ def test_every_chart_builds(run_dir):
         charts.daily_chart(calib.daily(u, run.frame["date"], *ev[0.01]), ">= +1.0%"),
         charts.fan(run.frame.iloc[:60], run.r_q[:60], run.r_act[:60], LEVELS, "S0"),
         charts.pit_hist(u),
+        charts.fan(run.frame.iloc[:60], run.r_q[:60], run.r_act[:60], LEVELS, "S0",
+                   ref=np.full(60, 10.0)),
+        charts.price_range(LEVELS, 10 * (1 + run.r_q[0]), 10.0, "S0", 0.1, 0.9, actual=10.1),
+        charts.live_scatter(run.r_q[:60, 9], run.r_act[:60], np.ones(60, bool),
+                            run.frame["symbol"].iloc[:60], "t"),
+        charts.live_days(pd.DataFrame({"day": ["a", "b"], "coverage": [0.7, 0.8],
+                                       "coverage_nominal": [0.8, 0.8], "bias": [0.01, -0.02]})),
         charts.spread_chart(pd.DataFrame({
             "move": [0.01, -0.01], "side": ["up", "down"], "prob": [0.4, 0.3],
             "hist_hit_rate": [0.5, np.nan], "hist_n": [3, np.nan], "all_hit_rate": [0.4, 0.3]}),

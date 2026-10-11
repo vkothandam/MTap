@@ -17,7 +17,8 @@ def test_load_run_converts_to_moves(run_dir):
     assert set(f["industry_code"]) == {"A", "B"}
     i = 0
     assert run.r_act[i] == pytest.approx(f["actual"][i] / f["prev_vwap"][i] - 1)
-    assert [p.name for p in run.forecasts()] == ["forecast_2025-03-03.parquet"]
+    assert [p.name for p in run.forecasts()] == ["forecast_2025-03-03.parquet",
+                                                 "forecast_2025-02-28.parquet"]  # newest first
 
 
 def test_discover_root_or_single(tmp_path):
@@ -58,3 +59,12 @@ def test_load_forecast(run_dir):
     keys, r_q, levels = contract.load_forecast(run_dir / "forecast_2025-03-03.parquet")
     assert len(keys) == 8 and r_q.shape == (8, 19) and levels[-1] == 0.95
     assert "up_70" not in keys.columns and "today_vwap" in keys.columns
+
+
+def test_load_live_joins_forecasts_to_actuals(run_dir):
+    live = contract.load_live(run_dir)
+    assert set(live.keys["date"]) == {"2025-02-28"}  # 2025-03-03 has no actuals yet
+    assert live.r_q.shape == (8, 19) and len(live.r_act) == 8
+    assert np.allclose(live.keys["actual_vwap"], 10.0 * (1 + live.r_act))
+    (run_dir / "actuals.parquet").unlink()
+    assert contract.load_live(run_dir) is None

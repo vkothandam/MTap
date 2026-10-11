@@ -5,7 +5,11 @@
         optional: date, industry_code (else joined from config.json's panel, if present)
     <run>/config.json                         optional; shown as run info
     <run>/forecast_<date>.parquet             optional; tomorrow: symbol, q05..q95 as
-                                              fractional moves, optional today_vwap
+                                              fractional moves, optional today_vwap (the
+                                              reference price, for price ranges), asof
+    <run>/actuals.parquet                     optional; what happened on forecast days:
+                                              date, symbol, actual_move (fractional, vs the
+                                              forecast's reference), optional actual_vwap
 
 Quantile levels come from the column names (q05 -> 0.05). Nothing here depends on the model
 that wrote the run, so any model writing these files is graded the same way.
@@ -24,6 +28,7 @@ import pandas as pd
 QCOL = re.compile(r"^q(\d{2})$")
 REQUIRED = ("symbol", "day_idx", "prev_vwap", "actual")
 TEST_GLOB = "fold_*/test_predictions.parquet"
+ACTUALS = "actuals.parquet"
 
 
 @dataclass
@@ -118,7 +123,7 @@ def load_run(path: Path) -> Run:
 
 
 def load_forecast(path: Path) -> tuple[pd.DataFrame, np.ndarray, list[float]]:
-    """Tomorrow's forecast: (keys frame, r_q as fractional moves, levels)."""
+    """A forecast file: (keys frame, r_q as fractional moves, levels)."""
     df = pd.read_parquet(path)
     if "symbol" not in df.columns:
         raise ValueError(f"{path}: forecast has no symbol column")
@@ -126,3 +131,50 @@ def load_forecast(path: Path) -> tuple[pd.DataFrame, np.ndarray, list[float]]:
     r_q = np.sort(df[qcols].to_numpy(dtype=float), axis=1)
     keys = df[[c for c in df.columns if c not in qcols and not c.startswith(("up_", "down_"))]]
     return keys.assign(symbol=keys["symbol"].astype(str)).reset_index(drop=True), r_q, levels
+
+
+@dataclass
+class Live:
+    """Graded live forecasts: every forecast_<date> row that has an actual. `keys` holds
+    date (str), symbol, today_vwap, actual_vwap and the forecast's other key columns."""
+
+    keys: pd.DataFrame
+    r_q: np.ndarray
+    r_act: np.ndarray
+    levels: list[float]
+
+
+def load_live(run_path: Path) -> Live | None:
+    """Forecast files joined to actuals.parquet, or None if the run has no graded day yet."""
+    run_path = Path(run_path)
+    f = run_path / ACTUALS
+    if not f.is_file():
+        return None
+    act = pd.read_parquet(f)
+    missing = [c for c in ("date", "symbol", "actual_move") if c not in act.columns]
+    if missing:
+        raise ValueError(f"{f}: missing columns {missing}")
+    act = act.assign(date=act["date"].astype(str), symbol=act["symbol"].astype(str))
+    parts, qs, levels = [], [], None
+    for p in sorted(run_path.glob("forecast_*.parquet")):
+        keys, r_q, lv = load_forecast(p)
+        if "date" not in keys.columns:
+            keys = keys.assign(date=p.stem.removeprefix("forecast_"))
+        m = (keys.assign(date=keys["date"].astype(str), _row=np.arange(len(keys)))
+             .merge(act, on=["date", "symbol"], how="inner"))
+        if m.empty:
+            continue
+        if levels is not None and lv != levels:
+            raise ValueError(f"{p}: quantile levels differ from the run's other forecasts")
+        levels = lv
+        parts.append(m.drop(columns="_row"))
+        qs.append(r_q[m["_row"].to_numpy()])
+    if not parts:
+        return None
+    keys = pd.concat(parts, ignore_index=True)
+    r_act = keys["actual_move"].to_numpy(dtype=float)
+    if "today_vwap" not in keys.columns:
+        keys["today_vwap"] = np.nan
+    if "actual_vwap" not in keys.columns:
+        keys["actual_vwap"] = keys["today_vwap"] * (1 + r_act)
+    return Live(keys=keys, r_q=np.vstack(qs), r_act=r_act, levels=levels)

@@ -432,10 +432,13 @@ def stock_detail_insights(symbol: str, b: pd.Series, r_q: np.ndarray, r_act: np.
 
 
 def tomorrow_insights(s: pd.DataFrame, event: str, confidence: float,
-                      min_hist: int = 20) -> list[Insight]:
-    """Tomorrow: how many stocks qualify and how many have test history backing the number."""
+                      min_hist: int = 20, day: str | None = None,
+                      band: tuple[float, float] | None = None) -> list[Insight]:
+    """Forecast: how many stocks qualify and how many have test history backing the number.
+    On a graded day (`s` has `inside`), also how many shown stocks' actuals fell in `band`."""
     if s.empty:
-        return [Insight(INFO, f"No stock has P({event}) ≥ {confidence:.0%} tomorrow.")]
+        when = f"on {day}" if day else "for this day"
+        return [Insight(INFO, f"No stock has P({event}) ≥ {confidence:.0%} {when}.")]
     backed = s[s["hist_n"].fillna(0) >= min_hist]
     held = backed[backed["hist_hit_rate"] >= confidence - 1e-9]
     out = [Insight(INFO, (
@@ -447,7 +450,82 @@ def tomorrow_insights(s: pd.DataFrame, event: str, confidence: float,
         out.append(Insight(INFO, "Across all stocks, past calls in these buckets came true: "
                            + ", ".join(f"{b} → {r.all_hit_rate:.0%} (n={int(r.all_n):,})"
                                        for b, r in allc.iterrows()) + "."))
+    if "inside" in s and band is not None and s["inside"].notna().any():
+        got = s["inside"].dropna().astype(bool)
+        nom = band[1] - band[0]
+        lvl = GOOD if abs(got.mean() - nom) <= COVERAGE_TOL else WARN
+        out.append(Insight(lvl, f"{day} has happened: the actual VWAP landed inside the "
+                                f"{_band(*band)} range for {got.mean():.0%} of these "
+                                f"{len(got):,} stocks (target {nom:.0%}). The full grade is in "
+                                f"Forecast vs actual."))
     return out
+
+
+def _band(lo: float, hi: float) -> str:
+    return f"P{lo * 100:.0f}–P{hi * 100:.0f}"
+
+
+def live_insights(g: dict, lo: float, hi: float, by_day: pd.DataFrame | None = None,
+                  day: str | None = None) -> list[Insight]:
+    """Forecast vs actual: did the band hold, which way the misses went, direction, skill, and
+    (with several graded days) how steady that is."""
+    if not g.get("rows"):
+        return [Insight(INFO, "No graded forecasts yet.")]
+    band, cov, nom = _band(lo, hi), g["coverage"], g["coverage_nominal"]
+    when = f" on {day}" if day else ""
+    out = []
+    if abs(cov - nom) <= COVERAGE_TOL:
+        out.append(Insight(GOOD, f"The {band} band held {cov:.0%} of {g['rows']:,} stocks' "
+                                 f"actual VWAP{when} (target {nom:.0%}): about the right width."))
+    else:
+        how = "too narrow" if cov < nom else "wider than needed"
+        out.append(Insight(WARN if cov < nom else INFO,
+                           f"The {band} band held {cov:.0%} of {g['rows']:,} stocks' actual "
+                           f"VWAP{when} (target {nom:.0%}): {how} for this day."))
+    ab, be = g["above"], g["below"]
+    out.append(Insight(INFO, f"Misses: {ab:.0%} landed above the band, {be:.0%} below "
+                             f"(about {(1 - nom) / 2:.0%} each expected)."))
+    b = g["bias"]
+    if abs(b) >= BIAS_SLIGHT:
+        lean = ("optimistic: actuals landed below the forecast" if b > 0
+                else "pessimistic: actuals landed above the forecast")
+        out.append(Insight(WARN if abs(b) >= BIAS_STRONG else INFO,
+                           f"The forecasts leaned {lean} (bias {b:+.3f}). Median actual move "
+                           f"{g['median_actual']:+.2%} vs median forecast "
+                           f"{g['median_forecast']:+.2%}."))
+    else:
+        out.append(Insight(GOOD, f"No overall lean (bias {b:+.3f}): actuals were spread "
+                                 f"around the forecast median."))
+    out.append(Insight(INFO, f"The forecast median had the direction right for "
+                             f"{g['direction_hit']:.0%} of stocks."))
+    sk = g["pinball_skill"]
+    out.append(Insight(GOOD if sk > 0 else BAD,
+                       f"Quantile loss is {abs(sk):.0%} {'lower' if sk > 0 else 'higher'} than "
+                       f"a naive 'no move' forecast."))
+    if by_day is not None and len(by_day) > 1:
+        out.append(Insight(INFO, (
+            f"Over {len(by_day)} graded days the {band} band held {by_day['coverage'].mean():.0%}"
+            f" on average (range {by_day['coverage'].min():.0%}–{by_day['coverage'].max():.0%})."
+        )))
+    else:
+        out.append(Insight(INFO, "This is one day. Stocks move together, so a single day's "
+                                 "coverage swings with the whole market; judge after several "
+                                 "graded days."))
+    return out
+
+
+def live_headline(by_day: pd.DataFrame, lo: float, hi: float) -> list[Insight]:
+    """Summary tab: one line on the live (out-of-sample) forecasts, if any were graded."""
+    if by_day is None or by_day.empty:
+        return []
+    last = by_day.iloc[-1]
+    nom = last["coverage_nominal"]
+    lvl = GOOD if abs(last["coverage"] - nom) <= COVERAGE_TOL else WARN
+    more = (f"; {len(by_day)} days graded, {by_day['coverage'].mean():.0%} on average"
+            if len(by_day) > 1 else "")
+    return [Insight(lvl, f"Live forecast for {last['day']}: the {_band(lo, hi)} band held "
+                         f"{last['coverage']:.0%} of actual VWAPs (target {nom:.0%}){more}. "
+                         f"See Forecast → Forecast vs actual.")]
 
 
 def compare_insights(summaries: dict[str, dict], calls: dict[str, pd.DataFrame],

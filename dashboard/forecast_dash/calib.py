@@ -265,3 +265,52 @@ def summary(r_q: np.ndarray, r_act: np.ndarray, levels, events: Events | None = 
         g = grid(events, edges)
         out["ece"] = float((g["deviation"].abs() * g["n"]).sum() / g["n"].sum()) if len(g) else np.nan
     return out
+
+
+# ---- live forecasts (forecast_<date> + actuals) ----------------------------------------------
+
+def price_table(ref: np.ndarray, r_q: np.ndarray, levels, lo: float, hi: float,
+                confidence: float) -> pd.DataFrame:
+    """Per row, the VWAP price range from fractional-move quantiles and a reference price:
+    low/median/high at percentiles lo/0.5/hi, the band width as a move, and the one-sided
+    levels: floor (P(VWAP >= floor) = confidence) and cap (P(VWAP <= cap) = confidence)."""
+    ref = np.asarray(ref, dtype=float)
+    q = {k: quantile_at(r_q, levels, t) for k, t in
+         (("low", lo), ("median", 0.5), ("high", hi), ("floor", 1 - confidence),
+          ("cap", confidence))}
+    return pd.DataFrame({"ref_vwap": ref, **{k: ref * (1 + v) for k, v in q.items()},
+                         "width": q["high"] - q["low"]})
+
+
+def live_grade(r_q: np.ndarray, r_act: np.ndarray, levels, lo: float, hi: float) -> dict:
+    """One set of graded forecasts: coverage of the lo..hi band against its nominal width,
+    how often the median got the direction right, PIT bias and quantile skill vs naive."""
+    if len(r_act) == 0:
+        return {"rows": 0}
+    q_lo, q_hi = quantile_at(r_q, levels, lo), quantile_at(r_q, levels, hi)
+    med = quantile_at(r_q, levels, 0.5)
+    s = summary(r_q, r_act, levels)
+    moved = r_act != 0
+    return {
+        "rows": len(r_act),
+        "coverage": float(((q_lo <= r_act) & (r_act <= q_hi)).mean()),
+        "coverage_nominal": float(hi - lo),
+        "above": float((r_act > q_hi).mean()),
+        "below": float((r_act < q_lo).mean()),
+        "direction_hit": float((np.sign(med[moved]) == np.sign(r_act[moved])).mean())
+        if moved.any() else np.nan,
+        "bias": s["bias"],
+        "pinball_skill": s["pinball_skill"],
+        "median_width": float(np.median(q_hi - q_lo)),
+        "median_actual": float(np.median(r_act)),
+        "median_forecast": float(np.median(med)),
+    }
+
+
+def live_by_day(days, r_q: np.ndarray, r_act: np.ndarray, levels, lo: float,
+                hi: float) -> pd.DataFrame:
+    """live_grade per forecast day, oldest first."""
+    days = np.asarray(days)
+    rows = [{"day": d, **live_grade(r_q[days == d], r_act[days == d], levels, lo, hi)}
+            for d in sorted(set(days))]
+    return pd.DataFrame(rows)

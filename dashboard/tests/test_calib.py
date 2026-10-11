@@ -99,3 +99,24 @@ def test_daily_and_summary_on_calibrated_data():
     assert s["pinball"] < s["naive_pinball"] and s["ece"] < 0.05
     d = calib.daily(calib.pit(r_q, r_act, LEVELS), df["day_idx"], *ev[0.01])
     assert len(d) == 100 and (d["n"] == 40).all() and "deviation" in d
+
+
+def test_price_table_converts_moves_to_vwap():
+    lv = [0.1, 0.5, 0.9]
+    r_q = np.array([[-0.02, 0.0, 0.03]])
+    t = calib.price_table(np.array([50.0]), r_q, lv, 0.1, 0.9, 0.9)
+    assert t.loc[0, "low"] == pytest.approx(49.0) and t.loc[0, "high"] == pytest.approx(51.5)
+    assert t.loc[0, "median"] == pytest.approx(50.0) and t.loc[0, "width"] == pytest.approx(0.05)
+    assert t.loc[0, "floor"] == pytest.approx(49.0) and t.loc[0, "cap"] == pytest.approx(51.5)
+
+
+def test_live_grade_coverage_and_direction():
+    lv = [0.1, 0.5, 0.9]
+    r_q = np.tile([-0.02, 0.01, 0.03], (4, 1))
+    r_act = np.array([0.0, 0.02, 0.05, -0.04])  # inside, inside, above, below
+    g = calib.live_grade(r_q, r_act, lv, 0.1, 0.9)
+    assert g["coverage"] == 0.5 and g["coverage_nominal"] == pytest.approx(0.8)
+    assert g["above"] == 0.25 and g["below"] == 0.25
+    assert g["direction_hit"] == pytest.approx(2 / 3)  # the 0.0 move is left out
+    by = calib.live_by_day(["d2", "d1", "d1", "d2"], r_q, r_act, lv, 0.1, 0.9)
+    assert list(by["day"]) == ["d1", "d2"] and list(by["rows"]) == [2, 2]

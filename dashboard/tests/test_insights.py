@@ -130,3 +130,19 @@ def test_day_and_stock_detail_insights():
                       "hist_n": [30, 5], "hist_hit_rate": [0.8, 0.9], "all_n": [900, 900],
                       "all_hit_rate": [0.7, 0.7]})
     assert "1 of them" in insights.tomorrow_insights(t, ">= +1.0%", 0.7)[0].text
+    graded = insights.tomorrow_insights(t.assign(inside=[True, False]), ">= +1.0%", 0.7,
+                                        day="2026-10-05", band=(0.1, 0.9))[-1]
+    assert graded.level == insights.WARN and "50% of these 2 stocks" in graded.text
+
+
+def test_live_insights_flags_narrow_band_and_lean():
+    g = {"rows": 500, "coverage": 0.70, "coverage_nominal": 0.8, "above": 0.25, "below": 0.05,
+         "direction_hit": 0.55, "bias": -0.05, "pinball_skill": 0.03, "median_width": 0.04,
+         "median_actual": 0.01, "median_forecast": 0.0}
+    out = insights.live_insights(g, 0.1, 0.9, None, "2026-10-05")
+    assert out[0].level == insights.WARN and "too narrow" in out[0].text
+    assert any("pessimistic" in i.text for i in out)
+    assert "one day" in out[-1].text
+    by = pd.DataFrame({"day": ["a", "b"], "coverage": [0.7, 0.9], "coverage_nominal": [0.8, 0.8]})
+    assert "2 days graded" in insights.live_headline(by, 0.1, 0.9)[0].text
+    assert insights.live_headline(pd.DataFrame(), 0.1, 0.9) == []

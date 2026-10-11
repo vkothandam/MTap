@@ -202,11 +202,16 @@ def daily_chart(d: pd.DataFrame, event: str | None) -> go.Figure:
     return _layout(fig, "Across stocks, per day (+ optimistic, − pessimistic)", height=560)
 
 
-def fan(d: pd.DataFrame, r_q: np.ndarray, r_act: np.ndarray, levels, symbol: str) -> go.Figure:
-    """Forecast bands over the test days, in % move, with the actual move as dots."""
+def fan(d: pd.DataFrame, r_q: np.ndarray, r_act: np.ndarray, levels, symbol: str,
+        ref: np.ndarray | None = None) -> go.Figure:
+    """Forecast bands over the days, in % move, with the actual move as dots. With `ref` (each
+    row's reference price) the bands and dots are VWAP prices instead."""
     order = np.argsort(d["date"].to_numpy(), kind="stable")
     x = d["date"].to_numpy()[order]
     q, a = r_q[order], r_act[order]
+    if ref is not None:
+        r = np.asarray(ref, dtype=float)[order]
+        q, a = r[:, None] * (1 + q), r * (1 + a)
     lv = np.asarray(levels)
     fig = go.Figure()
     pairs = [(lv[0], lv[-1], "rgba(31,119,180,0.15)"), (0.25, 0.75, "rgba(31,119,180,0.3)")]
@@ -222,8 +227,12 @@ def fan(d: pd.DataFrame, r_q: np.ndarray, r_act: np.ndarray, levels, symbol: str
     inside = (q[:, 0] <= a) & (a <= q[:, -1])
     fig.add_trace(go.Scatter(x=x, y=a, mode="markers", name="actual",
                              marker={"color": np.where(inside, "black", "#d62728"), "size": 6},
-                             hovertemplate="%{x}: actual %{y:+.2%}<extra></extra>"))
-    fig.update_yaxes(title="next-day move", tickformat="+.1%")
+                             hovertemplate="%{x}: actual %{y:" + (
+                                 "$,.2f" if ref is not None else "+.2%") + "}<extra></extra>"))
+    if ref is not None:
+        fig.update_yaxes(title="VWAP", tickprefix="$")
+    else:
+        fig.update_yaxes(title="next-day move", tickformat="+.1%")
     return _layout(fig, f"{symbol}: forecast range vs actual (red = outside the outer band)")
 
 
@@ -241,7 +250,7 @@ def pit_hist(u: np.ndarray, bins: int = 10, title: str = "PIT histogram (flat = 
 
 
 def spread_chart(t: pd.DataFrame, symbol: str) -> go.Figure:
-    """Tomorrow, one stock: model probability per move next to its historical hit rate in the
+    """Forecast, one stock: model probability per move next to its historical hit rate in the
     same bucket (stock and all stocks)."""
     fig = go.Figure()
     for side in t["side"].unique():
@@ -260,7 +269,7 @@ def spread_chart(t: pd.DataFrame, symbol: str) -> go.Figure:
                                  marker={"symbol": "x", "size": 8}))
     fig.update_xaxes(title="move size |m| (up: >= +m, down: <= −m)", tickformat=".1%")
     fig.update_yaxes(title="probability", tickformat=PCT, range=[0, 1])
-    return _layout(fig, f"{symbol}: tomorrow's probability per move vs history", height=500)
+    return _layout(fig, f"{symbol}: forecast probability per move vs history", height=500)
 
 
 def call_heatmap(calls: pd.DataFrame, min_n: int = 1) -> go.Figure:
@@ -304,3 +313,58 @@ def quantile_chart(qt: pd.DataFrame, title: str = "Quantile calibration: share o
     fig.update_xaxes(title="forecast quantile", tickformat=PCT, range=[0, 1])
     fig.update_yaxes(title="actual moves below it", tickformat=PCT, range=[0, 1])
     return _layout(fig, title, height=420)
+
+
+def price_range(levels, prices: np.ndarray, ref: float, symbol: str, lo: float, hi: float,
+                actual: float | None = None) -> go.Figure:
+    """One stock's forecast VWAP at every percentile, the chosen lo..hi band shaded, the
+    reference VWAP (and the actual, once known) as lines."""
+    pct = np.asarray(levels, dtype=float) * 100
+    fig = go.Figure(go.Scatter(x=pct, y=prices, mode="lines+markers", name="forecast VWAP",
+                               hovertemplate="P%{x:.0f}: $%{y:,.2f}<extra></extra>"))
+    inside = (pct >= lo * 100 - 1e-9) & (pct <= hi * 100 + 1e-9)
+    fig.add_trace(go.Scatter(x=pct[inside], y=prices[inside], mode="markers",
+                             name=f"P{lo * 100:.0f}–P{hi * 100:.0f} band",
+                             marker={"size": 11, "color": "#2ca02c"}, hoverinfo="skip"))
+    fig.add_hrect(y0=float(np.interp(lo * 100, pct, prices)),
+                  y1=float(np.interp(hi * 100, pct, prices)),
+                  fillcolor="rgba(44,160,44,0.12)", line_width=0)
+    fig.add_hline(y=ref, line=IDEAL, annotation_text=f"reference VWAP ${ref:,.2f}")
+    if actual is not None and np.isfinite(actual):
+        fig.add_hline(y=actual, line={"color": "black", "width": 2},
+                      annotation_text=f"actual ${actual:,.2f}", annotation_position="bottom right")
+    fig.update_xaxes(title="percentile (P(VWAP ≤ price))", ticksuffix="")
+    fig.update_yaxes(title="VWAP", tickprefix="$")
+    return _layout(fig, f"{symbol}: forecast VWAP by percentile", height=420)
+
+
+def live_scatter(med: np.ndarray, act: np.ndarray, inside: np.ndarray, symbols,
+                 title: str) -> go.Figure:
+    """Graded day: forecast median move vs the actual move per stock (red = outside band)."""
+    lim = float(np.nanquantile(np.abs(np.r_[med, act]), 0.99)) if len(act) else 0.05
+    fig = go.Figure(go.Scattergl(
+        x=med, y=act, mode="markers", text=np.asarray(symbols),
+        marker={"size": 5, "opacity": 0.6, "color": np.where(inside, "#1f77b4", "#d62728")},
+        hovertemplate="%{text}: median %{x:+.2%}, actual %{y:+.2%}<extra></extra>"))
+    fig.add_shape(type="line", x0=-lim, y0=-lim, x1=lim, y1=lim, line=IDEAL)
+    fig.add_hline(y=0, line={"color": "lightgrey", "width": 1})
+    fig.add_vline(x=0, line={"color": "lightgrey", "width": 1})
+    fig.update_xaxes(title="forecast median move", tickformat="+.1%", range=[-lim, lim])
+    fig.update_yaxes(title="actual move", tickformat="+.1%", range=[-lim, lim])
+    return _layout(fig, title, height=440)
+
+
+def live_days(by_day: pd.DataFrame) -> go.Figure:
+    """Graded days: band coverage against its nominal, and the PIT bias."""
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.6, 0.4],
+                        vertical_spacing=0.08)
+    fig.add_trace(go.Scatter(x=by_day["day"], y=by_day["coverage"], mode="lines+markers",
+                             name="band held"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=by_day["day"], y=by_day["coverage_nominal"], mode="lines",
+                             name="target", line=IDEAL), row=1, col=1)
+    fig.add_trace(go.Bar(x=by_day["day"], y=by_day["bias"], name="bias (+ optimistic)",
+                         marker_color=np.where(by_day["bias"] > 0, "#d62728", "#2ca02c")),
+                  row=2, col=1)
+    fig.update_yaxes(title="share inside band", tickformat=PCT, row=1, col=1)
+    fig.update_yaxes(title="bias", tickformat="+.0%", row=2, col=1)
+    return _layout(fig, "Graded days: band coverage and bias", height=480)

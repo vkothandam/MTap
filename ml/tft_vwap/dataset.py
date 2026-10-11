@@ -12,6 +12,8 @@ from pytorch_forecasting import TimeSeriesDataSet
 from pytorch_forecasting.data import EncoderNormalizer, GroupNormalizer, NaNLabelEncoder
 
 from .config import (
+    BREAK_GAP,
+    BREAK_JUMP,
     EARNINGS_FAR,
     EARNINGS_OVERDUE,
     EARNINGS_REALS,
@@ -49,13 +51,16 @@ def read_meta(panel: Path) -> dict:
     return meta
 
 
-def prepare(df: pd.DataFrame, *, symbols: int | None = None, seed: int = 42) -> pd.DataFrame:
+def prepare(df: pd.DataFrame, *, symbols: int | None = None, seed: int = 42,
+            series_breaks: bool = True) -> pd.DataFrame:
     """Type, clean and optionally subsample a raw panel frame (one row per symbol/day_idx)."""
     df = df[df["today_vwap"] > 0].copy()
     if symbols:
         rng = np.random.default_rng(seed)
         keep = rng.choice(np.sort(df["symbol"].unique()), size=symbols, replace=False)
         df = df[df["symbol"].isin(keep)]
+    if series_breaks:
+        df = split_series(df)
     for c in STATIC_CATEGORICALS:
         df[c] = df[c].fillna("unknown").astype(str)
     df["day_idx"] = df["day_idx"].astype("int64")
@@ -78,9 +83,25 @@ def prepare(df: pd.DataFrame, *, symbols: int | None = None, seed: int = 42) -> 
     return df.sort_values(["symbol", "day_idx"]).reset_index(drop=True)
 
 
+def split_series(df: pd.DataFrame) -> pd.DataFrame:
+    """Split each symbol at its series breaks (BREAK_GAP, BREAK_JUMP): the latest part keeps
+    the ticker, earlier ones become SYMBOL~1, ~2 ... counting back, so no encoder spans a
+    break. The move across a break is unknown, like a series' first bar."""
+    df = df.sort_values(["symbol", "day_idx"])
+    by = df.groupby("symbol")
+    move = 1 + df["vwap_pct_prev_day"]
+    brk = (by["day_idx"].diff() > BREAK_GAP) | (move >= BREAK_JUMP) | (move <= 1 / BREAK_JUMP)
+    later = brk.groupby(df["symbol"]).transform("sum") - brk.groupby(df["symbol"]).cumsum()
+    df.loc[brk, "vwap_pct_prev_day"] = np.nan
+    df["symbol"] = df["symbol"].where(later == 0, df["symbol"] + "~" + later.astype(str))
+    return df
+
+
 def load_panel(cfg: TrainConfig) -> tuple[pd.DataFrame, dict]:
     meta = read_meta(cfg.panel)
-    return prepare(pd.read_parquet(cfg.panel), symbols=cfg.symbols, seed=cfg.seed), meta
+    df = prepare(pd.read_parquet(cfg.panel), symbols=cfg.symbols, seed=cfg.seed,
+                 series_breaks=cfg.series_breaks)
+    return df, meta
 
 
 def make_folds(df: pd.DataFrame, cfg: TrainConfig) -> list[Fold]:

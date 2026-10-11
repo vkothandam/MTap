@@ -21,6 +21,16 @@ Unless stated otherwise, prices and volumes are split-adjusted and missing reals
 Each sample is an encoder of up to 60 sessions (at least 20), and the decoder is the one next
 session. The model forecasts 19 quantiles, P5 … P95, of the series at t+1.
 
+**Series breaks** (`series_breaks`, on by default): `prepare()` splits a symbol into separate
+series wherever a different security takes over the ticker. That is more than 20 sessions
+without a bar (a reused ticker or a relisting: BNY was a closed-end fund before BNY Mellon took
+the ticker) or a one-session VWAP move of 10x either way (a missed reverse split, a bankruptcy
+share exchange). The latest part keeps the ticker and earlier parts become `SYMBOL~1`, `~2` …,
+so no encoder spans a break. The move across the break counts as unknown (0), like a series'
+first bar. On the panel to 2026-10-06 this splits 22 symbols (4,630 rows renamed, none
+dropped), and the largest move left is +529%. Runs saved before the setting existed load with it
+off.
+
 ## 2. Static categoricals (one value per stock)
 
 | column | embedding | source |

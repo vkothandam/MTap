@@ -63,6 +63,36 @@ def test_run_saved_before_earnings_inputs_trained_without_them(tmp_path):
     assert from_run(tmp_path).earnings == "pit"
 
 
+def test_series_breaks_split_a_symbol(panel_df):
+    raw = panel_df.copy()
+    s2 = raw["symbol"] == "S2"
+    raw = raw[~(s2 & raw["day_idx"].between(1030, 1060))]  # 31 sessions without a bar
+    s2 = raw["symbol"] == "S2"
+    at = s2 & (raw["day_idx"] == 1061)
+    raw.loc[at, "vwap_pct_prev_day"] = 0.5  # the move across the gap
+    jump = s2 & (raw["day_idx"] == 1100)
+    raw.loc[jump, "vwap_pct_prev_day"] = 15.0  # a missed 1:16 reverse split
+    df = prepare(raw).set_index(["symbol", "day_idx"])
+    parts = df.loc[df.index.get_level_values("symbol").str.startswith("S2")].reset_index()
+    span = parts.groupby("symbol")["day_idx"].agg(["min", "max"])
+    assert span.to_dict("index") == {"S2~2": {"min": 1000, "max": 1029},
+                                     "S2~1": {"min": 1061, "max": 1099},
+                                     "S2": {"min": 1100, "max": 1149}}
+    assert df.loc[("S2~1", 1061), "vwap_pct_prev_day"] == 0  # unknown, like a first bar
+    assert df.loc[("S2", 1100), "vwap_pct_prev_day"] == 0
+    assert df.index.get_level_values("symbol").str.contains("~").sum() == len(parts) - 50
+    same = prepare(raw, series_breaks=False)
+    assert set(same["symbol"]) == set(raw["symbol"])
+    assert same.loc[same["symbol"] == "S2", "vwap_pct_prev_day"].max() == 15.0
+
+
+def test_run_saved_before_series_breaks_trained_without_them(tmp_path):
+    saved = {k: v for k, v in TrainConfig().to_dict().items() if k != "series_breaks"}
+    (tmp_path / "config.json").write_text(json.dumps({"config": saved}))
+    assert from_run(tmp_path).series_breaks is False
+    assert TrainConfig().series_breaks is True
+
+
 def test_schema_1_panel_is_rejected(tmp_path):
     path = tmp_path / "panel.parquet"
     pd.DataFrame({"x": [1]}).to_parquet(path)

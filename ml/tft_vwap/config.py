@@ -44,6 +44,11 @@ EARNINGS_MODES = ("exact", "pit", "off")
 EARNINGS_FAR = 63
 EARNINGS_OVERDUE = -10
 SENTIMENT_REALS = ("daily_sentiment", "sentiment_volume", "has_news")
+# Series breaks (TrainConfig.series_breaks): more than BREAK_GAP sessions without a bar (a
+# reused ticker, a relisting) or a one-session VWAP move of BREAK_JUMP x either way (a missed
+# reverse split, a bankruptcy share exchange) start a new security under the same ticker
+BREAK_GAP = 20
+BREAK_JUMP = 10.0
 
 # The model forecasts a series one session ahead. The panel's `target_tomorrow_vwap` lives on
 # day t's row, so using it as the series would put tomorrow's price into the encoder; instead
@@ -64,6 +69,8 @@ class TrainConfig:
     normalizer: str = "encoder"
     use_sentiment: bool = False
     earnings: str = "exact"  # EARNINGS_MODES
+    # each series break starts a new series: the part before it is renamed SYMBOL~1 (~2 ...)
+    series_breaks: bool = True
     symbols: int | None = None  # random subset of N symbols for fast iteration
     seed: int = 42
 
@@ -138,8 +145,9 @@ class TrainConfig:
 
 # scoring-only settings: they never touch the model, so reports use the current defaults
 REPORT_FIELDS = frozenset({"moves", "confidences", "prob_buckets"})
-# model inputs added later: a run saved before the field existed was trained without them
-ADDED_INPUTS = {"earnings": "off"}
+# model inputs and data cleaning added later: a run saved before the field existed was
+# trained without them
+ADDED_INPUTS = {"earnings": "off", "series_breaks": False}
 
 
 def from_run(run_dir: Path, **overrides) -> TrainConfig:

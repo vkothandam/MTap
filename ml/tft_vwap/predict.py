@@ -65,7 +65,8 @@ def forecast(run_dir: Path, *, fold: int | None = None, cfg: TrainConfig | None 
         raise ValueError(f"{cfg.panel}: meta has no next_session; re-export with "
                          "`sourcing-py etrade export-tft --include-inference`")
 
-    df = prepare(pd.read_parquet(cfg.panel), symbols=cfg.symbols, seed=cfg.seed)
+    df = prepare(pd.read_parquet(cfg.panel), symbols=cfg.symbols, seed=cfg.seed,
+                 series_breaks=cfg.series_breaks)
     last = int(df["day_idx"].max())
     active = df.loc[df["day_idx"] == last, "symbol"]
     hist = df[df["symbol"].isin(active) & (df["day_idx"] > last - cfg.encoder_length)]

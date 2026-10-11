@@ -57,6 +57,11 @@ def trading_calendar(
     return [(d, i) for i, d in enumerate(sessions(anchor, end, calendar=calendar), start=1)]
 
 
+def last_session(calendar: str = DEFAULT_CALENDAR) -> date:
+    """The furthest session the exchange calendar knows (about a year ahead)."""
+    return _calendar(calendar).last_session.date()
+
+
 def is_trading_day(d: date, *, calendar: str = DEFAULT_CALENDAR) -> bool:
     """True if d is a trading session on the given calendar."""
     return bool(_calendar(calendar).is_session(str(d)))

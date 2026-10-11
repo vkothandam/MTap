@@ -195,6 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--accelerator", default=d.accelerator)
     p.add_argument("--num-workers", type=int, default=d.num_workers)
     p.add_argument("--use-sentiment", action="store_true")
+    p.add_argument("--no-earnings", dest="use_earnings", action="store_false",
+                   help="leave out the earnings-calendar inputs (FEATURES.md)")
     p.add_argument("--seed", type=int, default=d.seed)
     a = p.parse_args(argv)
     torch.set_float32_matmul_precision("medium")
@@ -205,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         n_folds=a.n_folds, max_epochs=a.max_epochs, limit_train_batches=a.limit_train_batches,
         batch_size=a.batch_size, hidden_size=a.hidden_size, learning_rate=a.learning_rate,
         accelerator=a.accelerator, num_workers=a.num_workers, use_sentiment=a.use_sentiment,
+        use_earnings=a.use_earnings,
         seed=a.seed,
     ))
     return 0

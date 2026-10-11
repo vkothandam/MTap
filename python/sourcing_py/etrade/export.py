@@ -6,7 +6,12 @@ The Parquet file plus its meta sidecar is the ONLY contract with the downstream 
 
 Leakage rule: every input column is known at the close of day t. The forward VWAPs other
 than the target (vwap_nx_10d / vwap_end_week / vwap_nx_qtr) and results_window (whose
-pre-earnings buckets come from an upcoming filing date) are deliberately not exported.
+pre-earnings buckets come from an upcoming filing date) are deliberately not exported. The
+earnings window is exported in its point-in-time form instead: results_window_pit,
+days_since_filing and days_to_filing_est use only the filings made by day t, with the next
+filing date estimated from the year-ago one (NULL when a symbol has no filing yet).
+
+Schema 2 added results_window_pit, days_since_filing and days_to_filing_est.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from ..news import db as news_db
 from ..utils import trading_calendar as tc
 from . import db
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _DEFAULTS = {
     "issue_types": ("CS", "DR"),
@@ -87,6 +92,7 @@ _PANEL_SQL = """
 CREATE OR REPLACE TEMP TABLE _panel AS
 WITH adj AS (
     SELECT symbol, date, day_idx, transactions, vwap_nx_1d, vwap_pct_prev_day, is_10k, is_10q,
+        results_window_pit, days_since_filing, days_to_filing_est,
         open * f AS open, high * f AS high, low * f AS low, close * f AS close,
         vwap * f AS vwap, volume / f AS volume
     FROM (SELECT *, COALESCE(split_factor, 1.0) AS f FROM daily_bars WHERE day_idx IS NOT NULL)
@@ -128,7 +134,10 @@ SELECT
     COALESCE(n.n_articles, 0)::INTEGER             AS sentiment_volume,
     (COALESCE(n.n_articles, 0) > 0)::SMALLINT      AS has_news,
     b.is_10k,
-    b.is_10q
+    b.is_10q,
+    b.results_window_pit,
+    b.days_since_filing,
+    b.days_to_filing_est
 FROM bars b
 JOIN universe u ON u.symbol = b.symbol
 JOIN symbols s ON s.symbol = b.symbol

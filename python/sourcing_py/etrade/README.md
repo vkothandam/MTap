@@ -209,6 +209,14 @@ The trading-day grid comes from the generic `sourcing_py/utils/trading_calendar.
 - **`results_window`** — earnings-window class vs. the **nearest** filing (offsets in trading
   days): `Pre_Earnings_Runup` (t−10..t−2), `Earnings_Eve` (t−1), `Earnings_Day` (t=0),
   `Post_Earnings_Reaction` (t+1..t+3), `Post_Earnings_Drift` (t+4..t+15), else `Normal_Trading`.
+  Hindsight only: the pre-earnings buckets use the actual upcoming filing.
+- **`days_since_filing` / `days_to_filing_est` / `results_window_pit`** — the point-in-time
+  version, from the 10-K/10-Q filings made by each day: sessions since the latest filing (0 on
+  the filing day), sessions to the expected next filing (the year-ago filing + 364 days, same
+  weekday; negative once overdue; NULL with no filing yet), and the same labels from those two.
+  The post windows come from the actual filing and the pre windows from the expected one. An
+  overdue filing (up to 10 sessions) reads as `Earnings_Eve`. The expected date is within ±5
+  sessions of the real filing ~86% of the time (see `ml/FEATURES.md`).
 - **Forward VWAPs** (volume-weighted `SUM(vwap*volume)/SUM(volume)`): `vwap_nx_1d` (next
   trading day), `vwap_nx_10d` (next 10), `vwap_end_week` (through the last session of the
   current ISO week), `vwap_nx_qtr` (through the next 10-K/10-Q filing day). NULL where the
@@ -254,9 +262,11 @@ uv run sourcing-py etrade export-tft --out /tmp/panel.parquet --min-bars 250 --i
   - news: `daily_sentiment`, `sentiment_volume`, `has_news`. Joined from the news DB
     (read-only ATTACH) and zero-filled.
   - filings: `is_10k`, `is_10q`
+  - earnings calendar (point in time): `results_window_pit`, `days_since_filing`,
+    `days_to_filing_est` (schema 2)
 - **Not exported, because they leak the future:** `vwap_nx_10d`, `vwap_end_week`,
   `vwap_nx_qtr`, and `results_window`, whose pre-earnings buckets come from an upcoming
-  filing.
+  filing (`results_window_pit` replaces it).
 
 ## Storage schema
 
@@ -269,7 +279,8 @@ symbols(symbol PK, xid, issue_type, exchange, company_name, auto_invest,
 daily_bars(symbol, date, open, high, low, close, volume, vwap, transactions,
            window_start_ms, source, ingested_at, run_id, loaded_at,
            -- Phase 1c derived features (features.py; rewritten in full each derive-features run):
-           day_idx, is_10k, is_10q, results_window, vwap_nx_1d, vwap_nx_10d,
+           day_idx, is_10k, is_10q, results_window, days_since_filing,
+           days_to_filing_est, results_window_pit, vwap_nx_1d, vwap_nx_10d,
            vwap_end_week, vwap_nx_qtr, vwap_pct_prev_day, features_computed_at,
            PRIMARY KEY (symbol, date))  -- Phase 1a: one EOD OHLCV bar per symbol/day
 

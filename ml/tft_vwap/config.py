@@ -5,20 +5,33 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-SUPPORTED_SCHEMA_VERSIONS = (1,)
+SUPPORTED_SCHEMA_VERSIONS = (2,)
 
+# The model inputs by category; FEATURES.md describes every column.
 STATIC_CATEGORICALS = ("symbol", "industry_code", "exchange", "issue_type")
 KNOWN_REALS = ("day_of_week", "month", "is_month_end", "is_quarter_end", "sessions_gap_next")
-OBSERVED_REALS = (
+PRICE_VOLUME_REALS = (
     "vwap_pct_prev_day",
     "intraday_spread_pct",
     "close_position_pct",
     "open_position_pct",
     "volume_velocity",
     "transactions_per_volume",
-    "is_10k",
-    "is_10q",
 )
+FILING_REALS = ("is_10k", "is_10q")
+OBSERVED_REALS = PRICE_VOLUME_REALS + FILING_REALS
+# Financial-results calendar, point in time (only the filings made by day t). The flags are
+# one-hot from the panel's results_window_pit; Earnings_Day is FILING_REALS.
+EARNINGS_WINDOWS = {
+    "Pre_Earnings_Runup": "is_pre_earnings_runup",
+    "Earnings_Eve": "is_earnings_eve",
+    "Post_Earnings_Reaction": "is_post_earnings_reaction",
+    "Post_Earnings_Drift": "is_post_earnings_drift",
+}
+EARNINGS_REALS = ("days_since_filing", "days_to_filing_est", *EARNINGS_WINDOWS.values())
+# the sessions the two counts are clipped to; also their value when unknown (no filing yet)
+EARNINGS_FAR = 63
+EARNINGS_OVERDUE = -10
 SENTIMENT_REALS = ("daily_sentiment", "sentiment_volume", "has_news")
 
 # The model forecasts a series one session ahead. The panel's `target_tomorrow_vwap` lives on
@@ -39,6 +52,7 @@ class TrainConfig:
     # "group": one center/scale per symbol over the whole training span
     normalizer: str = "encoder"
     use_sentiment: bool = False
+    use_earnings: bool = True
     symbols: int | None = None  # random subset of N symbols for fast iteration
     seed: int = 42
 
@@ -98,7 +112,8 @@ class TrainConfig:
     @property
     def observed_reals(self) -> list[str]:
         cols = [c for c in OBSERVED_REALS if c != self.target_col]
-        return cols + (list(SENTIMENT_REALS) if self.use_sentiment else [])
+        return (cols + (list(EARNINGS_REALS) if self.use_earnings else [])
+                + (list(SENTIMENT_REALS) if self.use_sentiment else []))
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -108,15 +123,17 @@ class TrainConfig:
 
 # scoring-only settings: they never touch the model, so reports use the current defaults
 REPORT_FIELDS = frozenset({"moves", "confidences", "prob_buckets"})
+# model inputs added later: a run saved before the field existed was trained without them
+ADDED_INPUTS = {"use_earnings": False}
 
 
 def from_run(run_dir: Path, **overrides) -> TrainConfig:
     """The TrainConfig a run was trained with (fields added since then, and REPORT_FIELDS,
-    take the current defaults; non-None `overrides` win)."""
+    take the current defaults, except ADDED_INPUTS; non-None `overrides` win)."""
     import json
     from dataclasses import fields
 
     saved = json.loads((Path(run_dir) / "config.json").read_text())["config"]
     known = {f.name for f in fields(TrainConfig)} - REPORT_FIELDS
-    kw = {k: v for k, v in saved.items() if k in known}
+    kw = {**ADDED_INPUTS, **{k: v for k, v in saved.items() if k in known}}
     return TrainConfig(**{**kw, **{k: v for k, v in overrides.items() if v is not None}})

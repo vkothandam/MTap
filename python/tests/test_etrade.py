@@ -589,6 +589,63 @@ def test_results_window_nearest_filing_wins(tmp_path):
     assert mid == "Pre_Earnings_Runup"
 
 
+_PIT_COLS = "date, days_since_filing, days_to_filing_est, results_window_pit"
+
+
+def _pit(dbp, filings):
+    """derive_features over 2024-01-16..2025-02-28 with `filings` [(form, date)]; returns
+    {date: (since, till, window)}."""
+    with db.connect(dbp) as con:
+        _seed_ramp(con, "AAA", tc.sessions(date(2024, 1, 16), date(2025, 2, 28)))
+        for i, (form, d) in enumerate(filings):
+            _insert_filing(con, "AAA", form, d, f"k{i}")
+    features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        rows = con.execute(f"SELECT {_PIT_COLS} FROM daily_bars ORDER BY date").fetchall()
+    return {d.isoformat(): tuple(r) for d, *r in rows}
+
+
+def test_results_window_pit_from_year_ago_filing(tmp_path):
+    # 10-Q on Mon 2024-02-05 -> expected next on Mon 2025-02-03 (364 days on); filed late,
+    # on Thu 2025-02-06.
+    pit = _pit(tmp_path / "f.duckdb", [("10-Q", "2024-02-05"), ("10-Q", "2025-02-06")])
+    di = {d: tc.day_idx_for(date.fromisoformat(d)) for d in pit}
+    assert pit["2024-01-29"] == (None, None, "Normal_Trading")  # nothing filed yet
+    assert pit["2024-02-05"] == (0, di["2025-02-03"] - di["2024-02-05"], "Earnings_Day")
+    assert pit["2024-02-07"][2] == "Post_Earnings_Reaction"
+    assert pit["2024-02-12"][2] == "Post_Earnings_Drift"
+    assert pit["2024-06-03"][2] == "Normal_Trading"
+    assert pit["2025-01-21"][1:] == (9, "Pre_Earnings_Runup")
+    assert pit["2025-01-31"][1:] == (1, "Earnings_Eve")
+    assert pit["2025-02-04"][1:] == (-1, "Earnings_Eve")  # overdue
+    assert pit["2025-02-06"][:1] + pit["2025-02-06"][2:] == (0, "Earnings_Day")
+    assert pit["2025-02-07"][2] == "Post_Earnings_Reaction"
+
+
+def test_results_window_pit_uses_no_future_filing(tmp_path):
+    past = [("10-Q", "2024-02-05")]
+    without = _pit(tmp_path / "a.duckdb", past)
+    with_next = _pit(tmp_path / "b.duckdb", [*past, ("10-K", "2025-02-06")])
+    before = [d for d in without if d < "2025-02-06"]
+    assert all(without[d] == with_next[d] for d in before)  # the 2025 filing changes nothing before it
+    hindsight = []  # unlike results_window, whose pre-buckets come from the future filing
+    for name in ("a", "b"):
+        with db.connect(tmp_path / f"{name}.duckdb") as con:
+            hindsight.append(con.execute(
+                "SELECT results_window FROM daily_bars WHERE date = '2025-01-29'").fetchone()[0])
+    assert hindsight == ["Normal_Trading", "Pre_Earnings_Runup"]
+    assert without["2025-01-29"][2] == "Pre_Earnings_Runup"  # pit: from the expected date alone
+
+
+def test_results_window_pit_skips_anniversary_of_quarter_already_filed(tmp_path):
+    # filed a week early (2025-01-27): the 2025-02-03 anniversary is that same quarter, so the
+    # next expected date is the new filing's own anniversary (the only one left), 2026-01-26
+    pit = _pit(tmp_path / "f.duckdb", [("10-Q", "2024-02-05"), ("10-Q", "2025-01-27")])
+    nxt = tc.day_idx_for(date(2026, 1, 26))
+    assert pit["2025-02-03"] == (5, nxt - tc.day_idx_for(date(2025, 2, 3)), "Post_Earnings_Drift")
+    assert pit["2025-02-28"][::2] == (23, "Normal_Trading")  # Presidents Day is shut
+
+
 def test_forward_vwap_values_and_nulls(tmp_path):
     dbp = tmp_path / "f.duckdb"
     sess = tc.sessions(date(2024, 1, 16), date(2024, 2, 15))  # > 10 sessions
@@ -748,8 +805,8 @@ def test_export_tft_columns_formulas_and_fills(tmp_path):
         "is_quarter_end", "sessions_gap_next", "today_vwap", "vwap_pct_prev_day",
         "intraday_spread_pct", "close_position_pct", "open_position_pct", "volume_velocity",
         "transactions_per_volume", "daily_sentiment", "sentiment_volume", "has_news",
-        "is_10k", "is_10q",
-    ]  # exact set: no leaky forward VWAPs / results_window
+        "is_10k", "is_10q", "results_window_pit", "days_since_filing", "days_to_filing_est",
+    ]  # exact set: no leaky forward VWAPs / hindsight results_window
     by = {(r["symbol"], r["date"].isoformat()): r for r in rows}
     r = by[("AAA", "2024-01-16")]  # vwap 10, next session 11
     assert r["target_tomorrow_vwap"] == 11.0

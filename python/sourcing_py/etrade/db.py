@@ -94,7 +94,10 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     day_idx              BIGINT,    -- global trading-day index (-> trading_calendar.date)
     is_10k               SMALLINT,  -- 1 on the (snapped) trading day of a 10-K filing, else 0
     is_10q               SMALLINT,  -- 1 on the (snapped) trading day of a 10-Q filing, else 0
-    results_window       TEXT,      -- earnings-window class relative to nearest filing (t)
+    results_window       TEXT,      -- earnings-window class relative to nearest filing (t); hindsight
+    days_since_filing    INTEGER,   -- sessions since the latest 10-K/10-Q filed by this day (0 = filing day)
+    days_to_filing_est   INTEGER,   -- sessions to the expected next 10-K/10-Q (year-ago + 364d; < 0 overdue)
+    results_window_pit   TEXT,      -- results_window from the two above: known at this day's close
     vwap_nx_1d           DOUBLE,    -- vol-weighted vwap over the next 1 trading day
     vwap_nx_10d          DOUBLE,    -- vol-weighted vwap over the next 10 trading days
     vwap_end_week        DOUBLE,    -- current day .. last session of current ISO week (incl.)
@@ -169,6 +172,9 @@ _MIGRATIONS = (
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS vwap_pct_prev_day DOUBLE",
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS features_computed_at TIMESTAMP",
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS split_factor DOUBLE",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS days_since_filing INTEGER",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS days_to_filing_est INTEGER",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS results_window_pit TEXT",
 )
 
 

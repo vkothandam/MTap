@@ -12,6 +12,10 @@ from pytorch_forecasting import TimeSeriesDataSet
 from pytorch_forecasting.data import EncoderNormalizer, GroupNormalizer, NaNLabelEncoder
 
 from .config import (
+    EARNINGS_FAR,
+    EARNINGS_OVERDUE,
+    EARNINGS_REALS,
+    EARNINGS_WINDOWS,
     KNOWN_REALS,
     OBSERVED_REALS,
     SENTIMENT_REALS,
@@ -54,7 +58,13 @@ def prepare(df: pd.DataFrame, *, symbols: int | None = None, seed: int = 42) -> 
     for c in STATIC_CATEGORICALS:
         df[c] = df[c].fillna("unknown").astype(str)
     df["day_idx"] = df["day_idx"].astype("int64")
-    reals = [*KNOWN_REALS, *OBSERVED_REALS, *SENTIMENT_REALS]
+    # earnings calendar: no filing yet (NULL) reads as far from one; one-hot the window
+    df["days_since_filing"] = df["days_since_filing"].fillna(EARNINGS_FAR).clip(0, EARNINGS_FAR)
+    df["days_to_filing_est"] = (df["days_to_filing_est"].fillna(EARNINGS_FAR)
+                                .clip(EARNINGS_OVERDUE, EARNINGS_FAR))
+    for window, col in EARNINGS_WINDOWS.items():
+        df[col] = (df["results_window_pit"] == window).astype("float64")
+    reals = [*KNOWN_REALS, *OBSERVED_REALS, *EARNINGS_REALS, *SENTIMENT_REALS]
     df[reals] = df[reals].astype("float64").fillna(0.0)
     # heavy right tail (news days run 100x+ normal volume)
     df["volume_velocity"] = np.log1p(df["volume_velocity"].clip(lower=0))

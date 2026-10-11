@@ -34,6 +34,9 @@ erDiagram
         SMALLINT is_10k
         SMALLINT is_10q
         VARCHAR results_window
+        INTEGER days_since_filing
+        INTEGER days_to_filing_est
+        VARCHAR results_window_pit
         DOUBLE vwap_nx_1d
         DOUBLE vwap_nx_10d
         DOUBLE vwap_end_week

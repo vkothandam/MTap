@@ -10,6 +10,13 @@ features the downstream TFT panel needs, and writes them back onto `daily_bars`:
                      Pre_Earnings_Runup  t-10..t-2   Earnings_Eve  t-1   Earnings_Day  t=0
                      Post_Earnings_Reaction t+1..t+3  Post_Earnings_Drift t+4..t+15
                      Normal_Trading otherwise (offsets counted in trading days).
+                   Hindsight only: its pre-earnings buckets use the actual upcoming filing.
+  days_since_filing / days_to_filing_est / results_window_pit — the point-in-time version,
+                   known at the close of each day from the 10-K/10-Q filings made by then:
+                   sessions since the latest filing (0 on the filing day), sessions to the
+                   expected next one (the year-ago filing + 364 days, same weekday; negative
+                   once overdue), and the same window labels from those two (post windows
+                   from the actual filing, pre windows from the expected one).
   vwap_nx_1d / vwap_nx_10d / vwap_end_week / vwap_nx_qtr — forward volume-weighted VWAP
                    aggregates (SUM(vwap*volume)/SUM(volume)) over, respectively: the next
                    trading day; the next 10 trading days; the rest of the current ISO week;
@@ -30,7 +37,7 @@ utils.trading_calendar helper (the source of truth for day_idx).
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pyarrow as pa
 
@@ -47,6 +54,15 @@ RESULTS_WINDOWS = (
     ("Post_Earnings_Drift", 4, 15),
 )
 
+# results_window_pit: an expected filing date is the anniversary of a filing a year earlier,
+# 364 days on (52 weeks, so the weekday matches). Anniversaries less than ANNIV_MIN_GAP
+# sessions after the latest filing are that quarter's, already filed, so they are skipped.
+# An overdue expected date (passed, nothing filed yet) counts as Earnings_Eve for up to
+# OVERDUE_MAX sessions.
+ANNIV_DAYS = 364
+ANNIV_MIN_GAP = 20
+OVERDUE_MAX = 10
+
 
 def _refresh_trading_calendar(con, calendar: str) -> int:
     """Rebuild the trading_calendar dimension out to the furthest date we need to index
@@ -55,6 +71,8 @@ def _refresh_trading_calendar(con, calendar: str) -> int:
         "SELECT (SELECT max(date) FROM daily_bars), (SELECT max(date_filed) FROM sec_filings)"
     ).fetchone()
     end = max(d for d in (end_bar, end_filing, date.today()) if d is not None)
+    if end_filing is not None:  # far enough ahead to index the latest filing's anniversary
+        end = max(end, min(end_filing + timedelta(days=ANNIV_DAYS + 7), tc.last_session(calendar)))
     rows = tc.trading_calendar(end=end, calendar=calendar)
     tbl = pa.table({
         "date": [d for d, _ in rows],
@@ -174,6 +192,48 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
                 f"WHERE results_window IS NULL{and_scope}"
             )
 
+            # 4b. Point-in-time window from the 10-K/10-Q filings made by each day. A "state"
+            #     per (symbol, filing day) holds the expected next filing as of that filing;
+            #     each bar takes the latest state on or before it (ASOF), so nothing filed
+            #     after the bar is used.
+            con.execute(
+                f"CREATE OR REPLACE TEMP TABLE _periodic AS SELECT DISTINCT f.symbol, "
+                f"  (SELECT min(c.day_idx) FROM trading_calendar c WHERE c.date >= f.date_filed) AS fday, "
+                f"  (SELECT min(c.day_idx) FROM trading_calendar c "
+                f"    WHERE c.date >= f.date_filed + INTERVAL {ANNIV_DAYS} DAY) AS aday "
+                f"FROM sec_filings f WHERE f.form_type IN ('10-K', '10-Q') "
+                f"AND f.date_filed IS NOT NULL{s('f')}"
+            )
+            con.execute(
+                f"CREATE OR REPLACE TEMP TABLE _pit_state AS "
+                f"SELECT st.symbol, st.fday, "
+                f"  (SELECT min(p.aday) FROM _periodic p WHERE p.symbol = st.symbol "
+                f"    AND p.fday <= st.fday AND p.aday > st.fday + {ANNIV_MIN_GAP}) AS exp_fday "
+                f"FROM (SELECT DISTINCT symbol, fday FROM _periodic WHERE fday IS NOT NULL) st"
+            )
+            con.execute(
+                f"UPDATE daily_bars SET days_since_filing = NULL, days_to_filing_est = NULL"
+                f"{where_scope}"
+            )
+            con.execute(
+                f"UPDATE daily_bars b SET days_since_filing = x.since, days_to_filing_est = x.till "
+                f"FROM ("
+                f"  SELECT b.symbol, b.date, b.day_idx - st.fday AS since,"
+                f"    st.exp_fday - b.day_idx AS till"
+                f"  FROM (SELECT * FROM daily_bars b WHERE b.day_idx IS NOT NULL{s('b')}) b"
+                f"  ASOF JOIN _pit_state st ON st.symbol = b.symbol AND b.day_idx >= st.fday"
+                f") x WHERE b.symbol = x.symbol AND b.date = x.date"
+            )
+            con.execute(
+                f"UPDATE daily_bars SET results_window_pit = CASE"
+                f"  WHEN days_since_filing = 0 THEN 'Earnings_Day'"
+                f"  WHEN days_since_filing BETWEEN 1 AND 3 THEN 'Post_Earnings_Reaction'"
+                f"  WHEN days_since_filing BETWEEN 4 AND 15 THEN 'Post_Earnings_Drift'"
+                f"  WHEN days_to_filing_est BETWEEN 2 AND 10 THEN 'Pre_Earnings_Runup'"
+                f"  WHEN days_to_filing_est BETWEEN -{OVERDUE_MAX} AND 1 THEN 'Earnings_Eve'"
+                f"  ELSE 'Normal_Trading' END{where_scope}"
+            )
+
             # 5. Forward VWAPs over fixed trading-day windows (RANGE on day_idx is robust to
             #    missing bars; end-of-week partitions by ISO year+week), plus the backward
             #    prev-day % change (LAG over day_idx). Overwrites all scoped rows (NULL where
@@ -223,6 +283,8 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
             ).fetchone()
 
             con.execute("DROP TABLE IF EXISTS _filing_days")
+            con.execute("DROP TABLE IF EXISTS _periodic")
+            con.execute("DROP TABLE IF EXISTS _pit_state")
             con.execute("DROP VIEW IF EXISTS _adj_bars")
             con.execute("COMMIT")
         except Exception:

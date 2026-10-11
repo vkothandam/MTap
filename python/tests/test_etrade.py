@@ -1138,6 +1138,26 @@ def test_split_factor_back_adjusts_only_unapplied_splits(tmp_path):
     assert first["transactions_per_volume"] == pytest.approx(10 / 100)
 
 
+def test_split_factor_uses_new_york_date_of_fetch(tmp_path):
+    # Fetched 00:54 UTC Monday = Sunday evening in New York: Monday's split can't be in the
+    # upstream-adjusted bars yet, so it must still be back-adjusted here.
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2026, 8, 12), date(2026, 8, 17))
+    split_day = sess[-1]  # Monday 2026-08-17
+    with db.connect(dbp) as con:
+        _symbol(con, "YYY")
+        for d in sess[:-1]:
+            _bar_ingested(con, "YYY", d, 0.05, 1e6, datetime(2026, 8, 17, 0, 54, 46))
+        _bar_ingested(con, "YYY", split_day, 1.0, 5e4, datetime(2026, 8, 18, 1, 0))
+        _split(con, "YYY", split_day, 20, 1)
+    features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        got = dict(con.execute(
+            "SELECT date, split_factor FROM daily_bars WHERE symbol = 'YYY'").fetchall())
+    assert got[sess[0]] == pytest.approx(20.0)
+    assert got[split_day] == 1.0
+
+
 def _subs(*filings):
     """A submissions-API filings block: filings are (accession, form, filed, items)."""
     return {

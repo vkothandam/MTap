@@ -202,14 +202,17 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
             )
 
             # 1b. split_factor (reset, then the product of pending splits per bar). Future
-            #     (announced, not yet executed) splits are ignored.
+            #     (announced, not yet executed) splits are ignored. ingested_at is naive UTC;
+            #     compare on the New York date, since a fetch at 00:54 UTC Monday is still
+            #     Sunday evening on the exchange and can't include Monday's split.
             con.execute(f"UPDATE daily_bars SET split_factor = 1.0{where_scope}")
             con.execute(
                 f"UPDATE daily_bars b SET split_factor = f.factor FROM ("
                 f"  SELECT b.symbol, b.date, exp(sum(ln(sp.split_from / sp.split_to))) AS factor"
                 f"  FROM daily_bars b JOIN stock_splits sp ON sp.ticker = b.symbol"
                 f"    AND sp.execution_date > b.date"
-                f"    AND sp.execution_date > COALESCE(CAST(b.ingested_at AS DATE), b.date)"
+                f"    AND sp.execution_date > COALESCE(CAST(timezone('America/New_York',"
+                f"      timezone('UTC', b.ingested_at)) AS DATE), b.date)"
                 f"    AND sp.execution_date <= current_date"
                 f"  WHERE true{s('b')}"
                 f"  GROUP BY b.symbol, b.date"

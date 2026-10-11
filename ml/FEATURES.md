@@ -22,6 +22,7 @@ The TFT sorts its fields into the roles below. Defaults are shown (`--target ret
 | Known-future reals | `day_of_week`, `month`, `is_month_end`, `is_quarter_end`, `sessions_gap_next` | Read for the encoder days and for day t+1 | 3 |
 | Observed (past-only) reals | `intraday_spread_pct`, `close_position_pct`, `open_position_pct`, `volume_velocity`, `transactions_per_volume`, `is_10k`, `is_10q`, the earnings inputs, the optional sentiment inputs | Read for the encoder days only | 4–7 |
 | Added by the model | `relative_time_idx`, `encoder_length`, the target's centre and scale | Made by pytorch-forecasting | 8 |
+| **Model output** (not in the panel) | `q05` … `q95`, `up_<c>`/`down_<c>`, `prob` | The forecast: 19 percentiles of tomorrow's move, and the confidence moves and event probabilities read off them | 1 |
 | Answer key, never an input | `target_tomorrow_vwap`, `target_return` | Day t+1's VWAP, stored on day t's row. Used only to score forecasts. | 1 |
 | Index and display | `day_idx`, `date` | Time index | 9 |
 | Text the flags come from | `results_window`, `results_window_pit` | Turned into the 0/1 window flags | 6 |
@@ -70,6 +71,67 @@ forecasts 10-07's move.
 For example, AAPL's forecast for 2026-10-07: `today_vwap` 333.20, `q05` −2.47%, `q50` −0.14%,
 `q95` +2.55%. That is a 90% range for tomorrow's VWAP of 324.96 … 341.71, with a median of
 332.72.
+
+### The quantiles: what they mean, how they are made, what is derived from them
+
+**What one quantile means.** `qNN` is the move that tomorrow's VWAP falls at or below with
+probability NN%:
+
+    P( move(t+1) ≤ q_τ ) = τ,   τ = 0.05, 0.10, … 0.95   (TrainConfig.quantiles)
+
+- `q50` is the median forecast: an even chance tomorrow is above or below it.
+- `q05` … `q95` is the 90% range; `q10` … `q90` 80%, and `q25` … `q75` 50%.
+- The spread between them is the model's uncertainty. A wide range means an uncertain day, e.g.
+  around earnings.
+
+AAPL for 2026-10-07 (moves from `today_vwap` 333.20):
+
+| | `q05` | `q10` | `q25` | `q50` | `q75` | `q90` | `q95` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| move | −2.47% | −2.06% | −0.95% | −0.14% | +0.81% | +1.76% | +2.55% |
+| VWAP | 324.96 | 326.34 | 330.02 | 332.72 | 335.89 | 339.07 | 341.71 |
+
+So the model gives an even chance that tomorrow's VWAP is within 330.02 … 335.89, and a 90%
+chance it is within 324.96 … 341.71.
+
+**How the model learns them.** The TFT has one output per quantile level: 19 numbers per stock
+per forecast day, all predicted together. Training minimises the **quantile (pinball) loss**,
+averaged over the 19 levels and all samples. For a level τ and the error e = actual − q_τ:
+
+    loss_τ = τ · e         if e ≥ 0  (the actual came in above the quantile)
+    loss_τ = (τ − 1) · e   if e < 0  (the actual came in below it)
+
+For `q90`, an actual above it costs 0.9 per unit of error and one below it costs 0.1. The loss
+is smallest when 90% of actuals fall below `q90`, so each output learns its own percentile.
+pytorch-forecasting scales each sample by its encoder window's centre and scale
+(`EncoderNormalizer`), then scales the outputs back, so the loss is scored in the target's own
+units, the fractional move.
+
+**After the model.** The 19 outputs aren't forced to be in order, so each row is sorted
+(`score_frame`, `forecast`) to make `q05` ≤ `q10` ≤ … ≤ `q95`. The backtest file then turns
+them into prices, `prev_vwap` × (1 + q); the live file keeps them as moves.
+
+**What is derived from them** (live forecast files and the calibration report):
+
+| field | how it is calculated | AAPL, 2026-10-07 |
+| --- | --- | --- |
+| `prob` for a move m (`forecast_<date>_moves.csv`, moves ±0.5% … ±3%) | The forecast's distribution, read by straight-line interpolation between neighbouring quantiles (`prob_below`). Down moves: P(move ≤ m). Up moves: P(move ≥ m) = 1 − P(move ≤ m). Beyond `q05`/`q95` the model says nothing more, so probabilities are clamped to 5% … 95%. | P(≥ +1%) = 20.0%: +1% sits at about `q80`. P(≤ −2%) = 10.5% |
+| `bucket`, `hist_hit_rate`, `all_hit_rate` (same file) | The `prob` band (5–10%, 10–20% … 90–95%), and how often calls in that band came true in the backtest, for this stock and for all stocks | `≤ −2%` falls in the 10–20% band. AAPL's past calls in that band came true 16% of the time (n = 25), and all stocks' 16.1% |
+| `up_<c>` (c = 60, 70, 80, 90) | The quantile at 1 − c (`quantile_at`, interpolated): a c chance that tomorrow's move is **at least** this. It is a floor, and can be negative. | `up_70` = `q30` = −0.84%: 70% chance tomorrow's VWAP is ≥ 330.39 |
+| `down_<c>` | The quantile at c: a c chance that the move is **at most** this. It is a ceiling. | `down_70` = `q70` = +0.55%: 70% chance it is ≤ 335.02 |
+
+**How the quantiles are graded** (`tft-vwap` summary, `tft-vwap-report`, `tft-vwap-grade`, the
+dashboard). Every grade compares the backtest forecasts with what actually happened:
+
+| measure | calculation | a good forecast |
+| --- | --- | --- |
+| Pinball loss, and skill | The training loss above, on the test days. The naive forecast puts every quantile at a 0 move (tomorrow = today). Skill = 1 − model loss / naive loss. | Skill > 0, higher is better |
+| Range coverage | The share of actuals inside `q05` … `q95` (also `q10` … `q90`, `q25` … `q75`) | 90% (80%, 50%) |
+| Per-level calibration (`calibration_quantiles.csv`) | For each τ, the share of actuals ≤ `q_τ` | τ itself |
+| Probability grid (`grid_*.csv`) | For each move and `prob` band: how often the move happened (hit rate) vs the average `prob`. Deviation = hit rate − `prob`, with z against the binomial noise | Deviation ≈ 0. Negative means overconfident. |
+| Ladder hits | How often the actual cleared `up_<c>` / `down_<c>` | c |
+| PIT and bias | PIT is where the actual landed in the forecast distribution, `prob_below(actual)`. Bias = 0.5 − mean PIT. | PIT evenly spread, mean 0.5. Bias > 0: forecasts too high (optimistic); < 0: too low (pessimistic). |
+| Direction | Whether the sign of `q50` matched the sign of the actual move | > 50% |
 
 **With `--target vwap`** the series is `today_vwap`, a price normalised on a log scale. The
 model then forecasts tomorrow's VWAP price directly, and the forecast files convert it to the

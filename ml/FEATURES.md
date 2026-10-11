@@ -1,35 +1,92 @@
 # Model fields
 
-Every column the TFT reads, by category. The panel (`panel.parquet`, schema 3, written by
-`sourcing-py etrade export-tft`) is the only input. The groups are the tuples in
-[tft_vwap/config.py](tft_vwap/config.py); `prepare()` in [tft_vwap/dataset.py](tft_vwap/dataset.py)
-applies the transforms listed here.
+Every panel column and what the TFT does with it. The panel (`panel.parquet`, schema 3, written
+by `sourcing-py etrade export-tft`) is the model's only input: one row per stock and trading
+session. The groups are the tuples in [tft_vwap/config.py](tft_vwap/config.py), and `prepare()`
+in [tft_vwap/dataset.py](tft_vwap/dataset.py) applies the transforms listed here.
 
 **Leakage rule:** every input on day t's row is known at the close of day t. The model forecasts
 day t+1, so the only inputs it has for t+1 itself are the calendar ones (known in advance).
 
 Unless stated otherwise, prices and volumes are split-adjusted and missing reals become 0.
 
-## 1. Series and label
+## At a glance: every column by its TFT role
 
-| column | role |
-| --- | --- |
-| `vwap_pct_prev_day` | the series with `--target return` (default): today's VWAP vs the previous session's, as a fraction |
-| `today_vwap` | the series with `--target vwap` (price, log-normalised) |
-| `target_tomorrow_vwap` | the scoring label only, never an input: it sits on day t's row but is day t+1's VWAP |
+The TFT sorts its fields into the roles below. Defaults are shown (`--target return`,
+`--earnings exact`).
 
-Each sample is an encoder of up to 60 sessions (at least 20), and the decoder is the one next
-session. The model forecasts 19 quantiles, P5 … P95, of the series at t+1.
+| TFT role | columns | how the model uses them | section |
+| --- | --- | --- | --- |
+| **Target, the predicted series** | `vwap_pct_prev_day` | Its past values (up to day t) feed the encoder. The model forecasts its value on day t+1: tomorrow's VWAP vs today's, the % move. | 1 |
+| Static categoricals | `symbol`, `industry_code`, `exchange`, `issue_type` | One embedding per stock | 2 |
+| Known-future reals | `day_of_week`, `month`, `is_month_end`, `is_quarter_end`, `sessions_gap_next` | Read for the encoder days and for day t+1 | 3 |
+| Observed (past-only) reals | `intraday_spread_pct`, `close_position_pct`, `open_position_pct`, `volume_velocity`, `transactions_per_volume`, `is_10k`, `is_10q`, the earnings inputs, the optional sentiment inputs | Read for the encoder days only | 4–7 |
+| Added by the model | `relative_time_idx`, `encoder_length`, the target's centre and scale | Made by pytorch-forecasting | 8 |
+| Answer key, never an input | `target_tomorrow_vwap`, `target_return` | Day t+1's VWAP, stored on day t's row. Used only to score forecasts. | 1 |
+| Index and display | `day_idx`, `date` | Time index | 9 |
+| Text the flags come from | `results_window`, `results_window_pit` | Turned into the 0/1 window flags | 6 |
+| Not an input with the default target | `today_vwap` | Converts forecast moves into prices. It is the target with `--target vwap`. | 1 |
+
+## 1. What the model predicts
+
+**The model forecasts tomorrow's VWAP as a % move from today's VWAP.** The predicted column is
+`vwap_pct_prev_day`, a session's VWAP / the previous session's VWAP − 1. Its value on day t+1
+is
+
+    vwap_pct_prev_day(t+1) = VWAP(t+1) / VWAP(t) − 1   (tomorrow's % deviation from today's VWAP)
+
+The model forecasts this one number for each stock as 19 quantiles, P5, P10 … P95. Each sample
+is an encoder of up to 60 sessions of history (at least 20) followed by one decoder step,
+tomorrow.
+
+**Tomorrow's VWAP is in the training data.** In training, the answer for a sample whose history
+ends on day t is the target column on day t+1's row: tomorrow's move, as a percentage. The
+panel also stores the same answer on day t's own row, but those two columns are never inputs.
+On day t they are the future, so feeding them in would hand the model the answer:
+- `target_tomorrow_vwap`: tomorrow's VWAP as a price.
+- `target_return`: the same % move, equal to the next row's `vwap_pct_prev_day`.
+
+AAPL, the last rows of the panel:
+
+| date | `today_vwap` | `vwap_pct_prev_day` (target) | `target_tomorrow_vwap` | `target_return` |
+| --- | --- | --- | --- | --- |
+| 2026-10-01 | 329.6008 | −1.59% | 333.1653 | +1.08% |
+| 2026-10-02 | 333.1653 | **+1.08%** ← 10-01's `target_return` | 333.3621 | +0.06% |
+| 2026-10-05 | 333.3621 | **+0.06%** | 333.1968 | −0.05% |
+| 2026-10-06 | 333.1968 | **−0.05%** | NULL | NULL |
+
+A sample whose history ends on 10-01 is trained to predict 10-02's +1.08%. The last row
+(10-06) has no tomorrow yet. It is the live forecast row: `tft-vwap-predict` adds a 10-07
+decoder row that holds only the calendar inputs (from the meta's `next_session`), and the model
+forecasts 10-07's move.
+
+**What comes out.** The quantiles are the same forecast in both files, saved two ways:
+
+| file | one row per | columns |
+| --- | --- | --- |
+| `fold_<k>/test_predictions.parquet` (backtest) | stock and forecast day | `symbol`, `day_idx` and `date` (the forecast day t+1), `prev_vwap` (VWAP on t), `actual` (VWAP on t+1), `q05` … `q95` as **prices**, i.e. `prev_vwap` × (1 + move), `industry_code` |
+| `forecast_<date>.parquet` (live) | stock | `date` (the forecast session), `asof` (the last session used), `fold`, `symbol`, `industry_code`, `today_vwap`, `q05` … `q95` as **fractional moves** from `today_vwap`, and `up_<c>`/`down_<c>`: the move reached with confidence c (P(move ≥ `up_70`) = 70%, P(move ≤ `down_70`) = 70%) |
+
+For example, AAPL's forecast for 2026-10-07: `today_vwap` 333.20, `q05` −2.47%, `q50` −0.14%,
+`q95` +2.55%. That is a 90% range for tomorrow's VWAP of 324.96 … 341.71, with a median of
+332.72.
+
+**With `--target vwap`** the series is `today_vwap`, a price normalised on a log scale. The
+model then forecasts tomorrow's VWAP price directly, and the forecast files convert it to the
+same moves. `return` is the default; the price target is weighted by 1 / the stock's median
+price (`loss_weight`) so expensive stocks don't dominate the loss.
 
 **Series breaks** (`series_breaks`, on by default): `prepare()` splits a symbol into separate
-series wherever a different security takes over the ticker. That is more than 20 sessions
-without a bar (a reused ticker or a relisting: BNY was a closed-end fund before BNY Mellon took
-the ticker) or a one-session VWAP move of 10x either way (a missed reverse split, a bankruptcy
-share exchange). The latest part keeps the ticker and earlier parts become `SYMBOL~1`, `~2` …,
-so no encoder spans a break. The move across the break counts as unknown (0), like a series'
-first bar. On the panel to 2026-10-06 this splits 22 symbols (4,630 rows renamed, none
-dropped), and the largest move left is +529%. Runs saved before the setting existed load with it
-off.
+series wherever a different security takes over the ticker:
+- more than 20 sessions without a bar: a reused ticker or a relisting (BNY was a closed-end fund
+  before BNY Mellon took the ticker)
+- a one-session VWAP move of 10x either way: a missed reverse split, or a bankruptcy share
+  exchange
+
+The latest part keeps the ticker and earlier parts become `SYMBOL~1`, `~2` …, so no encoder
+spans a break. The move across the break counts as unknown (0), like a series' first bar. On the
+panel to 2026-10-06 this splits 22 symbols (4,630 rows renamed, none dropped), and the largest
+move left is +529%. Runs saved before the setting existed load with it off.
 
 ## 2. Static categoricals (one value per stock)
 
@@ -54,7 +111,7 @@ off.
 
 | column | formula (day t) |
 | --- | --- |
-| `vwap_pct_prev_day` | VWAP / previous session's VWAP − 1. Not an extra input when it is the series |
+| `vwap_pct_prev_day` | VWAP / previous session's VWAP − 1. This is the target (section 1), so its past values are already in the encoder. It is an extra input only with `--target vwap` |
 | `intraday_spread_pct` | (high − low) / VWAP |
 | `close_position_pct` | (close − VWAP) / VWAP |
 | `open_position_pct` | (open − VWAP) / VWAP |
@@ -68,7 +125,7 @@ off.
 | `is_10k` | 1 on the session a 10-K was filed (a weekend/holiday filing moves to the next session) |
 | `is_10q` | the same for a 10-Q |
 
-These are E*TRADE's filing dates, often days after the results release of section 6.
+These are E*TRADE's filing dates, often days after the results release (section 6).
 
 ## 6. Observed reals: financial-results calendar (`--earnings exact|pit|off`, default `exact`)
 
@@ -157,7 +214,9 @@ Off by default because the news history is still near-empty.
 | column | why |
 | --- | --- |
 | `day_idx`, `date` | time index (`day_idx` = NYSE session number) and display |
-| `target_return` | target_tomorrow_vwap / today_vwap − 1, for analysis |
+| `target_tomorrow_vwap` | tomorrow's VWAP on today's row: the answer key for scoring (`actual` in `test_predictions.parquet`). It would leak as an input. |
+| `target_return` | `target_tomorrow_vwap` / `today_vwap` − 1, tomorrow's % move on today's row, for analysis. The model learns the same number from the next row's `vwap_pct_prev_day`. |
+| `today_vwap` | today's VWAP price: converts the forecast moves into prices. It is the target only with `--target vwap`. |
 | `results_window`, `results_window_pit` | the section-6 windows as text; the model gets their one-hot flags |
 | `loss_weight` (made in `prepare()`) | 1 / the symbol's median price, the loss weight for `--target vwap` |
 
@@ -166,4 +225,4 @@ Off by default because the news history is still near-empty.
 | column (`daily_bars`) | why |
 | --- | --- |
 | `vwap_nx_10d`, `vwap_end_week`, `vwap_nx_qtr` | forward VWAPs over the next 10 sessions / rest of the week / up to the next filing |
-| `vwap_nx_1d` | exported only as the label `target_tomorrow_vwap` |
+| `vwap_nx_1d` | not dropped: it is exported as `target_tomorrow_vwap`, the answer key on day t's row (section 1) |

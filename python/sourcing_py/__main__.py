@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
             "       sourcing-py etrade <build-symbols|ingest-eod|fetch|derive-features> [options]\n"
             "       sourcing-py news <aggregate|analyze|build-daily|run> [options]\n"
             "       sourcing-py storage <check|init>\n"
-            "       sourcing-py intraday <store --follow|upload --drain|summary|status> [options]",
+            "       sourcing-py intraday <store --follow|upload --drain|summary|status|ingest-mbin|export-tft> [options]",
             file=sys.stderr,
         )
         return 2

@@ -6,6 +6,8 @@ Dispatched from `sourcing_py.__main__` when the first arg is `intraday`:
     sourcing-py intraday upload --drain       (when the store is not running: close + upload leftovers)
     sourcing-py intraday summary [--date D] [--gap-min 5]
     sourcing-py intraday status               (store heartbeat + pending uploads)
+    sourcing-py intraday ingest-mbin --root DIR [--dates D1,D2]   (backfill MBin CSVs)
+    sourcing-py intraday export-tft [--dates D1,D2] [--step-s 15]  (the intraday ML panel)
 """
 
 from __future__ import annotations
@@ -23,7 +25,9 @@ _USAGE = (
     "  sourcing-py intraday store --follow [--no-upload]   (Redis INTRADAY_FEED -> segments -> NAS)\n"
     "  sourcing-py intraday upload --drain   (upload closed local segments now)\n"
     "  sourcing-py intraday summary [--date D] [--gap-min 5]   (rows per watchlist, RTH gaps)\n"
-    "  sourcing-py intraday status   (store heartbeat, pending uploads)"
+    "  sourcing-py intraday status   (store heartbeat, pending uploads)\n"
+    "  sourcing-py intraday ingest-mbin --root DIR [--dates D1,D2]   (MBin watchlist CSVs -> feed parquet)\n"
+    "  sourcing-py intraday export-tft [--dates D1,D2] [--step-s 15]   (feed -> out/tft_intraday/panel)"
 )
 
 
@@ -115,6 +119,39 @@ def _cmd_status(_params: dict) -> int:
     return 0
 
 
+def _dates(params: dict) -> list[date] | None:
+    raw = params.get("dates")
+    if not raw or raw is True:
+        return None
+    return [date.fromisoformat(d.strip()) for d in str(raw).split(",") if d.strip()]
+
+
+def _cmd_ingest_mbin(params: dict) -> int:
+    if not params.get("root") or params["root"] is True:
+        print(f"error: ingest-mbin needs --root DIR\n{_USAGE}", file=sys.stderr)
+        return 2
+    _logging()
+    from pathlib import Path
+
+    from .mbin import ingest
+
+    done = ingest(Path(params["root"]).expanduser(), _dates(params))
+    for d in done:
+        print(f"{d['date']}: {d['rows']} rows "
+              + ", ".join(f"{k} {v['symbols']} symbols / {v['polls']} polls" for k, v in d.items()
+                          if isinstance(v, dict)))
+    return 0 if done else 1
+
+
+def _cmd_export_tft(params: dict) -> int:
+    _logging()
+    from .export import export
+
+    meta = export(_dates(params), step_s=int(params.get("step-s", 15)))
+    print(json.dumps({k: meta[k] for k in ("panel_dir", "dates", "rows")}, indent=2))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     """argv is everything AFTER the `intraday` verb."""
     if not argv:
@@ -134,5 +171,9 @@ def main(argv: list[str]) -> int:
         return _cmd_summary(params)
     if sub == "status":
         return _cmd_status(params)
+    if sub == "ingest-mbin":
+        return _cmd_ingest_mbin(params)
+    if sub == "export-tft":
+        return _cmd_export_tft(params)
     print(f"unknown intraday subcommand {sub!r}\n{_USAGE}", file=sys.stderr)
     return 2

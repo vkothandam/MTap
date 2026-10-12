@@ -18,7 +18,7 @@ in — callers get plain `datetime.date` values and ints.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from functools import lru_cache
 
 import exchange_calendars as xcals
@@ -81,3 +81,14 @@ def day_idx_for(
         return None
     # Count of sessions in [anchor, d] inclusive; d is a session so it's the last one.
     return len(sessions(anchor, d, calendar=calendar))
+
+
+def session_open_utc(d: date, *, calendar: str = DEFAULT_CALENDAR) -> datetime:
+    """The regular-session open of session d as an aware UTC datetime (09:30 New York)."""
+    return _calendar(calendar).session_open(str(d)).to_pydatetime()
+
+
+def session_close_utc(d: date, *, calendar: str = DEFAULT_CALENDAR) -> datetime:
+    """The regular-session close of session d as an aware UTC datetime (16:00 New York, or
+    13:00 on half days such as 2025-12-24)."""
+    return _calendar(calendar).session_close(str(d)).to_pydatetime()

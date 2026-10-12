@@ -1,4 +1,4 @@
-# tft-vwap: next-day VWAP with a Temporal Fusion Transformer
+# tft-vwap: next-day VWAP with a Temporal Fusion Transformer (and intraday, below)
 
 Self-contained training project for the MTap TFT panel. Its **only input** is
 `panel.parquet` + `panel.meta.json`, written by `sourcing-py etrade export-tft`. Nothing here
@@ -186,3 +186,40 @@ runs/<UTC stamp>-<target>-<N>sym/
     test_predictions.parquet  # symbol, day_idx, q05..q95 (prices), prev_vwap, actual
     logs/metrics.csv          # train/val loss curves
 ```
+
+## Intraday: the forward VWAP from any second (`tft-intraday`)
+
+A second package, `tft_intraday`, in the same project and under the same boundary rules. Its
+only input is the intraday panel `out/tft_intraday/panel/` (`date=<D>/part.parquet` +
+`panel.meta.json`), written by `sourcing-py intraday export-tft`. Standing at a decision second
+t, one model forecasts six targets as 19 quantiles: the VWAP of the next 1 / 5 / 15 / 60
+minutes, of the rest of the day and of the whole day, each as a log move from the last price.
+Every field, the targets, folds, baselines and grading: [FEATURES-intraday.md](FEATURES-intraday.md).
+
+```bash
+uv run tft-intraday --symbols 50 --max-epochs 1 --limit-train-batches 20   # smoke run, ~5 min
+uv run tft-intraday                                  # the default folds, all symbols, ~1 h on MPS
+uv run tft-intraday --daily-folds                    # one fold per test date
+uv run tft-intraday --baselines-only                 # baselines only, no training
+uv run tft-intraday --daily-run none --no-group      # ablations: no daily forecast / no peers
+uv run tft-intraday-report runs/intraday/<run_id>    # re-score a run
+```
+
+The morning daily forecast is joined from `--daily-run` (default
+`runs/20261011-173109Z-return-3785sym`), fold `--daily-fold` 1 only: its test window holds
+every backfill day out of sample.
+
+```
+runs/intraday/<UTC stamp>-intraday-<N>sym[-baselines]/
+  config.json       # model, targets, horizon_s, step_s, eval_stride_s, daily_run, folds, config
+  summary.json      # per-fold results and the by_target table
+  report/           # by_target, by_day, by_tod parquet (tft, climatology, momentum, daily)
+  fold_<k>/
+    best.ckpt, metrics.json, logs/metrics.csv
+    baselines.json            # climatology and momentum quantiles per 15-minute slot
+    intraday_<target>.parquet # symbol, date, t_s, mask, actual, q05..q95, clim_q*, mom_q*, ref_trail,
+                              # ref_session, y, last, prev_vwap (+ has_daily, daily_q* for r_close)
+```
+
+The prediction files are the dashboard's intraday contract
+(`dashboard/forecast_dash/intraday_contract.py`); the newest run by name is the one shown.

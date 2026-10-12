@@ -20,15 +20,24 @@ import streamlit as st
 for _name in [m for m in sys.modules if m == "forecast_dash" or m.startswith("forecast_dash.")]:
     del sys.modules[_name]
 
-from forecast_dash import calib, charts, insights
-from forecast_dash.contract import Live, Run, discover, load_forecast, load_live, load_run
-from forecast_dash.help_text import HELP, PANELS, column_help
+from forecast_dash import calib, charts, home, insights, intraday_page
+from forecast_dash.contract import Run, discover, load_forecast
+from forecast_dash.help_text import HELP
+from forecast_dash.ui import (
+    _chart,
+    _header,
+    _in_short,
+    _pct_cols,
+    _table,
+    get_live,
+    get_run,
+    section_radio,
+)
 
 PRESET_MOVES = [0.0025, 0.005, 0.0075, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05]
 DEFAULT_MOVES = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03]
 CALL_LEVELS = [0.5, 0.6, 0.7, 0.8, 0.9, 0.95]
 DEFAULT_CALLS = [0.6, 0.7, 0.8, 0.9]
-ICONS = {insights.GOOD: "✅", insights.WARN: "⚠️", insights.BAD: "❌", insights.INFO: "ℹ️"}
 
 
 def _default_root() -> str:
@@ -37,12 +46,15 @@ def _default_root() -> str:
     return p.parse_known_args(sys.argv[1:])[0].runs
 
 
+def _default_intraday_root() -> str:
+    """--intraday-runs, else $FORECAST_DASH_INTRADAY_RUNS, else <daily runs>/intraday."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--intraday-runs", default=os.environ.get("FORECAST_DASH_INTRADAY_RUNS"))
+    given = p.parse_known_args(sys.argv[1:])[0].intraday_runs
+    return given or str(Path(_default_root()) / "intraday")
+
+
 # ---- cached data (cache_resource: shared, never copied; treat as read-only) -----------------
-
-@st.cache_resource(show_spinner="Loading run...", max_entries=6)
-def get_run(path: str) -> Run:
-    return load_run(Path(path))
-
 
 @st.cache_resource(max_entries=96)
 def get_event(path: str, move: float) -> tuple[np.ndarray, np.ndarray]:
@@ -59,19 +71,6 @@ def get_pit(path: str) -> np.ndarray:
 @st.cache_resource(max_entries=12)
 def get_forecast(path: str):
     return load_forecast(Path(path))
-
-
-def get_live(path: str) -> Live | None:
-    """Graded live forecasts; re-read when actuals.parquet or a forecast file changes."""
-    run = Path(path)
-    stamp = tuple(sorted((f.name, f.stat().st_mtime) for f in
-                         [*run.glob("forecast_*.parquet"), *run.glob("actuals.parquet")]))
-    return _load_live(path, stamp)
-
-
-@st.cache_resource(max_entries=6)
-def _load_live(path: str, stamp: tuple) -> Live | None:
-    return load_live(Path(path))
 
 
 class View:
@@ -112,7 +111,7 @@ def sidebar() -> View | None:
     sel_folds = sb.multiselect("Folds (test blocks)", folds, default=folds,
                                help="consecutive blocks of test days the model never trained "
                                     "on; one fold = one market period")
-    side = sb.radio("Side", ["both", "up", "down"], horizontal=True,
+    side = sb.radio("Side", ["both", "up", "down"], horizontal=True, key="side",
                     help="score upside events (≥ +m), downside events (≤ −m), or both")
     mags = sb.multiselect("Move sizes", PRESET_MOVES, default=DEFAULT_MOVES,
                           format_func=lambda m: f"{m:.2%}",
@@ -168,57 +167,6 @@ def _need(v: View) -> bool:
         st.info("Pick at least one move size.")
         return False
     return True
-
-
-def _pct_cols(df: pd.DataFrame, cols) -> dict:
-    return {c: st.column_config.NumberColumn(c, format="percent") for c in cols if c in df}
-
-
-def _header(key: str):
-    """Page title with its "About this page" popover (help_text.HELP)."""
-    title, body = HELP[key]
-    a, b = st.columns([6, 1], vertical_alignment="bottom")
-    a.subheader(title)
-    with b.popover("ℹ️ About this page"):
-        st.markdown(body)
-
-
-def _about(panel: str, columns=()):
-    """The ⓘ popover above one chart / table / sub-panel: what it shows and how to read it
-    (help_text.PANELS), plus the meaning of each of its columns."""
-    title, body = PANELS[panel]
-    cols = [(c, h) for c in columns if (h := column_help(c, panel))]
-    if cols:
-        body += "\n\n**Columns**\n" + "\n".join(f"- `{c}`: {h}" for c, h in cols)
-    with st.popover(title, icon=":material/info:", type="tertiary", key=f"about_{panel}",
-                    help="What this shows and how to read it"):
-        st.markdown(body)
-
-
-def _chart(fig, panel: str, **kw):
-    _about(panel)
-    return st.plotly_chart(fig, width="stretch", **kw)
-
-
-def _table(df: pd.DataFrame, panel: str, column_config: dict | None = None, **kw):
-    """st.dataframe with the ⓘ above it and every known column's meaning as a header tooltip."""
-    _about(panel, df.columns)
-    cfg = dict(column_config or {})
-    for c in df.columns:
-        if h := column_help(c, panel):
-            cfg[c] = {**(cfg.get(c) or st.column_config.Column()), "help": h}
-    kw.setdefault("hide_index", True)
-    st.dataframe(df, column_config=cfg, **kw)
-
-
-def _in_short(items: list[insights.Insight], title: str = "In short"):
-    if not items:
-        return
-    with st.container(border=True):
-        st.markdown(f"**{title}**\n\n" + "\n".join(f"- {ICONS[i.level]} {i.text}"
-                                                    for i in items),
-                    help="Plain-English findings from the current filters. ✅ fine · ⚠️ watch · "
-                         "❌ problem · ℹ️ context")
 
 
 def _fmt_pct(x) -> str:
@@ -813,6 +761,11 @@ def tab_compare(v: View, min_n: int):
 
 def main():
     st.set_page_config(page_title="Forecast calibration", layout="wide")
+    section = section_radio()
+    if section == "home":
+        return home.render(_default_root(), _default_intraday_root())
+    if section == "intraday":
+        return intraday_page.render(_default_intraday_root())
     title, body = HELP["overview"]
     a, b = st.columns([6, 1], vertical_alignment="bottom")
     a.title(title)

@@ -368,3 +368,126 @@ def live_days(by_day: pd.DataFrame) -> go.Figure:
     fig.update_yaxes(title="share inside band", tickformat=PCT, row=1, col=1)
     fig.update_yaxes(title="bias", tickformat="+.0%", row=2, col=1)
     return _layout(fig, "Graded days: band coverage and bias", height=480)
+
+
+# ---- intraday --------------------------------------------------------------------------------
+
+def _id_skills(t: pd.DataFrame, prefix: str = "") -> list[tuple[str, str, str]]:
+    """(column, name, colour) of the skill series a table has: climatology (runs from before
+    it have none), momentum, random walk."""
+    out = [("skill_clim", "vs climatology", COLORS[0]), ("skill_mom", "vs momentum", COLORS[3]),
+           ("skill_rw", "vs random walk", COLORS[4])]
+    return [(c, prefix + n, k) for c, n, k in out if c in t and t[c].notna().any()]
+
+
+def id_skill_bars(s: pd.DataFrame, labels: dict[str, str]) -> go.Figure:
+    """Per target: quantile skill vs each baseline (> 0 wins)."""
+    x = [labels.get(t, t) for t in s["target"]]
+    fig = go.Figure()
+    for col, name, color in _id_skills(s):
+        fig.add_bar(x=x, y=s[col], name=name, marker_color=color,
+                    hovertemplate="%{x}: %{y:+.1%}<extra>" + name + "</extra>")
+    fig.add_hline(y=0, line=IDEAL)
+    fig.update_yaxes(title="pinball skill", tickformat=PCT)
+    fig.update_layout(barmode="group")
+    return _layout(fig, "Quantile skill by horizon (above 0 = beats the baseline)", height=380)
+
+
+def id_days(d: pd.DataFrame) -> go.Figure:
+    """Per test day: skill vs each baseline."""
+    fig = go.Figure()
+    for col, name, color in _id_skills(d):
+        fig.add_scatter(x=d["date"], y=d[col], mode="lines+markers", name=name,
+                        line={"color": color})
+    fig.add_hline(y=0, line=IDEAL)
+    fig.update_yaxes(title="pinball skill", tickformat=PCT)
+    return _layout(fig, "Skill by test day", height=360)
+
+
+def id_tod(t: pd.DataFrame) -> go.Figure:
+    """Four small panels over the trading day: coverage, band width, skill, direction."""
+    fig = make_subplots(rows=2, cols=2, shared_xaxes=True, vertical_spacing=0.14,
+                        subplot_titles=("P10–P90 coverage", "Median P10–P90 width",
+                                        "Skill", "Direction hit rate"))
+    x = t["time"]
+    fig.add_scatter(x=x, y=t["coverage80"], name="coverage", mode="lines+markers",
+                    line={"color": COLORS[0]}, row=1, col=1)
+    fig.add_hline(y=0.8, line=IDEAL, row=1, col=1)
+    fig.add_scatter(x=x, y=t["width80_med"], name="width", mode="lines+markers",
+                    line={"color": COLORS[3]}, row=1, col=2)
+    for col, name, color in _id_skills(t, "skill "):
+        fig.add_scatter(x=x, y=t[col], name=name, mode="lines+markers", line={"color": color},
+                        row=2, col=1)
+    fig.add_hline(y=0, line=IDEAL, row=2, col=1)
+    for col, name, color in (("dir_trail", "vs trailing VWAP", COLORS[2]),
+                             ("dir_session", "vs session VWAP", COLORS[5]),
+                             ("dir_last", "vs last price", COLORS[1])):
+        fig.add_scatter(x=x, y=t[col], name=name, mode="lines+markers", line={"color": color},
+                        row=2, col=2)
+    fig.add_hline(y=0.5, line=IDEAL, row=2, col=2)
+    for r, c in ((1, 1), (2, 1), (2, 2)):
+        fig.update_yaxes(tickformat=PCT, row=r, col=c)
+    fig.update_yaxes(tickformat=".2%", row=1, col=2)
+    return _layout(fig, "By time of day", height=560)
+
+
+def id_replay(r: pd.DataFrame, title: str) -> go.Figure:
+    """One session: last price, session VWAP, the VWAP that followed, and the predicted
+    P10–P90 band with its median at each decision time (prices in $)."""
+    fig = go.Figure()
+    if "daily_p10" in r and r["daily_p10"].notna().any():
+        d = r[r["daily_p10"].notna()]
+        fig.add_scatter(x=d["time"], y=d["daily_p90"], mode="lines", line={"width": 0},
+                        hoverinfo="skip", showlegend=False)
+        fig.add_scatter(x=d["time"], y=d["daily_p10"], mode="lines", line={"width": 0},
+                        fill="tonexty", fillcolor="rgba(148,103,189,0.15)",
+                        name="morning daily P10–P90")
+    fig.add_scatter(x=r["time"], y=r["p90"], mode="lines", line={"width": 0},
+                    hoverinfo="skip", showlegend=False)
+    fig.add_scatter(x=r["time"], y=r["p10"], mode="lines", line={"width": 0}, fill="tonexty",
+                    fillcolor="rgba(31,119,180,0.2)", name="predicted P10–P90")
+    fig.add_scatter(x=r["time"], y=r["p50"], mode="lines", name="predicted median",
+                    line={"color": COLORS[0], "dash": "dot"})
+    fig.add_scatter(x=r["time"], y=r["actual_vwap"], mode="lines", name="VWAP that followed",
+                    line={"color": COLORS[1], "width": 2})
+    fig.add_scatter(x=r["time"], y=r["session_vwap"], mode="lines", name="session VWAP so far",
+                    line={"color": COLORS[2]})
+    fig.add_scatter(x=r["time"], y=r["last"], mode="lines", name="last price",
+                    line={"color": "grey", "width": 1})
+    fig.update_xaxes(title="decision time (ET)")
+    fig.update_yaxes(title="price ($)", tickprefix="$")
+    return _layout(fig, title, height=520)
+
+
+def id_stocks(t: pd.DataFrame) -> go.Figure:
+    """Per stock: coverage (x) vs skill (y: vs climatology, else momentum), bubble size ~ sqrt(n)."""
+    col, name, _ = _id_skills(t)[0]
+    fig = go.Figure(go.Scatter(
+        x=t["coverage80"], y=t[col], mode="markers+text", text=t["symbol"],
+        textposition="top center", marker={"size": _sizes(t["n"]), "color": COLORS[0],
+                                           "opacity": 0.7},
+        customdata=t["n"], hovertemplate="%{text}: coverage %{x:.0%}, skill %{y:+.1%}"
+                                         "<br>n=%{customdata:,}<extra></extra>"))
+    fig.add_vline(x=0.8, line=IDEAL)
+    fig.add_hline(y=0, line=IDEAL)
+    fig.update_xaxes(title="P10–P90 coverage (target 80%)", tickformat=PCT)
+    fig.update_yaxes(title="skill " + name, tickformat=PCT)
+    return _layout(fig, "Per stock: band coverage vs skill", height=460)
+
+
+def id_vs_daily(vd: pd.DataFrame) -> go.Figure:
+    """Whole-day VWAP pinball by time of day, intraday vs the morning daily forecast."""
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.12,
+                        row_heights=[0.6, 0.4],
+                        subplot_titles=("Pinball loss (lower is better)",
+                                        "Intraday skill vs the daily forecast"))
+    for col, name, color in (("intraday_pinball", "intraday", COLORS[0]),
+                             ("daily_pinball", "morning daily", COLORS[3])):
+        fig.add_scatter(x=vd["time"], y=vd[col], mode="lines+markers", name=name,
+                        line={"color": color}, row=1, col=1)
+    fig.add_bar(x=vd["time"], y=vd["skill"], name="skill", marker_color=COLORS[2],
+                row=2, col=1)
+    fig.add_hline(y=0, line=IDEAL, row=2, col=1)
+    fig.update_yaxes(tickformat=".2%", row=1, col=1)
+    fig.update_yaxes(tickformat=PCT, row=2, col=1)
+    return _layout(fig, "Intraday vs daily: whole-day VWAP", height=540)

@@ -24,6 +24,7 @@ To use a custom port, different run, or skip telemetry:
 ```bash
 uv run forecast-dash --runs ../ml/runs/<run_id> --port 8502
 FORECAST_DASH_RUNS=../ml/runs uv run forecast-dash --port 8503
+uv run forecast-dash --runs ../ml/runs --intraday-runs ../ml/runs/intraday   # the default
 ```
 
 To run tests:
@@ -89,7 +90,21 @@ Notes:
   - Median P5–P95 width.
   - ECE, the n-weighted mean |deviation| over the grid.
 
-## Sidebar (applies to every tab)
+## Sections
+
+The sidebar **Section** radio switches between three views (it follows `?section=home`,
+`cross-day` or `intraday`, so a link opens one):
+
+- **Home**: one card per section with the newest run's headline numbers and an *Open ...*
+  button. Cross-day shows P10-P90 coverage, pinball skill, direction hit, the latest forecast day
+  and the live-grade line. Intraday shows, for the 1 / 5 / 15 / 60 minute horizons, coverage,
+  skill vs climatology and vs momentum, and direction hit vs the last price (from
+  `report/by_target.parquet` if the run has it, else computed). A card says so when there is no run (`tft-intraday` has not
+  been run).
+- **Cross-day**: the next-day forecast tabs below, with their own sidebar filters.
+- **Intraday**: six tabs for the intraday model, described under *Intraday* below.
+
+## Sidebar (applies to every Cross-day tab)
 
 - run and folds
 - side: up, down or both
@@ -121,6 +136,57 @@ the metrics and controls have `?` tooltips. All of this text is in `forecast_das
 | Forecast → Forecast vs actual | Defaults to the day picked in Price ranges, if graded. Once a forecast day has happened and `tft-vwap-grade` has run: band coverage vs nominal, misses above/below, direction hit rate, bias, quantile skill vs naive, event calls said vs came true. Median-vs-actual scatter, PIT histogram, coverage and bias by day (with more than one graded day), a graded table with `outside_by`, and one stock's band and actual in $ for each graded day | Coverage near nominal with misses split evenly means the bands are honest. More misses above than below (negative bias) means the model was too pessimistic that day. One day is one market regime, so judge it over several days. |
 | Compare runs | Reliability overlay for one event across runs, a summary table, and calls by run and side at each call level | In short names the winner per metric (or says there is no clear winner), which run's calls held best at the chosen call level, and warns when the rows differ or are too few. By default only (stock, day) rows present in every run are used, so the comparison is fair. Lower pinball and ECE are better. Coverage should be near nominal and bias near 0. |
 
+## Intraday
+
+Intraday runs are found under `<runs>/intraday` by default; override with
+`--intraday-runs DIR` or `FORECAST_DASH_INTRADAY_RUNS`. The sidebar picks the run, the **target**
+and the **reference**.
+
+- Targets: *Next 1 / 5 / 15 / 60 min* (VWAP of the next minutes, cut at the close), *Rest of day*
+  (VWAP from t to the close) and *Whole-day VWAP* (what the daily model forecasts).
+- Reference: *Trailing VWAP* (default), *Last price* or *Session VWAP*. Quantiles and outcomes are
+  shifted onto it, so skill vs the random walk ("the VWAP ahead equals the reference") and the
+  direction call change; coverage and pinball loss do not.
+
+### Intraday run contract (`forecast_dash/intraday_contract.py`)
+
+```
+<run>/config.json                          model == "tft_intraday", targets, horizon_s, folds
+                                           (test_dates per fold), daily_run, step_s, ...
+<run>/fold_<k>/intraday_<target>.parquet   one per target; a row per decision point
+                                           (symbol, date, t_s) on the fold's test dates
+<run>/report/by_target.parquet             optional, precomputed per-target scores
+```
+
+Columns of `intraday_<target>.parquet`: `symbol`, `date` (YYYY-MM-DD), `t_s` (seconds since the
+09:30 ET open), `tod_bucket` (15-minute slot 0..25), `sector_code` (may be null), `rvol`, `mask`
+(1 = valid, other rows are ignored), `actual`, `q05..q95` (19 quantiles), `clim_q05..clim_q95`
+(climatology baseline; older runs lack it and fall back to momentum), `mom_q05..mom_q95`
+(momentum baseline), `ref_trail`, `ref_session`, `y`, `last` ($ at t), `prev_vwap` ($). For
+`r_close` also `daily_q05..daily_q95` and `has_daily`. **`actual`, `q*`, `clim_q*`, `mom_q*` and `ref_*` are
+log moves from the last price at t** (the last price is 0). `ref_trail` is the trailing VWAP of
+the horizon's length (for `r_rod`: the last 60 minutes; for `r_close`: the session VWAP so far), `ref_session` the session
+VWAP so far.
+
+`report/by_target.parquet` columns: `target`, `model` (`tft` | `climatology` | `momentum` |
+`daily`), `n`, `coverage80`, `pinball`, `skill_clim`, `skill_rw`, `skill_mom`, `skill_daily`, `dir_last`,
+`dir_trail`, `dir_session`, `pit_bias`, `width80_med` (+ `_lo` / `_hi` bootstrap bounds). Home
+reads the `tft` rows; nothing else needs the report.
+
+### Intraday tabs
+
+Each opens with an **In short** box, and every chart, table and column has its ⓘ / tooltip, as in
+Cross-day.
+
+| Tab | What it shows | How to read it |
+| --- | --- | --- |
+| Summary | One row per target (decision points, P10-P90 coverage, pinball, skill vs climatology, random walk and momentum, direction hit vs last / trailing / session VWAP, PIT bias, median width), a skill-by-horizon chart, and the chosen target's skill by test day | Coverage near 80% means the bands are right. Skill above 0 beats the baseline; climatology is the one that matters, momentum and the random walk are easy bars. Direction 50% is a coin flip; the one vs the trailing VWAP flatters any forecast near the last price. A bad day usually is a market-wide move. |
+| Calibration | Share of outcomes below each quantile, and P(above reference) said vs came true | Points on the diagonal are calibrated. Below the diagonal in the probability chart means overconfident. |
+| Time of day | Per 15-minute slot: coverage, band width, skill and direction hit | The open and close differ from midday. A slot with coverage far from 80% or negative skill is where the model needs work. Thin slots are noisy. |
+| Session replay | Pick a test day and stock: last price, session VWAP so far, the VWAP that followed, and the predicted P10-P90 band and median at each decision time, in $. For *Whole-day VWAP* also the morning daily band | The red line (what followed) should stay inside the blue band about 80% of the time. See how the band narrows or shifts as the day reveals prices. |
+| Across stocks | Per stock and per sector: coverage and skill, a coverage-vs-skill chart, and a *min decision points* filter | Left of the 80% line the stock's bands are too narrow; below 0 the model loses to climatology. |
+| Intraday vs daily | Always the whole-day VWAP: pinball loss of the intraday forecast and of the morning daily forecast by time of day, and the intraday skill | The intraday model should win more as the day goes on. Only decision points with a morning forecast (`has_daily`) count. |
+
 ## Layout
 
 ```
@@ -130,7 +196,12 @@ forecast_dash/
   charts.py     pure functions: tables -> plotly Figures
   insights.py   pure functions: tables -> ranked plain-English findings (the In short boxes)
   help_text.py  the ⓘ text: per page, per chart / table / sub-panel, per column
-  app.py        Streamlit UI: sidebar, tabs, caching (st.cache_resource, per run and per move)
+  app.py        Streamlit UI: Section switch, Cross-day sidebar and tabs, caching
+  ui.py         shared Streamlit helpers (_chart, _table, _in_short, ...), run caches, sections
+  home.py       Home page: one card per section
+  intraday_page.py     the Intraday section (six tabs)
+  intraday_contract.py discover / load intraday runs
+  intraday_calib.py    intraday scores, built on calib.py (pure)
   cli.py        forecast-dash entry point -> streamlit run app.py
 tests/          maths, contract, charts, insights, AppTest smoke over every tab, import boundary
 ```

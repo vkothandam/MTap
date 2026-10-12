@@ -736,3 +736,171 @@ def column_help(name: str, panel: str | None = None) -> str | None:
         if m := re.fullmatch(pat, name):
             return text.format(*m.groups())
     return None
+
+
+# ---- Intraday section ------------------------------------------------------------------------
+
+ID_TERMS = """
+**Words used on every intraday page**
+- **decision point**: one (stock, day, second t). At t the model forecasts a VWAP that is still
+  ahead. Points where no valid answer exists (e.g. too close to the close) are left out.
+- **target**: what is forecast. *Next 1 / 5 / 15 / 60 min* = the VWAP of the next minutes (cut at
+  the close). *Rest of day* = the VWAP from t to the close. *Whole-day VWAP* = the same number
+  the daily model forecasts.
+- **forecast**: 19 quantiles (P5 … P95) of that VWAP, as a move from the last price at t.
+- **reference**: what the move is measured against. *Trailing VWAP* = the VWAP of the same
+  length just before t (rest of day: the last 60 minutes; whole day: the session VWAP so far). *Last price* and
+  *Session VWAP* are the other choices. It changes direction and skill-vs-random-walk, not the
+  band coverage.
+- **random walk**: the naive forecast that the VWAP ahead equals the reference.
+- **climatology**: the baseline that matters. The training days' spread of each move from the
+  last price, per 15-minute slot, the same for every stock and second. It knows nothing about
+  the moment, so skill vs climatology is the model's real edge.
+- **momentum**: "the VWAP ahead equals the trailing VWAP", with the training days' spread around
+  it. An easy bar: the VWAP ahead stays near the last price while the trailing VWAP lags behind
+  it, so anything centred near the last price beats momentum. For the same reason the direction
+  call vs the trailing VWAP looks good for any forecast; read the one vs the last price.
+- **skill** = 1 − pinball loss / baseline's pinball loss. Above 0 beats the baseline.
+- **P10–P90 coverage**: the share of outcomes inside the P10–P90 band. It should be 80%.
+"""
+
+HELP.update({
+    "id_summary": ("Intraday summary", f"""
+How the intraday model did on every target, on the days it never trained on.
+
+**Controls (sidebar)**: the run, the target the other pages follow, and the reference.
+
+The table has one row per target: how many decision points, P10–P90 coverage, pinball loss,
+skill vs climatology, the random walk and momentum, how often the median called the direction right
+against each reference, PIT bias and the typical band width.
+{ID_TERMS}"""),
+    "id_calibration": ("Intraday calibration", """
+Is the model honest about its own uncertainty, for the chosen target and reference? Two views:
+the share of outcomes below each quantile, and the probability the VWAP ahead is above the
+reference as said vs what happened.
+"""),
+    "id_tod": ("Time of day", """
+The same scores per 15-minute slot of the session. The open and the close behave differently
+from midday, so a pooled number can hide a slot where the bands are too narrow or the model has
+no edge.
+"""),
+    "id_replay": ("Session replay", """
+One stock on one day. At each decision time the chart shows the price, the session VWAP so far,
+the VWAP that actually followed, and the band the model predicted at that moment. Use it to see
+how the forecasts looked at the time, not just their averages.
+"""),
+    "id_stocks": ("Across stocks", """
+The scores per stock and per sector. Look for stocks where the bands are systematically too
+narrow, or where the model has no edge over climatology.
+"""),
+    "id_vs_daily": ("Intraday vs daily", """
+The whole-day VWAP is what the daily model forecasts each morning. This page compares the
+intraday model's forecast of the same number, made at each time of day, with that morning
+forecast on the same outcomes. The intraday model should win more as the day reveals prices.
+Only decision points that have a morning daily forecast count.
+"""),
+})
+
+PANELS.update({
+    "id_sum_chart": ("Skill by horizon", """
+Per target, the pinball skill vs each baseline: climatology, momentum and the random walk. A bar
+above 0 beats that baseline; below 0 is worse than it. Climatology is the one that matters;
+momentum and the random walk are easy to beat.
+"""),
+    "id_sum_table": ("Scores per target", """
+One row per target, on the chosen reference. Coverage should be near 80%. Skill above 0 beats
+the baseline. The direction columns are how often the median was on the right side of that
+reference (50% = coin flip). PIT bias above 0 means outcomes landed below the forecast.
+"""),
+    "id_sum_days": ("Scores per test day", """
+The chosen target's scores per test day. A day with much worse skill or coverage is usually a
+market-wide move, not a stock-level fault.
+"""),
+    "id_sum_days_chart": ("Skill by test day", """
+Skill vs each baseline on each test day for the chosen target. Dips are days the model
+struggled.
+"""),
+    "id_cal_quantiles": ("Quantile calibration", """
+For each forecast quantile, the share of outcomes that landed below it. Points on the diagonal
+are calibrated. Above it: outcomes fell below the quantile more often than promised, so the
+forecast is too high (optimistic). Below it: too low.
+"""),
+    "id_cal_grid": ("P(above reference): said vs came true", """
+The model's probability that the VWAP ahead ends above the reference, grouped in probability
+buckets, against how often it did. Bubbles on the diagonal are calibrated; bubble size grows with
+n and the error bars are 95% intervals. Below the diagonal: overconfident.
+"""),
+    "id_tod_chart": ("Scores by time of day", """
+Four panels over the session. *Coverage*: should sit on the 80% line. *Width*: how wide the
+P10–P90 band is. *Skill*: above 0 beats the baseline. *Direction*: above 50% the median called
+the side right.
+"""),
+    "id_tod_table": ("Time-of-day table", """
+The numbers behind the chart, one row per 15-minute slot. Slots with few decision points are
+noisy.
+"""),
+    "id_replay": ("Session replay", """
+In dollars, over the session. **Grey**: last price. **Green**: session VWAP so far. **Red**: the
+VWAP that followed each decision time (what the model tried to forecast). **Blue band**: the
+predicted P10–P90 range at that time, dotted line its median. For *Whole-day VWAP* a purple
+band shows the morning daily forecast. The red line should stay inside the blue band about 80%
+of the time.
+"""),
+    "id_stocks_chart": ("Coverage vs skill per stock", """
+One bubble per stock. Left of the vertical line the bands are too narrow for that stock; right
+of it too wide. Below the horizontal line the model loses to climatology (momentum for runs
+without it). Bubble size grows with n.
+"""),
+    "id_stocks_table": ("Scores per stock", """
+One row per stock, best skill vs climatology first. Stocks with few decision points are noisy.
+"""),
+    "id_stocks_sectors": ("Scores per sector", """
+The same scores grouped by sector. A sector with poor coverage points to a shared cause.
+"""),
+    "id_vs_chart": ("Intraday vs daily pinball", """
+Whole-day VWAP pinball loss by time of day for the intraday model and for the morning daily
+forecast, on the same outcomes. Lower is better. The bars show the intraday skill: positive
+means the intraday forecast is better.
+"""),
+    "id_vs_table": ("Intraday vs daily table", """
+The numbers behind the chart, one row per 15-minute slot.
+"""),
+})
+
+COLUMNS.update({
+    "target": "what is forecast: the VWAP of the next 1 / 5 / 15 / 60 minutes, the rest of the "
+              "day, or the whole day",
+    "time": "clock time (ET) at the start of the 15-minute slot",
+    "tod_bucket": "15-minute slot of the session, 0 = 09:30",
+    "sector_code": "the stock's sector",
+    "date": "the day",
+    "coverage80": "share of outcomes inside the P10–P90 band. It should be 80%: below means "
+                  "the bands are too narrow, above too wide",
+    "skill_rw": "1 − pinball / the random walk's pinball (VWAP ahead = reference). Above 0 "
+                "beats it",
+    "skill_clim": "1 − pinball / the climatology baseline's pinball (the usual spread of the move "
+                  "from the last price at that time of day). Above 0 is real skill",
+    "skill_mom": "1 − pinball / the momentum baseline's pinball. Above 0 beats it, but it is an "
+                 "easy bar",
+    "dir_last": "how often the median was on the right side of the last price",
+    "dir_trail": "how often the median was on the right side of the trailing VWAP. Flattering: "
+                 "the trailing VWAP lags the price, so a forecast near the last price gets it",
+    "dir_session": "how often the median was on the right side of the session VWAP so far",
+    "pit_bias": "0.5 − mean PIT: above 0 optimistic (outcomes landed below the forecast), "
+                "below 0 pessimistic. 0 is ideal",
+    "width80_med": "typical (median) P10–P90 band width as a log move: 0.5% ≈ a band 0.5% wide",
+    "intraday_pinball": "the intraday model's pinball loss on the whole-day VWAP. Lower is better",
+    "daily_pinball": "the morning daily forecast's pinball loss on the same outcomes. Lower is "
+                     "better",
+    "skill": "1 − intraday / daily pinball. Above 0: the intraday forecast is better",
+    "id_stocks_sectors:n": "decision points in the sector",
+})
+
+PANELS["home_intraday"] = ("Intraday scores by horizon", """
+The newest intraday run on its test days, for the four short horizons (the VWAP of the next
+1 / 5 / 15 / 60 minutes). *Coverage* should be near 80%. *Skill vs climatology* above 0 is real
+skill: it beats the usual spread of the move from the last price at that time of day. *Skill vs
+momentum* is an easier bar. *Direction* is how often the median called which side of the last
+price the VWAP ahead landed on (50% = coin flip).
+""")
+COLUMNS["horizon"] = "how far ahead the forecast VWAP runs: the next 1, 5, 15 or 60 minutes"

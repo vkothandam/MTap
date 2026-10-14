@@ -294,3 +294,37 @@ def test_market_gap_finds_the_longest_silent_stretch():
     assert market_gap(t, "2026-10-14") == (90, "10:30:00")
     full = pa.table({"ts_utc": pa.array([ms("09:30:00") + i * 1000 for i in range(23_400)], pa.timestamp("ms", tz="UTC"))})
     assert market_gap(full, "2026-10-14") == (0, None)
+
+
+def test_uploads_after_a_compaction_are_never_skipped(roots):
+    """A local segment whose NAS copy was combined away is uploaded again (not treated as
+    already there), an in-flight .tmp is ignored, and the next compaction drops the repeat."""
+    from sourcing_py.massive_ws.compact import compact, day_dir
+
+    def local_segment(name: str, bars: list[dict]) -> Path:
+        cols = Columns()
+        for b in bars:
+            cols.add(b)
+        path = mc.segments_root() / "massive_ws" / "date=2026-10-14" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(cols.table(), path)
+        return path
+
+    after_close = datetime(2026, 10, 14, 16, 30, tzinfo=NY)
+    first = [bar("AAA", ms("09:30:00")), bar("BBB", ms("09:30:01"))]
+    local_segment("h09-m30-x.parquet", first)
+    local_segment("h09-m35-y.parquet", [bar("AAA", ms("09:35:00"))])
+    assert upload_all(mc.segments_root(), mc.nas_dir())[:2] == (2, 0)
+    compact(now=after_close)
+    assert [p.name for p in day_dir("2026-10-14").iterdir()] == ["day-2026-10-14.parquet"]
+
+    # The same segment is still local (power cut before the local delete): uploaded again.
+    again = local_segment("h09-m30-x.parquet", first)
+    (day_dir("2026-10-14") / "h09-m40-z.parquet.tmp").write_bytes(b"half written")
+    assert upload_all(mc.segments_root(), mc.nas_dir())[:2] == (1, 0)
+    assert not again.exists() and (day_dir("2026-10-14") / "h09-m30-x.parquet").exists()
+
+    done, errors = compact(now=after_close)
+    assert errors == [] and done[0]["duplicates"] == 2 and done[0]["rows"] == 3
+    assert sorted(p.name for p in day_dir("2026-10-14").iterdir()) == [
+        "day-2026-10-14.parquet", "h09-m40-z.parquet.tmp"]

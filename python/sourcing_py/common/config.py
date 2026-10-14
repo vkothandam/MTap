@@ -186,6 +186,35 @@ def massive_config() -> dict:
     }
 
 
+def massive_ws_config() -> dict:
+    """[massive_ws]: the per-second aggregates collector (sourcing_py/massive_ws).
+
+    env > [massive_ws] > defaults. The API key is the one in massive_config().
+    """
+    section = settings().get("massive_ws", {})
+
+    def get(key: str, env: str, default):
+        return os.environ.get(env) or section.get(key) or default
+
+    return {
+        # The delayed (15 min) cluster; wss://socket.massive.com/stocks is real time.
+        "ws_url": get("ws_url", "MASSIVE_WS_URL", "wss://delayed.massive.com/stocks"),
+        "channels": get("channels", "MASSIVE_WS_CHANNELS", "A.*"),
+        # New York wall-clock window on trading days. With the 15 min delay, 16:21 ET
+        # receives the 16:00 closing prints and a few minutes after.
+        "start_et": get("start_et", "MASSIVE_WS_START_ET", "09:00"),
+        "stop_et": get("stop_et", "MASSIVE_WS_STOP_ET", "16:21"),
+        "roll_min": int(get("roll_min", "MASSIVE_WS_ROLL_MIN", 5)),
+        "flush_s": float(get("flush_s", "MASSIVE_WS_FLUSH_S", 5)),
+        "flush_rows": int(get("flush_rows", "MASSIVE_WS_FLUSH_ROWS", 50000)),
+        # Local guard: stop collecting while unuploaded segments exceed max_local_gb or the
+        # disk has less than min_free_gb free. Nothing unuploaded is ever deleted.
+        "max_local_gb": float(get("max_local_gb", "MASSIVE_WS_MAX_LOCAL_GB", 10)),
+        "min_free_gb": float(get("min_free_gb", "MASSIVE_WS_MIN_FREE_GB", 20)),
+        "upload_retry_s": float(get("upload_retry_s", "MASSIVE_WS_UPLOAD_RETRY_S", 300)),
+    }
+
+
 def etrade_config() -> dict:
     """E*TRADE wsod fundamentals API config, with env overrides.
 

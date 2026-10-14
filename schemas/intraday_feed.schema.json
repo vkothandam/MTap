@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "intraday_feed",
   "title": "intraday_feed record (canonical, v1)",
-  "description": "One symbol at one feed event, as received. Every intraday feed adapter (E*TRADE watchlist now, Massive WebSocket later) publishes these rows to the Redis stream mtap:evt:INTRADAY_FEED, batched in the envelope under definitions.batch. A feed fills only what it has; anything else is absent or null. See intraday_feed.md for the per-feed field mapping.",
+  "description": "One symbol at one feed event, as received. Every intraday feed adapter (E*TRADE watchlist) publishes these rows to the Redis stream mtap:evt:INTRADAY_FEED, batched in the envelope under definitions.batch. A feed fills only what it has; anything else is absent or null. See intraday_feed.md for the per-feed field mapping.",
   "type": "object",
   "additionalProperties": false,
   "required": ["symbol", "ts_utc", "source", "kind"],
@@ -32,7 +32,7 @@
   },
   "definitions": {
     "batch": {
-      "description": "One Redis stream entry: the rows of one poll (E*TRADE) or one second (Massive). The Bus adds _key and _ts.",
+      "description": "One Redis stream entry: the rows of one poll. The Bus adds _key and _ts.",
       "type": "object",
       "required": ["schema_version", "source", "kind", "ts_utc", "rows"],
       "properties": {

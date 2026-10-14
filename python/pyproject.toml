@@ -17,6 +17,8 @@ dependencies = [
     "torch>=2.2",
     "exchange-calendars>=4.5",
     "redis>=5",
+    # Massive per-second aggregates (sourcing_py/massive_ws): the sync client.
+    "websockets>=13",
 ]
 
 [project.optional-dependencies]

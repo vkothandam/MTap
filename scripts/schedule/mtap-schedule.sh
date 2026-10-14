@@ -6,10 +6,12 @@
 #              supervisor (restarts it if it dies) with caffeinate holding the Mac awake
 #   stop       stop the collector
 #   sleep      stop the collector, flush the storage consumer to the NAS, log the day's
-#              summary, then put the Mac to sleep
-#   status     collector, storage consumer, Redis, LaunchAgents, power schedule
+#              summary, fill missed daily bars, wait for the Massive collector to finish
+#              its window and upload (if installed), then put the Mac to sleep
+#   status     collector, storage consumer, Massive collector, Redis, LaunchAgents, power
 #   validate   check node/npm/uv/redis, .env and the browser before the first scheduled run
 #   run-store  (com.mtap.store) the storage consumer, in the foreground
+#   run-massive (com.mtap.massive) the Massive per-second collector, in the foreground
 #   supervise  (internal) the restart loop that `start` launches
 #
 # Ported from MBin's trading-schedule.sh. Credentials live only in the repo .env.
@@ -99,17 +101,22 @@ start() {
     fi
     sourcing_py storage check >> "$MTAP_SCHEDULE_LOG" 2>&1 || mtap_log "WARNING: storage check failed (see above); collection continues, uploads wait"
 
-    # Redis and the storage consumer are KeepAlive LaunchAgents; make sure both are up.
-    for job in com.mtap.redis com.mtap.store; do
+    # Redis, the storage consumer and the Massive collector are KeepAlive LaunchAgents;
+    # make sure they are up.
+    for job in com.mtap.redis com.mtap.store com.mtap.massive; do
         launchctl print "gui/$UID_N/$job" >/dev/null 2>&1 && launchctl kickstart "gui/$UID_N/$job" >/dev/null 2>&1
     done
-    # A store that is alive but silent (stuck on a stale NAS mount after sleep) is restarted.
-    local hb="$MTAP_STATE/intraday/store.heartbeat"
-    if [ -f "$hb" ] && [ $(( $(date +%s) - $(stat -f %m "$hb") )) -gt 120 ] \
-        && launchctl print "gui/$UID_N/com.mtap.store" >/dev/null 2>&1; then
-        mtap_log "store heartbeat is stale; restarting com.mtap.store"
-        launchctl kickstart -k "gui/$UID_N/com.mtap.store" >/dev/null 2>&1
-    fi
+    # One that is alive but silent (stuck on a stale NAS mount after sleep) is restarted.
+    # Both write their heartbeat every 10 s, idle or not.
+    local job hb
+    for job in "com.mtap.store:$MTAP_STATE/intraday/store.heartbeat" "com.mtap.massive:$MTAP_STATE/massive/collector.heartbeat"; do
+        hb="${job#*:}"; job="${job%%:*}"
+        if [ -f "$hb" ] && [ $(( $(date +%s) - $(stat -f %m "$hb") )) -gt 120 ] \
+            && launchctl print "gui/$UID_N/$job" >/dev/null 2>&1; then
+            mtap_log "$job heartbeat is stale; restarting it"
+            launchctl kickstart -k "gui/$UID_N/$job" >/dev/null 2>&1
+        fi
+    done
     for _ in 1 2 3 4 5 6 7 8 9 10; do mtap_redis_cli ping >/dev/null 2>&1 && break; sleep 1; done
     mtap_redis_cli ping >/dev/null 2>&1 || mtap_log "WARNING: Redis is not up; the collector will retry publishing"
 
@@ -172,9 +179,26 @@ go_to_sleep() {
     stop
     flush_store
     sourcing_py intraday summary --date "$(TZ=America/New_York date +%F)" 2>&1 | tee -a "$MTAP_LOGS/daily-summary.log" >> "$MTAP_SCHEDULE_LOG"
+    # Daily bars a morning run missed (never today's: it is final only after 20:00 ET).
+    [ -n "${MASSIVE_API_KEY:-}" ] && "$MTAP_REPO/scripts/schedule/daily-sourcing.sh" --fill-only
+    wait_massive
     find "$MTAP_LOGS" -name '*.log' -mtime +14 -delete 2>/dev/null
     mtap_log "putting the Mac to sleep"
     pmset sleepnow
+}
+
+# The Massive feed is 15 min behind, so its window closes after the E*TRADE collector
+# stops (16:21 ET, so the closing prints arrive). Wait for it to close its last segment
+# and upload, up to 20 min (the pmset backstop sleeps the Mac at 13:40 PT regardless).
+wait_massive() {
+    launchctl print "gui/$UID_N/com.mtap.massive" >/dev/null 2>&1 || return 0
+    mtap_log "waiting for the Massive collector to finish its window and upload"
+    if sourcing_py massive-ws wait-idle --timeout 1200 >> "$MTAP_SCHEDULE_LOG" 2>&1; then
+        mtap_log "Massive collector idle, all uploaded"
+    else
+        mtap_log "WARNING: Massive collector not idle/uploaded in time; its segments upload on the next run"
+    fi
+    sourcing_py massive-ws status 2>&1 | tee -a "$MTAP_LOGS/daily-summary.log" >> "$MTAP_SCHEDULE_LOG"
 }
 
 status() {
@@ -196,6 +220,9 @@ status() {
     echo "=== Storage consumer and heartbeats ==="
     sourcing_py intraday status 2>&1 | sed 's/^/  /'
     echo ""
+    echo "=== Massive per-second collector ==="
+    sourcing_py massive-ws status 2>&1 | sed 's/^/  /'
+    echo ""
     echo "=== Power schedule ==="
     pmset -g sched | sed 's/^/  /'
     echo ""
@@ -209,6 +236,12 @@ run_store() {  # exec the venv's entry point directly so launchd's SIGTERM reach
     exec uv run --quiet sourcing-py intraday store --follow
 }
 
+run_massive() {  # same, for com.mtap.massive; it connects only inside its window
+    cd "$MTAP_REPO/python" || exit 1
+    [ -x .venv/bin/sourcing-py ] && exec .venv/bin/sourcing-py massive-ws follow
+    exec uv run --quiet sourcing-py massive-ws follow
+}
+
 case "${1:-}" in
     start) start ;;
     stop) stop ;;
@@ -216,9 +249,10 @@ case "${1:-}" in
     status) status ;;
     validate) log_env; if validate; then echo "environment OK"; else echo "validation failed; see $MTAP_SCHEDULE_LOG"; exit 1; fi ;;
     run-store) run_store ;;
+    run-massive) run_massive ;;
     supervise) supervise ;;
     *)
-        echo "usage: $0 {start|stop|sleep|status|validate|run-store}"
+        echo "usage: $0 {start|stop|sleep|status|validate|run-store|run-massive}"
         exit 2
         ;;
 esac

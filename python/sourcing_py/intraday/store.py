@@ -46,9 +46,12 @@ def segments_root() -> Path:
     return config.state_root() / "segments"
 
 
-def arrows_to_parquet(arrows: Path) -> Path | None:
+def arrows_to_parquet(
+    arrows: Path, *, schema: pa.Schema = feed.ARROW_SCHEMA, sort_by: tuple[str, ...] = ()
+) -> Path | None:
     """Convert a (possibly truncated) IPC stream segment to zstd parquet; delete it.
 
+    `sort_by` orders the rows first (per symbol runs compress several times better).
     Returns the parquet path, or None if the segment held no complete batch.
     """
     batches: list[pa.RecordBatch] = []
@@ -66,7 +69,9 @@ def arrows_to_parquet(arrows: Path) -> Path | None:
     if not batches:
         arrows.unlink(missing_ok=True)
         return None
-    table = pa.Table.from_batches(batches, schema=feed.ARROW_SCHEMA)
+    table = pa.Table.from_batches(batches, schema=schema)
+    if sort_by:
+        table = table.sort_by([(c, "ascending") for c in sort_by])
     out = arrows.with_suffix(".parquet")
     tmp = out.with_suffix(".parquet.tmp")
     pq.write_table(table, tmp, compression="zstd")
@@ -77,11 +82,11 @@ def arrows_to_parquet(arrows: Path) -> Path | None:
     return out
 
 
-def recover(root: Path) -> list[Path]:
-    """Close segments a crashed run left open."""
+def recover(root: Path, **convert) -> list[Path]:
+    """Close segments a crashed run left open (`convert`: arrows_to_parquet options)."""
     done = []
     for arrows in sorted(root.rglob("*.arrows")):
-        out = arrows_to_parquet(arrows)
+        out = arrows_to_parquet(arrows, **convert)
         log.info("recovered %s -> %s", arrows.name, out.name if out else "(empty, removed)")
         if out:
             done.append(out)
@@ -101,19 +106,28 @@ class Segment:
     _sink: pa.OSFile | None = None
     _writer: ipc.RecordBatchStreamWriter | None = None
 
+    schema: pa.Schema = feed.ARROW_SCHEMA
+    sort_by: tuple[str, ...] = ()
+
     @classmethod
-    def open(cls, root: Path, source: str, date: str, hour: int) -> "Segment":
+    def open(
+        cls, root: Path, source: str, date: str, hour: int, *,
+        label: str | None = None, schema: pa.Schema = feed.ARROW_SCHEMA, sort_by: tuple[str, ...] = (),
+    ) -> "Segment":
+        """`label` replaces the `h<HH>` file prefix (sub-hour rolls); `schema`/`sort_by`
+        are for feeds other than the canonical one."""
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        prefix = label or f"h{hour:02d}"
         d = root / source / f"date={date}"
         d.mkdir(parents=True, exist_ok=True)
-        path = d / f"h{hour:02d}-{stamp}.arrows"
+        path = d / f"{prefix}-{stamp}.arrows"
         n = 1
         while path.exists() or path.with_suffix(".parquet").exists():
-            path = d / f"h{hour:02d}-{stamp}-{n}.arrows"
+            path = d / f"{prefix}-{stamp}-{n}.arrows"
             n += 1
-        seg = cls(source, date, hour, path)
+        seg = cls(source, date, hour, path, schema=schema, sort_by=sort_by)
         seg._sink = pa.OSFile(str(path), "wb")
-        seg._writer = ipc.new_stream(seg._sink, feed.ARROW_SCHEMA)
+        seg._writer = ipc.new_stream(seg._sink, schema)
         return seg
 
     @property
@@ -133,7 +147,7 @@ class Segment:
             self._writer.close()
             self._sink.close()
             self._writer = self._sink = None
-        return arrows_to_parquet(self.path)
+        return arrows_to_parquet(self.path, schema=self.schema, sort_by=self.sort_by)
 
 
 class Store:
@@ -259,14 +273,14 @@ class Store:
         os.replace(tmp, path)
 
 
-def _singleton_lock(path: Path):
+def _singleton_lock(path: Path, what: str = "intraday store"):
     path.parent.mkdir(parents=True, exist_ok=True)
     fh = open(path, "a+")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         fh.close()
-        raise SystemExit(f"another `intraday store` is running (lock {path})")
+        raise SystemExit(f"another `{what}` is running (lock {path})")
     return fh
 
 

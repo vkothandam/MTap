@@ -30,16 +30,18 @@ def nas_dir() -> Path:
     return config.data_root() / "intraday_feed"
 
 
-def destination(local: Path, root: Path) -> Path:
-    """The NAS path for a local segment under `root` (<source>/date=<D>/<name>)."""
+def destination(local: Path, root: Path, nas: Path | None = None) -> Path:
+    """The NAS path for a local segment under `root` (<source>/date=<D>/<name>).
+
+    `nas` is the NAS folder (default DATA_ROOT/intraday_feed)."""
     source, date_dir = local.relative_to(root).parts[:2]
-    return nas_dir() / date_dir / f"source={source}" / local.name
+    return (nas or nas_dir()) / date_dir / f"source={source}" / local.name
 
 
-def upload_one(local: Path, root: Path) -> Path:
+def upload_one(local: Path, root: Path, nas: Path | None = None) -> Path:
     """Copy, verify, rename, delete local. Returns the NAS path."""
     rows = pq.read_metadata(local).num_rows
-    dest = destination(local, root)
+    dest = destination(local, root, nas)
     if dest.exists():
         if pq.read_metadata(dest).num_rows == rows:
             # Uploaded before a crash, local copy not yet deleted.
@@ -66,7 +68,7 @@ def closed_segments(root: Path) -> list[Path]:
     return sorted(p for p in root.rglob("*.parquet") if p.is_file())
 
 
-def upload_all(root: Path) -> tuple[int, int, str | None]:
+def upload_all(root: Path, nas: Path | None = None) -> tuple[int, int, str | None]:
     """One pass: (uploaded, failed, reason-if-not-ready)."""
     ready, reason = storage.data_root_ready()
     if not ready:
@@ -74,7 +76,7 @@ def upload_all(root: Path) -> tuple[int, int, str | None]:
     done = failed = 0
     for local in closed_segments(root):
         try:
-            dest = upload_one(local, root)
+            dest = upload_one(local, root, nas)
             done += 1
             log.info("uploaded %s -> %s", local.name, dest)
         except OSError as exc:
@@ -103,9 +105,10 @@ def pending(root: Path) -> dict:
 class Uploader(threading.Thread):
     """Background uploader. `kick()` after a segment closes; retries on a timer."""
 
-    def __init__(self, root: Path, *, retry_s: float = 300):
+    def __init__(self, root: Path, *, retry_s: float = 300, nas: Path | None = None):
         super().__init__(name="intraday-uploader", daemon=True)
         self.root = root
+        self.nas = nas
         self.retry_s = retry_s
         self._wake = threading.Event()
         self._halt = threading.Event()
@@ -117,7 +120,7 @@ class Uploader(threading.Thread):
 
     def _pass(self) -> None:
         with self._lock:
-            _done, _failed, reason = upload_all(self.root)
+            _done, _failed, reason = upload_all(self.root, self.nas)
         if reason != self._last_reason:
             if reason:
                 log.warning("not uploading: %s (segments stay local, retry every %.0f s)", reason, self.retry_s)

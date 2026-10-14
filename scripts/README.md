@@ -3,9 +3,9 @@
 | script | what it does |
 | --- | --- |
 | `setup/bootstrap.sh` | new checkout: checks tools, `uv sync`, `npm ci`, puppeteer Chrome, creates `.env` / `settings.toml` from the examples, mounts the NAS, `storage init` |
-| `schedule/setup-schedule.sh` | installs the LaunchAgents and the wake/sleep schedule (`services`, `test`, `prod`, `status`, `stop`) |
-| `schedule/mtap-schedule.sh` | what the agents run: `start`, `stop`, `sleep`, `status`, `validate`, `run-store` |
-| `schedule/daily-sourcing.sh` | the previous session's daily chain, from Massive fetch to `export-tft` (only with `prod --with-daily`) |
+| `schedule/setup-schedule.sh` | installs the LaunchAgents and the wake/sleep schedule (`services`, `test`, `prod`, `massive`, `status`, `stop`) |
+| `schedule/mtap-schedule.sh` | what the agents run: `start`, `stop`, `sleep`, `status`, `validate`, `run-store`, `run-massive` |
+| `schedule/daily-sourcing.sh` | the daily chain: Massive bars for every missed session, then `ingest-eod` … `export-tft` (only with `prod --with-daily`; `MTAP_DAILY_CAPTURE_ONLY=1` stops after the Massive bars) |
 | `schedule/redis-mtap.conf` | Redis for the feed: localhost only, no persistence, 2 GB cap |
 | `storage/mount-nas.sh` | mounts `MTAP_NAS_URL` using the password in the login Keychain |
 
@@ -82,7 +82,8 @@ If an E*TRADE login needs a one-time code, the collector texts a link to the OTP
    - Run `./scripts/schedule/setup-schedule.sh test --disable-mbin`, then `pmset sleepnow`. The Mac wakes in 2 minutes, collects from minute 3 to minute 6, flushes and sleeps.
    - Then wake it and run `setup-schedule.sh status`. Check the end of `schedule.log`, the collector log, `daily-summary.log`, and the NAS `intraday_feed/` folder.
    - Outside market hours, E*TRADE returns stale quotes, but the full path still runs.
-9. **Production:** `./scripts/schedule/setup-schedule.sh prod` (add `--with-daily` to run the daily chain on this Mac). Check that `pmset -g sched` shows `wake MTWRF 06:15` and `sleep MTWRF 13:30`.
+9. **Production:** `./scripts/schedule/setup-schedule.sh prod` (add `--with-daily` to run the daily chain on this Mac). Check that `pmset -g sched` shows `wake MTWRF 06:15` and `sleep MTWRF 13:40`.
+10. **Massive per-second bars** (optional): see [IMAC.md](IMAC.md).
 
 To undo: `setup-schedule.sh stop` removes MTap's agents and cancels the power schedule. To
 bring MBin back, move its plists back from `disabled-mbin/` and load them.

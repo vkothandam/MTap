@@ -19,8 +19,8 @@ from pathlib import Path
 from . import config
 from .errors import ConfigError
 
-DATA_DIRS = ("intraday_feed", "bars_1m", "out", "backup")
-STATE_DIRS = ("etrade", "logs", "segments", "intraday", "rate", "failures")
+DATA_DIRS = ("intraday_feed", "agg_1s", "bars_1m", "out", "backup")
+STATE_DIRS = ("etrade", "logs", "segments", "segments_massive", "intraday", "massive", "rate", "failures")
 
 
 def data_root_configured() -> bool:
@@ -111,6 +111,10 @@ def check() -> int:
     cap = cfg["max_local_segments_gb"] * 1e9
     flag = "  OVER CAP — is the NAS down?" if pending > cap else ""
     print(f"  segments  {_gb(pending)} not yet uploaded (cap {_gb(cap)}){flag}")
+    massive = state / "segments_massive"
+    if massive.is_dir():
+        print(f"  massive   {_gb(_dir_size(massive))} not yet uploaded "
+              f"(collector pauses at {config.massive_ws_config()['max_local_gb']:.0f} GB)")
     return 0 if ok else 1
 
 

@@ -40,6 +40,20 @@ api_key = "REPLACE_WITH_YOUR_KEY"
 # Override with env MASSIVE_RATE_LIMIT_PER_MIN.
 rate_limit_per_min = 5
 
+[massive_ws]
+# Massive per-second bars (sourcing-py massive-ws follow, launchd com.mtap.massive).
+# Each key also has an env override, MASSIVE_WS_<KEY upper-cased>.
+# ws_url = "wss://delayed.massive.com/stocks"   # 15 min delayed plan
+# channels = "A.*"                               # every stock, per-second aggregates
+# start_et = "09:00"                             # connect window, NY wall clock, trading days
+# stop_et = "16:21"                              # delayed: the 16:00 close arrives ~16:15
+# roll_min = 5                                   # one local segment per 5 min of bar time
+# flush_s = 5                                    # write batches every 5 s or 50k rows
+# flush_rows = 50000
+# max_local_gb = 10                              # disconnect if this much is not uploaded yet
+# min_free_gb = 20                               # ... or the local disk has less free
+# upload_retry_s = 300
+
 [etrade]
 # E*TRADE wsod fundamentals REST API (balance sheet, income statement, SEC filings).
 # Override with env ETRADE_BASE_URL.

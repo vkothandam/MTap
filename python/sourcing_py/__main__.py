@@ -93,6 +93,14 @@ def main(argv: list[str] | None = None) -> int:
         from .intraday.cli import main as intraday_main
 
         return intraday_main(argv[1:])
+    if argv and argv[0] == "massive-ws":
+        from .massive_ws.cli import main as massive_ws_main
+
+        return massive_ws_main(argv[1:])
+    if argv and argv[0] == "daily-gaps":
+        from .sources.massive_grouped_daily.gaps import main as gaps_main
+
+        return gaps_main(argv[1:])
     if len(argv) < 2 or argv[0] != "run":
         print(
             "usage: sourcing-py run <source> "
@@ -100,7 +108,9 @@ def main(argv: list[str] | None = None) -> int:
             "       sourcing-py etrade <build-symbols|ingest-eod|fetch|derive-features> [options]\n"
             "       sourcing-py news <aggregate|analyze|build-daily|run|scrape-yahoo> [options]\n"
             "       sourcing-py storage <check|init>\n"
-            "       sourcing-py intraday <store --follow|upload --drain|summary|status|ingest-mbin|export-tft> [options]",
+            "       sourcing-py intraday <store --follow|upload --drain|summary|status|ingest-mbin|export-tft> [options]\n"
+            "       sourcing-py massive-ws <follow|status|upload|wait-idle> [options]\n"
+            "       sourcing-py daily-gaps [--max 10]   (sessions missing a daily_summary file)",
             file=sys.stderr,
         )
         return 2

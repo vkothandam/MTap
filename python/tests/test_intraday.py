@@ -349,7 +349,7 @@ def test_uploader_stop_does_not_wait_on_a_hung_nas(roots, monkeypatch):
     storage.init()
     _closed_segment()
     release = threading.Event()
-    monkeypatch.setattr(upload, "upload_all", lambda root: (release.wait(), (0, 0, None))[1])
+    monkeypatch.setattr(upload, "upload_all", lambda root, *_: (release.wait(), (0, 0, None))[1])
     u = upload.Uploader(store.segments_root(), retry_s=300)
     u.start()
     import time as _t

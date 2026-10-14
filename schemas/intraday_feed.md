@@ -1,8 +1,9 @@
 # intraday_feed: the canonical intraday record (v1)
 
 Every intraday feed is turned into these rows before anything else sees it. Storage, bars,
-the ML panel and live features read only this shape, so a feed can be swapped (E*TRADE
-watchlist now, Massive WebSocket later) without changing anything downstream.
+the ML panel and live features read only this shape, so a feed can be swapped without changing
+anything downstream. The Massive per-second bars are too many for this stream and have their
+own table and pipeline: see [agg_1s](#agg_1s-massive-per-second-bars-v1) below.
 Machine-checkable form: [intraday_feed.schema.json](intraday_feed.schema.json), checked by a
 conformance test in each stack.
 
@@ -10,7 +11,7 @@ conformance test in each stack.
 
 - Redis stream `mtap:evt:INTRADAY_FEED`. Each entry has one field, `data`, holding the JSON
   batch envelope, the same wire format as every other MTap/MBin bus event (`RedisBus.ts`).
-- One entry per poll (E*TRADE: one watchlist, every 2 s or 20 s) or per second (Massive):
+- One entry per poll (E*TRADE: one watchlist, every 2 s or 20 s):
   ```jsonc
   { "schema_version": 1, "source": "etrade_watchlist", "kind": "snapshot",
     "ts_utc": "2026-10-12T14:31:02.118Z", "feed_seq": 812,
@@ -26,23 +27,23 @@ conformance test in each stack.
 
 ## Field mapping per feed
 
-| field | E*TRADE watchlist (`etrade_watchlist`) | Massive WS (`massive_ws`, later) |
-| --- | --- | --- |
-| `symbol` | Symbol | `sym` |
-| `ts_utc` | poll time | `s` (interval start) |
-| `kind` | `snapshot` | `agg_1s` (channel `A`) / `agg_1m` (`AM`) |
-| `price` | Last Trade (MAIN) / Last Price (MidCap) | `c` |
-| `open_i`, `high_i`, `low_i` | null | `o`, `h`, `l` |
-| `volume_cum` | Volume | `av` |
-| `volume_i` | null (bars take the change in `volume_cum`) | `v` |
-| `vwap_session` | null (recomputed in bars) | `a` |
-| `vwap_i` | null | `vw` |
-| `day_open` | Open (null while it reads 0, before the open) | `op` |
-| `prev_close` | Previous Close (MAIN only) | REST snapshot at startup |
-| `trades_i` | null | `z` if present |
-| `bid`, `ask`, `bid_size`, `ask_size` | Bid, Ask, Bid Size, Ask Size (MAIN only) | null unless `Q` is subscribed |
-| `vol_10d_src` | 10 Day Volume (MAIN only) | null |
-| `source_meta` | `{watchlist_id, watchlist}` | `{}` |
+| field | E*TRADE watchlist (`etrade_watchlist`) |
+| --- | --- |
+| `symbol` | Symbol |
+| `ts_utc` | poll time |
+| `kind` | `snapshot` |
+| `price` | Last Trade (MAIN) / Last Price (MidCap) |
+| `open_i`, `high_i`, `low_i` | null |
+| `volume_cum` | Volume |
+| `volume_i` | null (bars take the change in `volume_cum`) |
+| `vwap_session` | null (recomputed in bars) |
+| `vwap_i` | null |
+| `day_open` | Open (null while it reads 0, before the open) |
+| `prev_close` | Previous Close (MAIN only) |
+| `trades_i` | null |
+| `bid`, `ask`, `bid_size`, `ask_size` | Bid, Ask, Bid Size, Ask Size (MAIN only) |
+| `vol_10d_src` | 10 Day Volume (MAIN only) |
+| `source_meta` | `{watchlist_id, watchlist}` |
 
 E*TRADE columns deliberately dropped: MBin's computed VWAP (it resets when the scraper
 restarts), Qty, Price Paid, Date Acquired, Change since Added %, Change $/%, Day's Gain %
@@ -67,3 +68,34 @@ non-numeric values become null; a price or open of 0 becomes null.
   read again on restart. Readers dedup on (`stream_id`, `symbol`).
 - Parquet columns are the fields above, with `ts_utc` as a UTC timestamp (ms),
   `source_meta` as a JSON string, plus `stream_id` (the Redis entry id) for audit.
+
+## agg_1s: Massive per-second bars (v1)
+
+`sourcing-py massive-ws follow` (launchd `com.mtap.massive`) subscribes to `A.*` on the
+Massive WebSocket (`wss://delayed.massive.com/stocks`, 15 min delayed) and writes the bars
+itself: no Redis, no storage consumer. One row per symbol per second that traded.
+
+- Local: `STATE_ROOT/segments_massive/massive_ws/date=D/hHH-mMM-<stamp>.arrows`, one per
+  5 minutes of bar time, closed to zstd parquet sorted by (`symbol`, `ts_utc`).
+- NAS: `DATA_ROOT/agg_1s/date=D/source=massive_ws/hHH-mMM-<stamp>.parquet`; the local copy is
+  deleted once the NAS row count matches. `D` is the bar's NY date.
+- Not under `intraday_feed/`, so `export-tft` and `intraday summary` do not read it.
+- Parquet metadata: `agg_1s_schema_version=1`, `source=massive_ws`.
+
+| column | type | Massive field |
+| --- | --- | --- |
+| `symbol` | string | `sym` |
+| `ts_utc` | timestamp(ms, UTC) | `s` (bar start; the bar ends at `e`) |
+| `price` | float64 | `c` (close of the second) |
+| `open_i` / `high_i` / `low_i` | float64 | `o` / `h` / `l` |
+| `volume_i` | int64 | `v` |
+| `volume_cum` | int64 | `av` (day's volume so far) |
+| `vwap_i` | float64 | `vw` (the second's VWAP) |
+| `vwap_session` | float64 | `a` (day's VWAP so far) |
+| `day_open` | float64 | `op` (null before the open) |
+| `avg_trade_size` | int64 | `z` (average trade size, not a trade count) |
+| `otc` | bool | `otc` (absent means false) |
+
+A disconnect loses the bars it spans (the feed has no replay); the collector logs each one in
+its heartbeat (`disconnects`, `last_error`).
+

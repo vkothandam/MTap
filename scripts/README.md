@@ -3,8 +3,8 @@
 | script | what it does |
 | --- | --- |
 | `setup/bootstrap.sh` | new checkout: checks tools, `uv sync`, `npm ci`, puppeteer Chrome, creates `.env` / `settings.toml` from the examples, mounts the NAS, `storage init` |
-| `schedule/setup-schedule.sh` | installs the LaunchAgents and the wake/sleep schedule (`services`, `test`, `prod`, `massive`, `status`, `stop`) |
-| `schedule/mtap-schedule.sh` | what the agents run: `start`, `stop`, `sleep`, `status`, `validate`, `run-store`, `run-massive` |
+| `schedule/setup-schedule.sh` | installs the LaunchAgents and the wake/sleep schedule (`services`, `test`, `prod`, `status`, `stop`) |
+| `schedule/mtap-schedule.sh` | what the agents run: `start`, `stop`, `start-massive`, `stop-massive`, `sleep`, `status`, `validate`, `run-store` |
 | `schedule/daily-sourcing.sh` | the daily chain: Massive bars for every missed session, then `ingest-eod` … `export-tft` (only with `prod --with-daily`; `MTAP_DAILY_CAPTURE_ONLY=1` stops after the Massive bars) |
 | `schedule/redis-mtap.conf` | Redis for the feed: localhost only, no persistence, 2 GB cap |
 | `storage/mount-nas.sh` | mounts `MTAP_NAS_URL` using the password in the login Keychain |
@@ -20,7 +20,7 @@ All times are the Mac's local time, which must be **Pacific**.
 | --- | --- |
 | always | `com.mtap.redis` and `com.mtap.store` (the storage consumer) are KeepAlive agents |
 | 06:15 | `pmset` wakes the Mac |
-| 06:16 | `com.mtap.collector.startup` runs `mtap-schedule.sh start`. It mounts the NAS, runs `storage check`, makes sure Redis and the store are up, then starts the collector (`serve etrade`) under a restart loop holding `caffeinate` |
+| 06:16 | `com.mtap.collector.startup` runs `mtap-schedule.sh start`. It mounts the NAS, starts the Massive per-second collector under its own restart loop (only with `MTAP_MASSIVE_WS=1`; it ends by itself at 13:21), runs `storage check`, makes sure Redis and the store are up, then starts the collector (`serve etrade`) under a restart loop holding `caffeinate` |
 | 06:30 – 13:00 | the collector polls both watchlists. The store writes every row to an hourly segment under `MTAP_STATE_ROOT/segments/` and uploads each closed hour to `MTAP_DATA_ROOT/intraday_feed/` |
 | 06:40 | (`--with-daily` only) `daily-sourcing.sh` for the previous session |
 | 13:15 | `com.mtap.collector.shutdown` runs `mtap-schedule.sh sleep`. It stops the collector, flushes the store to the NAS, appends the day's summary to `logs/daily-summary.log`, then puts the Mac to sleep |
@@ -29,6 +29,7 @@ All times are the Mac's local time, which must be **Pacific**.
 **Logs**, all under `MTAP_STATE_ROOT/logs/`, kept 14 days:
 - `schedule.log`: start, stop and sleep;
 - `collector-<date>.log`: the Node collector;
+- `massive-<date>.log`: the Massive per-second collector;
 - `launchd-<label>.log`: each agent's own output;
 - `daily-summary.log`: rows and gaps per watchlist, one block per day.
 

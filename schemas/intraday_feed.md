@@ -71,7 +71,7 @@ non-numeric values become null; a price or open of 0 becomes null.
 
 ## agg_1s: Massive per-second bars (v2)
 
-`sourcing-py massive-ws follow` (launchd `com.mtap.massive`) subscribes to `A.*` on the
+`sourcing-py massive-ws follow` (started each session by `mtap-schedule.sh start`) subscribes to `A.*` on the
 Massive WebSocket (`wss://delayed.massive.com/stocks`, 15 min delayed) and writes the bars
 itself: no Redis, no storage consumer. One row per symbol per second that traded.
 

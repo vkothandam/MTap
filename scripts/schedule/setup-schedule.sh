@@ -3,9 +3,7 @@
 #
 #   ./scripts/schedule/setup-schedule.sh services          Redis + storage consumer only (no wake/sleep)
 #   ./scripts/schedule/setup-schedule.sh test              wake in 2 min, collect from 3 to 6 min, then sleep
-#   ./scripts/schedule/setup-schedule.sh prod [--with-daily] [--with-massive]   weekdays: wake 06:15, collect 06:16-13:15, sleep
-#   ./scripts/schedule/setup-schedule.sh massive [--remove] only the Massive per-second agent; touches
-#                                                           nothing else, so it is safe mid-session
+#   ./scripts/schedule/setup-schedule.sh prod [--with-daily]   weekdays: wake 06:15, collect 06:16-13:15, sleep
 #   ./scripts/schedule/setup-schedule.sh status
 #   ./scripts/schedule/setup-schedule.sh stop              unload everything, cancel the power schedule
 #
@@ -19,10 +17,11 @@
 #   com.mtap.collector.startup   weekdays   mtap-schedule.sh start
 #   com.mtap.collector.shutdown  weekdays   mtap-schedule.sh sleep
 #   com.mtap.sourcing.daily      weekdays   daily-sourcing.sh (only with --with-daily)
-#   com.mtap.massive             KeepAlive  mtap-schedule.sh run-massive (`massive` or --with-massive;
-#                                a later `prod` without the flag leaves it as it is):
-#                                Massive per-second bars 09:00-16:21 ET (15 min delayed, so the
-#                                16:00 close arrives); the 13:15 sleep job waits for it
+#
+# The Massive per-second collector has no agent of its own: with MTAP_MASSIVE_WS=1 in .env
+# the startup job starts it next to the E*TRADE collector, it ends by itself after its
+# window (09:00-16:21 ET; 15 min delayed, so the 16:00 close arrives), and the 13:15 sleep
+# job waits for it. `prod` removes the old always-on com.mtap.massive agent.
 #
 # Ported from MBin's setup-trading.sh; paths come from this script's location.
 
@@ -160,19 +159,15 @@ install_services() {
     load com.mtap.store
 }
 
-# The Massive per-second collector: its own process; it shares nothing with the E*TRADE
-# collector or Redis. Idle outside its window, so KeepAlive is safe.
-install_massive() {
-    mkdir -p "$LAUNCH_DIR"
-    unload com.mtap.massive
-    if [ "${REMOVE:-0}" = "1" ]; then
+# The old always-on Massive agent gives way to the per-session one the start job runs.
+# Started now as well: inside its window it collects, outside it uploads leftovers and ends.
+replace_legacy_massive() {
+    if [ -f "$(plist_path com.mtap.massive)" ] || launchctl print "gui/$UID_N/com.mtap.massive" >/dev/null 2>&1; then
+        unload com.mtap.massive
         rm -f "$(plist_path com.mtap.massive)"
-        ok "removed com.mtap.massive"
-        return 0
+        ok "removed the old always-on com.mtap.massive agent"
     fi
-    [ -n "${MASSIVE_API_KEY:-}" ] || { err "the Massive collector needs MASSIVE_API_KEY in .env"; exit 1; }
-    write_plist com.mtap.massive keepalive "" -- /bin/bash "$SCHED" run-massive
-    load com.mtap.massive
+    "$SCHED" start-massive
 }
 
 power_settings() {
@@ -184,7 +179,7 @@ setup_prod() {
     check_mbin
     "$SCHED" validate || { err "fix the validation errors first (see above)"; exit 1; }
     install_services
-    [ "${WITH_MASSIVE:-0}" = "1" ] && install_massive
+    replace_legacy_massive
     for label in com.mtap.collector.startup com.mtap.collector.shutdown com.mtap.sourcing.daily; do unload "$label"; done
     write_plist com.mtap.collector.startup calendar "$(weekdays_at $START_H $START_M)" -- /bin/bash "$SCHED" start
     write_plist com.mtap.collector.shutdown calendar "$(weekdays_at $STOP_H $STOP_M)" -- /bin/bash "$SCHED" sleep
@@ -203,7 +198,9 @@ setup_prod() {
     echo ""
     echo "Weekdays: wake $WAKE, collector $(printf '%02d:%02d' $START_H $START_M) to $(printf '%02d:%02d' $STOP_H $STOP_M), then flush to the NAS and sleep."
     [ "${WITH_DAILY:-0}" = "1" ] && echo "Daily sourcing at $(printf '%02d:%02d' $DAILY_H $DAILY_M)."
-    launchctl print "gui/$UID_N/com.mtap.massive" >/dev/null 2>&1 && echo "Massive per-second bars 09:00-16:21 ET; the sleep job waits for its last upload (backstop $SLEEP_BACKSTOP)."
+    if [ "${MTAP_MASSIVE_WS:-0}" = "1" ]; then
+        echo "Massive per-second bars 09:00-16:21 ET, started with the collector; the sleep job waits for its last upload (backstop $SLEEP_BACKSTOP)."
+    fi
     status
 }
 
@@ -244,19 +241,19 @@ status() {
 
 stop_all() {
     "$SCHED" stop
+    "$SCHED" stop-massive
     for label in $ALL_LABELS; do unload "$label"; rm -f "$(plist_path "$label")"; done
     sudo pmset repeat cancel
     ok "MTap agents removed and the power schedule cancelled"
 }
 
 cmd="${1:-}"; shift || true
-WITH_DAILY=0; WITH_MASSIVE=0; DISABLE_MBIN=0; REMOVE=0
+WITH_DAILY=0; DISABLE_MBIN=0
 for a in "$@"; do
     case "$a" in
         --with-daily) WITH_DAILY=1 ;;
-        --with-massive) WITH_MASSIVE=1 ;;
+        --with-massive) err "--with-massive is gone: set MTAP_MASSIVE_WS=1 in .env; the start job runs Massive"; exit 2 ;;
         --disable-mbin) DISABLE_MBIN=1 ;;
-        --remove) REMOVE=1 ;;
         *) err "unknown option $a"; exit 2 ;;
     esac
 done
@@ -264,7 +261,6 @@ case "$cmd" in
     services) install_services; status ;;
     test) setup_test ;;
     prod|production) setup_prod ;;
-    massive) install_massive; "$SCHED" status | sed -n '/Massive/,/^$/p' ;;
     status) status ;;
     stop) stop_all ;;
     *) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;

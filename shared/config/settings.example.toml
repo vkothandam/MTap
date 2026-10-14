@@ -41,7 +41,7 @@ api_key = "REPLACE_WITH_YOUR_KEY"
 rate_limit_per_min = 5
 
 [massive_ws]
-# Massive per-second bars (sourcing-py massive-ws follow, launchd com.mtap.massive).
+# Massive per-second bars (sourcing-py massive-ws follow, started by mtap-schedule.sh start).
 # Each key also has an env override, MASSIVE_WS_<KEY upper-cased>.
 # ws_url = "wss://delayed.massive.com/stocks"   # 15 min delayed plan
 # channels = "A.*"                               # every stock, per-second aggregates

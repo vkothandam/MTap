@@ -217,6 +217,26 @@ def test_a_second_collector_refuses_to_start(roots):
         held.close()
 
 
+@pytest.mark.parametrize(("when", "over"), [
+    ("2026-10-14T08:30", False),  # before the window: wait for it
+    ("2026-10-14T12:00", False),
+    ("2026-10-14T16:20", False),
+    ("2026-10-14T16:21", True),
+    ("2026-10-17T10:00", True),   # Saturday
+    ("2026-11-26T10:00", True),   # Thanksgiving
+])
+def test_day_over_ends_the_session_after_the_window_or_on_a_closed_day(when, over):
+    assert mc.day_over(datetime.fromisoformat(when).replace(tzinfo=NY), CFG) is over
+
+
+def test_until_close_exits_cleanly_once_the_day_is_over(roots, monkeypatch):
+    monkeypatch.setattr(mc, "day_over", lambda *_: True)
+    started = time.monotonic()
+    assert mc.follow(until_close=True) == 0
+    assert time.monotonic() - started < 10
+    assert json.loads(mc.heartbeat_path().read_text())["stopped"]
+
+
 def test_feed_error_carries_the_status():
     assert FeedError("max_connections", "x").status == "max_connections"
 

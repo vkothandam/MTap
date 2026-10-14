@@ -1,6 +1,6 @@
 """`sourcing-py massive-ws follow`: Massive per-second aggregates for all US stocks.
 
-A process of its own (launchd com.mtap.massive), apart from the E*TRADE collector and
+A process of its own (started each session by mtap-schedule.sh), apart from the E*TRADE collector and
 its Redis/storage pipeline; it shares only the NAS mount. Every bar is kept:
 
 1. The session thread (client.py) queues raw frames. This loop parses them into the
@@ -16,8 +16,9 @@ its Redis/storage pipeline; it shares only the NAS mount. Every bar is kept:
    deleted) and resumes once the uploads catch up.
 
 It connects only inside the New York window [start_et, stop_et) on trading days, and
-holds `caffeinate -i` while it does. Outside it the process idles (uploads only), so
-launchd can keep it alive all the time. Bars missed while disconnected are not replayed.
+holds `caffeinate -i` while it does. Started before the window it waits; with
+`until_close` it exits once the day's window is over, after closing and uploading its
+last segment. Bars missed while disconnected are not replayed.
 """
 
 from __future__ import annotations
@@ -77,6 +78,14 @@ def in_window(now: datetime, cfg: dict) -> bool:
     if not (_hhmm(cfg["start_et"]) <= local.time() < _hhmm(cfg["stop_et"])):
         return False
     return is_trading_day(local.date())
+
+
+def day_over(now: datetime, cfg: dict) -> bool:
+    """Nothing more to collect today: past stop_et New York time, or not a trading day."""
+    from ..utils.trading_calendar import is_trading_day
+
+    local = now.astimezone(NY)
+    return local.time() >= _hhmm(cfg["stop_et"]) or not is_trading_day(local.date())
 
 
 def slot(ts_ms: int, roll_min: int) -> tuple[str, int, str]:
@@ -292,8 +301,9 @@ class Collector:
 
 
 def follow(*, stop: threading.Event | None = None, upload: bool = True, window: bool = True,
-           duration_s: float | None = None, connect=_connect) -> int:
-    """Run until SIGTERM/SIGINT, `stop`, or `duration_s`. Closes and uploads on the way out."""
+           duration_s: float | None = None, until_close: bool = False, connect=_connect) -> int:
+    """Run until SIGTERM/SIGINT, `stop`, `duration_s`, or (`until_close`) the end of the
+    day's window. Closes and uploads on the way out."""
     cfg = config.massive_ws_config()
     key = config.massive_config()["api_key"]
     lock = _singleton_lock(lock_path(), "massive-ws follow")
@@ -320,7 +330,11 @@ def follow(*, stop: threading.Event | None = None, upload: bool = True, window: 
         while not stop.is_set():
             if duration_s is not None and time.monotonic() - started >= duration_s:
                 break
-            want = not window or in_window(datetime.now(UTC), cfg)
+            now = datetime.now(UTC)
+            if until_close and day_over(now, cfg):
+                log.info("the window is over for today; stopping")
+                break
+            want = not window or in_window(now, cfg)
             c.tick(want=want)
             if time.monotonic() - last_hb >= 10:
                 last_hb = time.monotonic()

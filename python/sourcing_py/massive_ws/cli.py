@@ -2,10 +2,10 @@
 
 Dispatched from `sourcing_py.__main__` when the first arg is `massive-ws`:
 
-    sourcing-py massive-ws follow [--duration S] [--no-window] [--no-upload]
+    sourcing-py massive-ws follow [--until-close] [--duration S] [--no-window] [--no-upload]
     sourcing-py massive-ws status
     sourcing-py massive-ws upload        (when the collector is not running)
-    sourcing-py massive-ws wait-idle [--timeout S]   (the evening shutdown waits on this)
+    sourcing-py massive-ws wait-idle [--timeout S]   (the old always-on agent)
     sourcing-py massive-ws compact [--date D]        (the evening shutdown: one file per day)
 """
 
@@ -21,11 +21,11 @@ from ..intraday.cli import _parse
 
 _USAGE = (
     "usage:\n"
-    "  sourcing-py massive-ws follow [--duration S] [--no-window] [--no-upload]\n"
-    "      (launchd com.mtap.massive; --duration/--no-window/--no-upload for a sample run)\n"
+    "  sourcing-py massive-ws follow [--until-close] [--duration S] [--no-window] [--no-upload]\n"
+    "      (--until-close: mtap-schedule.sh start-massive; the rest for a sample run)\n"
     "  sourcing-py massive-ws status   (collector heartbeat, local segments)\n"
     "  sourcing-py massive-ws upload   (upload closed local segments now)\n"
-    "  sourcing-py massive-ws wait-idle [--timeout 1200]   (exit 0 once idle and uploaded)\n"
+    "  sourcing-py massive-ws wait-idle [--timeout 1200]   (old always-on agent: exit 0 once idle and uploaded)\n"
     "  sourcing-py massive-ws compact [--date D]   (combine each day's NAS files into day-D.parquet)"
 )
 
@@ -51,7 +51,8 @@ def _cmd_follow(params: dict) -> int:
 
     duration = float(params["duration"]) if params.get("duration") not in (None, True) else None
     started = time.time()
-    rc = follow(upload=not params.get("no-upload"), window=not params.get("no-window"), duration_s=duration)
+    rc = follow(upload=not params.get("no-upload"), window=not params.get("no-window"), duration_s=duration,
+                until_close=bool(params.get("until-close")))
     if duration is not None:
         import pyarrow.parquet as pq
 
@@ -117,7 +118,9 @@ def _cmd_upload(_params: dict) -> int:
 
 
 def _cmd_wait_idle(params: dict) -> int:
-    """Exit 0 once the collector is idle (window closed) with nothing left to upload."""
+    """Exit 0 once the collector is idle (window closed) with nothing left to upload.
+
+    For the old always-on com.mtap.massive agent; a per-session collector simply exits."""
     timeout = float(params.get("timeout", 1200))
     deadline = time.monotonic() + timeout
     while True:

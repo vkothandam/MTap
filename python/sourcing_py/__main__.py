@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             "       sourcing-py news <aggregate|analyze|build-daily|run|scrape-yahoo> [options]\n"
             "       sourcing-py storage <check|init>\n"
             "       sourcing-py intraday <store --follow|upload --drain|summary|status|ingest-mbin|export-tft> [options]\n"
-            "       sourcing-py massive-ws <follow|status|upload|wait-idle> [options]\n"
+            "       sourcing-py massive-ws <follow|status|upload|wait-idle|compact> [options]\n"
             "       sourcing-py daily-gaps [--max 10]   (sessions missing a daily_summary file)",
             file=sys.stderr,
         )

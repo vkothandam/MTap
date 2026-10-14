@@ -75,12 +75,12 @@ def test_marker_guards_the_data_root(clean, monkeypatch, tmp_path):
     assert storage.require_data_root() == nas
 
 
-def test_unmounted_volume_is_refused(clean, monkeypatch):
+def testunmounted_volume_is_refused(clean, monkeypatch):
     monkeypatch.setenv("MTAP_DATA_ROOT", "/Volumes/mtap-test-not-mounted/data")
     ok, reason = storage.data_root_ready()
     assert not ok and "not mounted" in reason
-    assert storage._unmounted_volume(Path("/Volumes/mtap-test-not-mounted"))
-    assert not storage._unmounted_volume(Path("/tmp/x"))
+    assert storage.unmounted_volume(Path("/Volumes/mtap-test-not-mounted"))
+    assert not storage.unmounted_volume(Path("/tmp/x"))
 
 
 def test_dotenv_parse():

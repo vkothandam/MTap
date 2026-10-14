@@ -56,6 +56,46 @@ makes the overlapping multi-month windows Yahoo/Google return cheap to re-poll. 
 forces a full re-fetch/re-extract. Per-symbol feed failures are logged to
 `state/news/failures.jsonl`.
 
+## Segment 1b — Yahoo topic scraper (`news scrape-yahoo`)
+
+```bash
+uv run sourcing-py news scrape-yahoo               # pages 1..6, new articles only
+uv run sourcing-py news scrape-yahoo --pages 2 --no-raw
+uv run sourcing-py news scrape-yahoo --no-resume   # re-extract everything still listed
+```
+
+Scrapes Yahoo's curated stream `https://finance.yahoo.com/topic/stock-market-news/` (and
+`/2/`..`/6/`; Yahoo keeps 6 pages, ~150–170 stories, about two days — page 7+ redirects to
+page 1, which ends pagination). Stories expire off the list, so it must run often enough to
+see each one. Code: `yahoo.py`; config: `[news.yahoo]`.
+
+- **Listing:** `section.main` → `li.list-item`; a story is the item's first
+  `finance.yahoo.com/…/article(s)/<slug>.html` link (ads and footer links are skipped).
+  Gives title, publisher, Yahoo content id, quote tickers and a relative age (`listing_age`,
+  "21h ago", floored to the unit). Yahoo derives the age from the same `datePublished`, so
+  it is a cross-check (a disagreement prints a warning) and, for a page with no exact time,
+  the approximate `published_at` (middle of the range, `timestamp_source='listing-age'`).
+- **Article:** the exact time comes from the page's JSON-LD `datePublished`/`dateModified`
+  (UTC, to the second), falling back to `time[datetime]` (`timestamp_source` says which).
+  JSON-LD also gives author, `provider` (Reuters, Barchart, …) and the publisher's
+  `original_url`; `section.ticker-list` gives `tickers`; trafilatura extracts
+  `[data-testid="article-body"]`. For a story Yahoo republished after an update,
+  `datePublished` is the latest publish shown in the byline; the slug's 9-digit suffix
+  (HHMMSSmmm) is the original time of day.
+- **Completeness** is in `body_status`, for every feed: `full`, `paywalled` (the page's
+  JSON-LD `isAccessibleForFree: false` or a subscribe-to-read teaser; MT Newswires, …),
+  `short` (under 100 words, maybe partial) or `missing` (no body). Filter with
+  `body_status = 'full'`; `body_status <> 'full' AND original_url IS NOT NULL` lists the
+  ones a publisher-side fetch could complete.
+- **Never twice:** an article already parsed (`ok` / `no_timestamp`, paywalled included) is not fetched again
+  if its url (`article_id = sha1('yahoo-topic|'+url)`) or Yahoo content id is stored; after
+  a fetch, a second Yahoo url for an already-stored `original_url` is dropped. Only fetch
+  failures / empty bodies are retried while still listed.
+- **Raw HTML** (listing pages + articles) is gzipped to `raw_dir/date=YYYY-MM-DD/` for
+  evaluating the parser; disposable. `--no-raw` skips it.
+- Yahoo returns 429 to the default mtap User-Agent, so this sends a browser UA. Exit 1 when
+  any article fails or the listing is empty (layout drift).
+
 ## Segment 2 — analyze (FinBERT + verified attribution)
 
 ```bash
@@ -106,7 +146,11 @@ uv run sourcing-py news run --all --days 30    # aggregate -> analyze in one go
 
 ```
 news_articles(article_id PK, feed, feed_symbol, site, url, title, summary, body_text,
-              published_at, lang, extract_status['ok'|'failed'|'skipped'], fetched_at)
+              published_at, lang, extract_status['ok'|'failed'|'skipped'|'no_timestamp'],
+              body_status['full'|'paywalled'|'short'|'missing'],
+              fetched_at, modified_at, timestamp_source, author, provider, original_url,
+              section, tickers[], content_uuid, listing_page, listing_position,
+              first_listed_at, listing_age, raw_path)   -- all times naive UTC (session TimeZone=UTC)
               -- one row per unique article; presence == "already processed" (skip on re-run)
 
 article_symbols(article_id, symbol, match_method['ticker+name'|'name'|'cashtag'], matched_at,

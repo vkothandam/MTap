@@ -9,6 +9,8 @@ Schema (all DDL idempotent — CREATE TABLE IF NOT EXISTS):
 
   news_articles   — one row per unique article; the row's presence == "already processed",
                     so re-runs over the overlapping multi-month RSS windows skip it cheaply.
+                    Rows come from the per-symbol RSS aggregator and the Yahoo topic scraper
+                    (feed 'yahoo-topic', which also fills the provider/author/tickers columns).
   article_symbols — verified (article, symbol) attributions (many-to-many). Only matches
                     corroborated in the article text are stored; noisy candidates dropped.
   article_sentiment — per-article FinBERT output (pos/neg/neu probs + aggregate signed score).
@@ -23,23 +25,39 @@ from pathlib import Path
 
 import duckdb
 
-from ..common import config
+from ..common import config, storage
 from ..common.errors import ConfigError
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS news_articles (
     article_id     TEXT PRIMARY KEY,  -- stable hash of the feed entry's guid/link
-    feed           TEXT,              -- feed that surfaced it, e.g. 'yahoo' | 'google'
+    feed           TEXT,              -- feed that surfaced it: 'yahoo' | 'google' | 'yahoo-topic'
     feed_symbol    TEXT,              -- the symbol whose feed this came from (tentative)
     site           TEXT,              -- publisher domain of the (resolved) url
     url            TEXT,              -- article url (resolved past redirects when deep-fetched)
     title          TEXT,
     summary        TEXT,              -- RSS-provided blurb
     body_text      TEXT,              -- extracted main article text (NULL if not fetched/failed)
-    published_at   TIMESTAMP,         -- from the feed entry
+    body_status    TEXT,              -- how complete body_text is: 'full' | 'paywalled' (teaser
+                                      --   only) | 'short' (< 100 words, maybe partial) | 'missing'
+    published_at   TIMESTAMP,         -- UTC; from the feed entry or the article page
     lang           TEXT,
-    extract_status TEXT,              -- 'ok' | 'failed' | 'skipped' (no deep fetch needed)
-    fetched_at     TIMESTAMP
+    extract_status TEXT,              -- 'ok' | 'failed' | 'skipped' | 'no_timestamp'
+    fetched_at     TIMESTAMP,         -- UTC
+    modified_at      TIMESTAMP,       -- UTC; article page's last update (topic scraper)
+    timestamp_source TEXT,            -- where published_at came from: 'ld+json' | 'time-tag'
+                                      --   | 'listing-age' (approximate, no exact time on the page)
+    author           TEXT,            -- byline; several authors joined with '; '
+    provider         TEXT,            -- syndicating publisher, e.g. 'Reuters' | 'Barchart'
+    original_url     TEXT,            -- publisher's own url for a syndicated article
+    section          TEXT,            -- publisher's section, e.g. 'Stocks'
+    tickers          VARCHAR[],       -- symbols the page tags (Yahoo quote links), unverified
+    content_uuid     TEXT,            -- Yahoo content id from the listing
+    listing_page     INTEGER,         -- topic page / position where it was first seen
+    listing_position INTEGER,
+    first_listed_at  TIMESTAMP,       -- UTC; scrape run that first saw it on the listing
+    listing_age      TEXT,            -- the listing's relative age then, e.g. '21h ago'
+    raw_path         TEXT             -- gzipped raw HTML kept for re-parsing (may be purged)
 );
 
 CREATE TABLE IF NOT EXISTS article_symbols (
@@ -74,8 +92,16 @@ CREATE TABLE IF NOT EXISTS symbol_sentiment_daily (
 );
 """
 
-# Additive migrations for DBs created before a column existed (idempotent). None yet.
-_MIGRATIONS: tuple[str, ...] = ()
+# Additive migrations for DBs created before a column existed (idempotent).
+_MIGRATIONS: tuple[str, ...] = tuple(
+    f"ALTER TABLE news_articles ADD COLUMN IF NOT EXISTS {col}"
+    for col in (
+        "modified_at TIMESTAMP", "timestamp_source TEXT", "author TEXT", "provider TEXT",
+        "original_url TEXT", "section TEXT", "tickers VARCHAR[]", "content_uuid TEXT",
+        "listing_page INTEGER", "listing_position INTEGER", "first_listed_at TIMESTAMP",
+        "raw_path TEXT", "listing_age TEXT", "body_status TEXT",
+    )
+)
 
 
 def db_path() -> Path:
@@ -84,11 +110,18 @@ def db_path() -> Path:
 
 @contextmanager
 def connect(path: Path | None = None) -> Iterator[duckdb.DuckDBPyConnection]:
-    """Open (creating parent dirs + tables) the news DuckDB. Auto-closes."""
+    """Open (creating parent dirs + tables) the news DuckDB. Auto-closes.
+
+    The session time zone is UTC: tz-aware datetimes written to a TIMESTAMP column are
+    otherwise converted to the machine's local zone, so every stored time is naive UTC.
+    """
     p = Path(path) if path is not None else db_path()
+    if storage.unmounted_volume(p):
+        raise ConfigError(f"news DB {p} is under /Volumes but the share is not mounted")
     p.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(p))
     try:
+        con.execute("SET TimeZone = 'UTC'")
         con.execute(_DDL)
         for stmt in _MIGRATIONS:
             con.execute(stmt)

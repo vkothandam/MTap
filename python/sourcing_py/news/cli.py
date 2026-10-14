@@ -6,21 +6,24 @@ Dispatched from `sourcing_py.__main__` when the first arg is `news`:
     sourcing-py news analyze [--no-resume]                 # FinBERT + verified attribution
     sourcing-py news build-daily [--fromdate D1 --todate D2]   # segment 3, on-demand
     sourcing-py news run [--symbols A,B | --all] [--days N]     # aggregate -> analyze
+    sourcing-py news scrape-yahoo [--pages N] [--no-resume] [--no-raw]   # Yahoo topic stream
 """
 
 from __future__ import annotations
 
 import sys
 
-from ..common.errors import ConfigError
-from . import aggregator, daily, sentiment
+from ..common.errors import ConfigError, FetchError
+from . import aggregator, daily, sentiment, yahoo
 
 _USAGE = (
     "usage:\n"
     "  sourcing-py news aggregate [--symbols A,B | --all] [--days N] [--no-resume]\n"
     "  sourcing-py news analyze [--no-resume]   (FinBERT sentiment + verified symbol matching)\n"
     "  sourcing-py news build-daily [--fromdate D1 --todate D2]   (segment 3, on-demand)\n"
-    "  sourcing-py news run [--symbols A,B | --all] [--days N]     (aggregate -> analyze)"
+    "  sourcing-py news run [--symbols A,B | --all] [--days N]     (aggregate -> analyze)\n"
+    "  sourcing-py news scrape-yahoo [--pages N] [--no-resume] [--no-raw]\n"
+    "      (Yahoo Finance stock-market-news topic pages -> full articles with exact timestamps)"
 )
 
 
@@ -87,6 +90,33 @@ def _cmd_build_daily(p: dict) -> int:
     return 0
 
 
+def _cmd_scrape_yahoo(p: dict) -> int:
+    try:
+        pages = int(p["pages"]) if p.get("pages") else None
+        summary = yahoo.scrape(
+            pages=pages, resume=not p.get("no-resume"), keep_raw=not p.get("no-raw")
+        )
+    except (ConfigError, FetchError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2 if isinstance(exc, ValueError) else 1
+    for err in summary["errors"]:
+        print(f"  failed: {err}", file=sys.stderr)
+    for msg in summary["age_mismatch"]:
+        print(f"  warning: {msg}", file=sys.stderr)
+    print(
+        f"scraped {summary['pages']} page(s), {summary['listed']} article(s) listed: "
+        f"{summary['fetched']} fetched ({summary['ok']} ok, {summary['no_timestamp']} without "
+        f"timestamp, {summary['failed']} failed; {summary['paywalled']} paywalled teaser(s), "
+        f"{summary['short']} short body(ies)), "
+        f"{summary['skipped_seen']} already stored, "
+        f"{summary['duplicates']} duplicate(s) of a stored story dropped; "
+        f"{summary['total_articles']:,} yahoo-topic articles total in DB"
+    )
+    # an empty listing means the page layout changed under the selectors
+    bad = summary["listed"] == 0 or summary["failed"] or summary["no_timestamp"]
+    return 1 if bad else 0
+
+
 def _cmd_run(p: dict) -> int:
     rc = _cmd_aggregate(p)
     if rc > 1:  # usage/config error — don't proceed to analyze
@@ -114,5 +144,7 @@ def main(argv: list[str]) -> int:
         return _cmd_build_daily(params)
     if sub == "run":
         return _cmd_run(params)
+    if sub == "scrape-yahoo":
+        return _cmd_scrape_yahoo(params)
     print(f"unknown news subcommand {sub!r}\n{_USAGE}", file=sys.stderr)
     return 2

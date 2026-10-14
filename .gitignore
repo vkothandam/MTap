@@ -18,6 +18,7 @@ data/
 /intraday_feed/
 /bars_1m/
 /backup/
+temp/
 .mtap-data-root
 *.parquet
 *.jsonl

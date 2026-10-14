@@ -277,6 +277,27 @@ def news_config() -> dict:
             "fetch_article": True,
         },
     ]
+    # Yahoo Finance topic scraper (news/yahoo.py). Yahoo answers the default mtap UA with
+    # 429, so this one sends a desktop-browser UA.
+    ysec = section.get("yahoo", {})
+    yahoo = {
+        "topic_url": os.environ.get("NEWS_YAHOO_TOPIC_URL") or ysec.get("topic_url")
+        or "https://finance.yahoo.com/topic/stock-market-news/",
+        "pages": int(os.environ.get("NEWS_YAHOO_PAGES") or ysec.get("pages") or 6),
+        "user_agent": os.environ.get("NEWS_YAHOO_USER_AGENT") or ysec.get("user_agent")
+        or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        "per_domain_rps": float(
+            os.environ.get("NEWS_YAHOO_PER_DOMAIN_RPS") or ysec.get("per_domain_rps") or 1
+        ),
+        "max_concurrency": int(
+            os.environ.get("NEWS_YAHOO_MAX_CONCURRENCY") or ysec.get("max_concurrency") or 3
+        ),
+        "raw_dir": state_path(
+            os.environ.get("NEWS_YAHOO_RAW_DIR") or ysec.get("raw_dir")
+            or data_root() / "news" / "yahoo" / "raw"
+        ),
+    }
     return {
         "db_path": db_path,
         "requests_per_sec": float(requests_per_sec),
@@ -286,6 +307,7 @@ def news_config() -> dict:
         "lookback_days": int(lookback_days),
         "request_timeout": float(request_timeout),
         "feeds": feeds,
+        "yahoo": yahoo,
     }
 
 

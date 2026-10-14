@@ -88,6 +88,20 @@ url_template = "https://news.google.com/rss/search?q={symbol}+stock&hl=en-US&gl=
 tag = "symbol"
 fetch_article = true
 
+# Yahoo Finance topic scraper (`sourcing-py news scrape-yahoo`, sourcing_py/news/yahoo.py):
+# the stock-market-news topic pages (1..pages; Yahoo keeps 6) -> each article's full text
+# with its exact published/modified time. Env overrides: NEWS_YAHOO_<KEY>.
+[news.yahoo]
+topic_url = "https://finance.yahoo.com/topic/stock-market-news/"
+pages = 6
+# Yahoo answers the default mtap User-Agent with 429; send a desktop-browser UA.
+# user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ..."
+per_domain_rps = 1
+max_concurrency = 3
+# Gzipped raw HTML, kept to evaluate the parser later (disposable). Default
+# <data root>/news/yahoo/raw.
+# raw_dir = "/Volumes/mtap/mtap/news/yahoo/raw"
+
 [edgar]
 # SEC EDGAR submissions API (sourcing_py/etrade/edgar.py): 8-K item 2.02 results releases
 # with their acceptance time, plus 10-K/10-Q. SEC requires a User-Agent naming you and a

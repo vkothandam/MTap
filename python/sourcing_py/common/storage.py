@@ -32,7 +32,7 @@ def marker_path() -> Path:
     return config.data_root() / config.DATA_ROOT_MARKER
 
 
-def _unmounted_volume(path: Path) -> bool:
+def unmounted_volume(path: Path) -> bool:
     """A /Volumes/<name>/… path whose /Volumes/<name> is not a mount point."""
     parts = path.resolve().parts
     if len(parts) < 3 or parts[1] != "Volumes":
@@ -45,7 +45,7 @@ def data_root_ready() -> tuple[bool, str]:
     root = config.data_root()
     if not data_root_configured():
         return True, "data root is the repo (MTAP_DATA_ROOT not set)"
-    if _unmounted_volume(root):
+    if unmounted_volume(root):
         return False, f"{root} is under /Volumes but the share is not mounted"
     if not root.is_dir():
         return False, f"{root} does not exist"
@@ -118,7 +118,7 @@ def init() -> int:
     """Create both roots' folders and the data-root marker."""
     cfg = config.storage_config()
     data, state = cfg["data_root"], cfg["state_root"]
-    if data_root_configured() and _unmounted_volume(data):
+    if data_root_configured() and unmounted_volume(data):
         print(f"error: {data} is under /Volumes but the share is not mounted; mount it first "
               "(scripts/storage/mount-nas.sh)", file=sys.stderr)
         return 1

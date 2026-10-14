@@ -191,10 +191,24 @@ erDiagram
         VARCHAR title
         VARCHAR summary
         VARCHAR body_text
+        VARCHAR body_status
         TIMESTAMP published_at
         VARCHAR lang
         VARCHAR extract_status
         TIMESTAMP fetched_at
+        TIMESTAMP modified_at
+        VARCHAR timestamp_source
+        VARCHAR author
+        VARCHAR provider
+        VARCHAR original_url
+        VARCHAR section
+        VARCHAR[] tickers
+        VARCHAR content_uuid
+        INTEGER listing_page
+        INTEGER listing_position
+        TIMESTAMP first_listed_at
+        VARCHAR listing_age
+        VARCHAR raw_path
     }
     symbol_sentiment_daily {
         VARCHAR symbol PK

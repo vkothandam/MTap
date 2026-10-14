@@ -37,6 +37,27 @@ from . import db
 _SCOPE = "news"  # state/news/failures.jsonl
 
 
+# Below this many words an extracted body is likely a stub (teaser, link-out, cut short).
+SHORT_BODY_WORDS = 100
+# Teaser text partner pages show non-subscribers (MT Newswires, ...).
+_PAYWALL = ("upgrade to read this", "subscription plan is required to access premium")
+
+
+def body_status(body: str | None, accessible_for_free: bool | None = None) -> str:
+    """How complete body_text is: 'full' | 'paywalled' | 'short' | 'missing'.
+
+    `accessible_for_free` is the page's schema.org flag when it has one; False means the
+    publisher marks it subscriber-only, so the extracted text is a teaser.
+    """
+    if not body:
+        return "missing"
+    if accessible_for_free is False or any(m in body.lower() for m in _PAYWALL):
+        return "paywalled"
+    if len(body.split()) < SHORT_BODY_WORDS:
+        return "short"
+    return "full"
+
+
 def _article_id(feed: str, entry) -> str:
     key = entry.get("id") or entry.get("guid") or entry.get("link") or entry.get("title") or ""
     return hashlib.sha1(f"{feed}|{key}".encode()).hexdigest()
@@ -122,6 +143,7 @@ def _base_row(aid, feed, feed_symbol, entry, published, parsed) -> dict:
         "title": entry.get("title"),
         "summary": entry.get("summary"),
         "body_text": None,
+        "body_status": "missing",
         "published_at": published,
         "lang": entry.get("language") or parsed.feed.get("language"),
         "extract_status": "skipped",  # no deep fetch needed / requested
@@ -180,6 +202,7 @@ async def _collect(targets, feeds, cfg, seen, cutoff, stats) -> list[dict]:
                     row["url"] = resolved
                     row["site"] = _domain(resolved)
                     row["body_text"] = body
+                    row["body_status"] = body_status(body)
                     row["extract_status"] = "ok" if body else "failed"
                 except FetchError:
                     # Keep the feed's title/summary so sentiment can still run; mark failed
@@ -231,9 +254,10 @@ def aggregate(
             db.bulk_upsert(
                 con, "news_articles",
                 ["article_id", "feed", "feed_symbol", "site", "url", "title", "summary",
-                 "body_text", "published_at", "lang", "extract_status", "fetched_at"],
+                 "body_text", "body_status", "published_at", "lang", "extract_status", "fetched_at"],
                 "article_id",
                 "url = excluded.url, site = excluded.site, body_text = excluded.body_text, "
+                "body_status = excluded.body_status, "
                 "extract_status = excluded.extract_status, fetched_at = excluded.fetched_at",
                 deduped,
             )

@@ -6,6 +6,7 @@ Dispatched from `sourcing_py.__main__` when the first arg is `massive-ws`:
     sourcing-py massive-ws status
     sourcing-py massive-ws upload        (when the collector is not running)
     sourcing-py massive-ws wait-idle [--timeout S]   (the evening shutdown waits on this)
+    sourcing-py massive-ws compact [--date D]        (the evening shutdown: one file per day)
 """
 
 from __future__ import annotations
@@ -24,7 +25,8 @@ _USAGE = (
     "      (launchd com.mtap.massive; --duration/--no-window/--no-upload for a sample run)\n"
     "  sourcing-py massive-ws status   (collector heartbeat, local segments)\n"
     "  sourcing-py massive-ws upload   (upload closed local segments now)\n"
-    "  sourcing-py massive-ws wait-idle [--timeout 1200]   (exit 0 once idle and uploaded)"
+    "  sourcing-py massive-ws wait-idle [--timeout 1200]   (exit 0 once idle and uploaded)\n"
+    "  sourcing-py massive-ws compact [--date D]   (combine each day's NAS files into day-D.parquet)"
 )
 
 
@@ -138,6 +140,24 @@ def _cmd_wait_idle(params: dict) -> int:
         time.sleep(5)
 
 
+def _cmd_compact(params: dict) -> int:
+    _logging()
+    from .compact import compact
+
+    day = params.get("date") if params.get("date") not in (None, True) else None
+    done, errors = compact(day=day)
+    for s in done:
+        dups = f", {s['duplicates']} duplicates dropped" if s["duplicates"] else ""
+        gap = f"longest market-wide gap {s['longest_gap_s']} s" + (f" at {s['gap_at_et']} ET" if s["gap_at_et"] else "")
+        print(f"massive-ws {s['date']}: {s['files']} files -> day-{s['date']}.parquet, {s['rows']} bars, "
+              f"{s['symbols']} symbols, {s['mb_before']} -> {s['mb_after']} MB{dups}; {gap}")
+    for e in errors:
+        print(f"massive-ws compact FAILED {e}")
+    if not done and not errors:
+        print("massive-ws compact: nothing to combine")
+    return 1 if errors else 0
+
+
 def main(argv: list[str]) -> int:
     """argv is everything AFTER the `massive-ws` verb."""
     if not argv:
@@ -150,7 +170,7 @@ def main(argv: list[str]) -> int:
         print(f"error: {exc}\n{_USAGE}", file=sys.stderr)
         return 2
     commands = {"follow": _cmd_follow, "status": _cmd_status, "upload": _cmd_upload,
-                "wait-idle": _cmd_wait_idle}
+                "wait-idle": _cmd_wait_idle, "compact": _cmd_compact}
     if sub not in commands:
         print(f"unknown massive-ws subcommand {sub!r}\n{_USAGE}", file=sys.stderr)
         return 2

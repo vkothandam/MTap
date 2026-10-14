@@ -79,6 +79,10 @@ itself: no Redis, no storage consumer. One row per symbol per second that traded
   5 minutes of bar time, closed to zstd parquet sorted by (`symbol`, `ts_utc`).
 - NAS: `DATA_ROOT/agg_1s/date=D/source=massive_ws/hHH-mMM-<stamp>.parquet`; the local copy is
   deleted once the NAS row count matches. `D` is the bar's NY date.
+- After the window closes, `massive-ws compact` (the evening sleep job) combines each day's
+  files into `day-D.parquet`: same columns and values, duplicates (`symbol`, `ts_utc`)
+  dropped, sorted, zstd 19, about 40% smaller. Read every `*.parquet` in the folder: a day
+  can hold `day-D.parquet` plus 5-minute files uploaded after it ran.
 - Not under `intraday_feed/`, so `export-tft` and `intraday summary` do not read it.
 - Parquet metadata: `agg_1s_schema_version=1`, `source=massive_ws`.
 
@@ -97,5 +101,12 @@ itself: no Redis, no storage consumer. One row per symbol per second that traded
 | `otc` | bool | `otc` (absent means false) |
 
 A disconnect loses the bars it spans (the feed has no replay); the collector logs each one in
-its heartbeat (`disconnects`, `last_error`).
+its heartbeat (`disconnects`, `last_error`, `dropped_frames`), and `compact` reports the
+longest regular-session stretch with no bar at all (normally 1 s).
+
+Volumes are whole shares (`v`, `av`); the fractional-share volumes `dv`, `dav` are not kept.
+Massive's REST minute bars use the fractional volume, so the per-second volumes summed to a
+minute read a little lower (median 0.1% for AAPL, about 3% for a retail-heavy small cap);
+prices match exactly. `av` also counts trades that never update a bar (odd lots and other
+conditions), so it rises faster than the sum of `v`.
 

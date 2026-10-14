@@ -230,3 +230,67 @@ def test_daily_gaps_skip_holidays_weekends_and_today(tmp_path: Path):
     for d in ("02", "04", "08"):
         (tmp_path / f"daily_summary-2026-09-{d}.jsonl").write_text("")
     assert missing_sessions(tmp_path, date(2026, 9, 9), days=7) == []
+
+
+# -- end-of-day combine ----------------------------------------------------------------------
+def _part(name: str, bars: list[dict]) -> Path:
+    from sourcing_py.massive_ws.compact import day_dir
+
+    cols = Columns()
+    for b in bars:
+        cols.add(b)
+    path = day_dir("2026-10-14") / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(cols.table(), path)
+    return path
+
+
+def test_compact_combines_a_day_into_one_sorted_file_and_is_rerunnable(roots):
+    from sourcing_py.massive_ws.compact import compact, day_dir
+
+    _part("h09-m30-a.parquet", [bar("ZZZ", ms("09:30:00")), bar("AAA", ms("09:30:01"))])
+    _part("h09-m35-b.parquet", [bar("AAA", ms("09:35:00")), bar("MMM", ms("09:35:02"))])
+    # A copy left behind by an interrupted run: its bars duplicate the first file's.
+    _part("h09-m30-a-dup1.parquet", [bar("ZZZ", ms("09:30:00"))])
+    after_close = datetime(2026, 10, 14, 16, 30, tzinfo=NY)
+
+    done, errors = compact(now=after_close)
+    assert errors == [] and len(done) == 1
+    s = done[0]
+    assert (s["files"], s["rows"], s["duplicates"], s["symbols"]) == (3, 4, 1, 3)
+    files = sorted(p.name for p in day_dir("2026-10-14").iterdir())
+    assert files == ["day-2026-10-14.parquet"]
+    t = pq.read_table(day_dir("2026-10-14") / files[0])
+    assert t.schema.equals(AGG_1S_SCHEMA, check_metadata=True)
+    assert [(r["symbol"], r["ts_utc"].minute) for r in t.to_pylist()] == [
+        ("AAA", 30), ("AAA", 35), ("MMM", 35), ("ZZZ", 30)]
+
+    # A late upload is merged into the day file next time; nothing else is redone.
+    _part("h15-m55-c.parquet", [bar("AAA", ms("15:55:00"))])
+    done, errors = compact(now=after_close)
+    assert errors == [] and done[0]["files"] == 2 and done[0]["rows"] == 5
+    assert compact(now=after_close) == ([], [])
+
+
+def test_compact_leaves_today_alone_until_the_window_closes(roots):
+    from sourcing_py.massive_ws.compact import compact, day_dir
+
+    _part("h09-m30-a.parquet", [bar("AAA", ms("09:30:00"))])
+    _part("h09-m35-b.parquet", [bar("AAA", ms("09:35:00"))])
+    assert compact(now=datetime(2026, 10, 14, 12, 0, tzinfo=NY)) == ([], [])
+    assert len(list(day_dir("2026-10-14").iterdir())) == 2
+    # The next day, yesterday is due whatever the time.
+    done, _ = compact(now=datetime(2026, 10, 15, 8, 0, tzinfo=NY))
+    assert [d["date"] for d in done] == ["2026-10-14"]
+
+
+def test_market_gap_finds_the_longest_silent_stretch():
+    import pyarrow as pa
+
+    from sourcing_py.massive_ws.compact import market_gap
+
+    seconds = [ms("09:30:00") + i * 1000 for i in range(23_400) if not 3600 <= i < 3690]  # 10:30:00-10:31:29 silent
+    t = pa.table({"ts_utc": pa.array(seconds, pa.timestamp("ms", tz="UTC"))})
+    assert market_gap(t, "2026-10-14") == (90, "10:30:00")
+    full = pa.table({"ts_utc": pa.array([ms("09:30:00") + i * 1000 for i in range(23_400)], pa.timestamp("ms", tz="UTC"))})
+    assert market_gap(full, "2026-10-14") == (0, None)

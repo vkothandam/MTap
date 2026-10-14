@@ -30,15 +30,18 @@ cd <repo> && git pull && (cd python && uv sync)      # uv sync only adds websock
 | 06:16–13:15 | E*TRADE watchlist collector (unchanged) |
 | 06:15–13:21 | Massive per-second bars for all stocks (15 min delayed, so the 13:00 close arrives about 13:15) |
 | 06:40 | daily bars for every session missed in the last 14 days. Capture-only mode stops there |
-| 13:15 | sleep job: stops E*TRADE, flushes, fills missed daily bars, waits up to 20 min for Massive's last upload, then sleeps |
+| 13:15 | sleep job: stops E*TRADE, flushes, fills missed daily bars, waits up to 20 min for Massive's last upload, combines its files into one per day, then sleeps |
 | 13:40 | pmset backstop sleep |
 
 ## Storage
 
 - **Local:** `<MTAP_STATE_ROOT>/segments_massive/`. A file closes every 5 minutes, is uploaded, and is deleted once the NAS copy's row count matches. Normally under 0.5 GB.
-- **NAS:** `<MTAP_DATA_ROOT>/agg_1s/date=YYYY-MM-DD/source=massive_ws/*.parquet`.
+- **NAS:** `<MTAP_DATA_ROOT>/agg_1s/date=YYYY-MM-DD/source=massive_ws/*.parquet`. The evening sleep job combines each day's 5-minute files into one `day-YYYY-MM-DD.parquet`, with the same data, about 40% smaller. This takes about a minute and up to 4 GB of memory, and is safe to interrupt. By hand: `sourcing-py massive-ws compact [--date D]`.
 - **NAS down:** files stay local. If more than 10 GB is waiting, or less than 20 GB of disk is free, the collector disconnects. It reconnects once the files are uploaded. Nothing is deleted before it is uploaded.
-- **Size estimate:** about 38 bytes per bar, measured pre-open. That is roughly 0.2–0.45 GB per regular-session hour on the NAS, 1.5–3 GB per day, and 1.3–2 GB per hour of network. Measure after the first day with `du -sh <MTAP_DATA_ROOT>/agg_1s/date=<day>`.
+- **Size, measured on 2026-10-14 (09:35–11:00 ET):**
+  - 13,031 symbols, about 1.7 M bars an hour;
+  - 5-minute files take about 58 MB an hour;
+  - the combined day file is about 58% of that: roughly 240 MB a day, or about 60 GB a year.
 
 ## Checks
 
@@ -46,6 +49,7 @@ cd <repo> && git pull && (cd python && uv sync)      # uv sync only adds websock
 ./scripts/schedule/setup-schedule.sh status   # "Massive per-second collector" section
 tail -20 <MTAP_LOGS>/schedule.log             # the sleep job logs "Massive collector idle, all uploaded"
 tail <MTAP_LOGS>/launchd-com.mtap.massive.log
+tail <MTAP_LOGS>/daily-summary.log            # per day: bars, symbols, MB, longest market-wide gap
 ```
 
 In `massive-ws status`, each heartbeat field means:

@@ -7,7 +7,8 @@
 #   stop       stop the collector
 #   sleep      stop the collector, flush the storage consumer to the NAS, log the day's
 #              summary, fill missed daily bars, wait for the Massive collector to finish
-#              its window and upload (if installed), then put the Mac to sleep
+#              its window and upload, combine its files into one per day (if installed),
+#              then put the Mac to sleep
 #   status     collector, storage consumer, Massive collector, Redis, LaunchAgents, power
 #   validate   check node/npm/uv/redis, .env and the browser before the first scheduled run
 #   run-store  (com.mtap.store) the storage consumer, in the foreground
@@ -199,6 +200,8 @@ wait_massive() {
         mtap_log "WARNING: Massive collector not idle/uploaded in time; its segments upload on the next run"
     fi
     sourcing_py massive-ws status 2>&1 | tee -a "$MTAP_LOGS/daily-summary.log" >> "$MTAP_SCHEDULE_LOG"
+    # One file per day on the NAS (safe to interrupt; the next evening finishes it).
+    sourcing_py massive-ws compact 2>&1 | tee -a "$MTAP_LOGS/daily-summary.log" >> "$MTAP_SCHEDULE_LOG"
 }
 
 status() {

@@ -22,6 +22,16 @@ cd <repo> && git pull && (cd python && uv sync)      # uv sync only adds websock
 - A key allows only one WebSocket connection, so no other machine may run `massive-ws follow`.
 - Undo: `setup-schedule.sh massive --remove`.
 
+## After a code update that changes the collector
+
+The collector keeps running the code it started with; a `git pull` alone does not change it.
+Restart it outside its window (after 13:21 PT or before 06:00 PT), so no bars are lost:
+
+```bash
+git pull && (cd python && uv sync)
+./scripts/schedule/setup-schedule.sh massive         # reloads com.mtap.massive only
+```
+
 ## A weekday (Pacific time)
 
 | time | what runs |

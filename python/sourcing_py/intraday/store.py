@@ -46,6 +46,15 @@ def segments_root() -> Path:
     return config.state_root() / "segments"
 
 
+def conform(table: pa.Table, schema: pa.Schema) -> pa.Table:
+    """`table` with exactly `schema`'s columns: a column an older file lacks comes back null."""
+    if table.schema.equals(schema, check_metadata=True):
+        return table
+    cols = [table[f.name].cast(f.type) if f.name in table.column_names else pa.nulls(table.num_rows, f.type)
+            for f in schema]
+    return pa.Table.from_arrays(cols, schema=schema)
+
+
 def arrows_to_parquet(
     arrows: Path, *, schema: pa.Schema = feed.ARROW_SCHEMA, sort_by: tuple[str, ...] = ()
 ) -> Path | None:
@@ -69,7 +78,8 @@ def arrows_to_parquet(
     if not batches:
         arrows.unlink(missing_ok=True)
         return None
-    table = pa.Table.from_batches(batches, schema=schema)
+    # A segment written before a schema change converts to the current schema.
+    table = conform(pa.Table.from_batches(batches), schema)
     if sort_by:
         table = table.sort_by([(c, "ascending") for c in sort_by])
     out = arrows.with_suffix(".parquet")

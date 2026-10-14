@@ -32,6 +32,7 @@ import pyarrow.parquet as pq
 
 from ..common import config, storage
 from ..intraday.feed import NY
+from ..intraday.store import conform
 from .collector import _hhmm, nas_dir
 from .rows import AGG_1S_SCHEMA, SORT_BY, SOURCE
 
@@ -100,11 +101,11 @@ def compact_day(day: str, *, work: Path) -> dict | None:
     if not inputs or inputs == [target]:
         return None
     size_in = sum(p.stat().st_size for p in inputs)
-    tables = [pq.read_table(p).cast(AGG_1S_SCHEMA) for p in inputs]
+    tables = [conform(pq.read_table(p), AGG_1S_SCHEMA) for p in inputs]  # v1 files: dec volumes null
     rows_in = sum(t.num_rows for t in tables)
     t = pa.concat_tables(tables).sort_by([(c, "ascending") for c in SORT_BY])
     del tables
-    t = _dedup_sorted(t).replace_schema_metadata(AGG_1S_SCHEMA.metadata)
+    t = _dedup_sorted(t)
 
     work.mkdir(parents=True, exist_ok=True)
     local = work / target.name

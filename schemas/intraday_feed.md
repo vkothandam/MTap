@@ -69,7 +69,7 @@ non-numeric values become null; a price or open of 0 becomes null.
 - Parquet columns are the fields above, with `ts_utc` as a UTC timestamp (ms),
   `source_meta` as a JSON string, plus `stream_id` (the Redis entry id) for audit.
 
-## agg_1s: Massive per-second bars (v1)
+## agg_1s: Massive per-second bars (v2)
 
 `sourcing-py massive-ws follow` (launchd `com.mtap.massive`) subscribes to `A.*` on the
 Massive WebSocket (`wss://delayed.massive.com/stocks`, 15 min delayed) and writes the bars
@@ -84,7 +84,9 @@ itself: no Redis, no storage consumer. One row per symbol per second that traded
   dropped, sorted, zstd 19, about 40% smaller. Read every `*.parquet` in the folder: a day
   can hold `day-D.parquet` plus 5-minute files uploaded after it ran.
 - Not under `intraday_feed/`, so `export-tft` and `intraday summary` do not read it.
-- Parquet metadata: `agg_1s_schema_version=1`, `source=massive_ws`.
+- Parquet metadata: `agg_1s_schema_version=2`, `source=massive_ws`. v1 (2026-10-14, before the
+  collector restart) has no `*_dec` columns; `compact` and the local segment conversion fill
+  them with null, so a mixed day reads as one schema.
 
 | column | type | Massive field |
 | --- | --- | --- |
@@ -94,6 +96,8 @@ itself: no Redis, no storage consumer. One row per symbol per second that traded
 | `open_i` / `high_i` / `low_i` | float64 | `o` / `h` / `l` |
 | `volume_i` | int64 | `v` |
 | `volume_cum` | int64 | `av` (day's volume so far) |
+| `volume_i_dec` | float64 | `dv`, the bar's volume including fractional shares (v2) |
+| `volume_cum_dec` | float64 | `dav`, the day's volume so far including fractional shares (v2) |
 | `vwap_i` | float64 | `vw` (the second's VWAP) |
 | `vwap_session` | float64 | `a` (day's VWAP so far) |
 | `day_open` | float64 | `op` (null before the open) |
@@ -104,9 +108,9 @@ A disconnect loses the bars it spans (the feed has no replay); the collector log
 its heartbeat (`disconnects`, `last_error`, `dropped_frames`), and `compact` reports the
 longest regular-session stretch with no bar at all (normally 1 s).
 
-Volumes are whole shares (`v`, `av`); the fractional-share volumes `dv`, `dav` are not kept.
-Massive's REST minute bars use the fractional volume, so the per-second volumes summed to a
-minute read a little lower (median 0.1% for AAPL, about 3% for a retail-heavy small cap);
-prices match exactly. `av` also counts trades that never update a bar (odd lots and other
+`volume_i`/`volume_cum` are whole shares; `volume_i_dec`/`volume_cum_dec` include
+fractional-share trades, as Massive's REST minute bars do. Whole-share volume summed to a
+minute reads a little lower than REST (median 0.1% for AAPL, about 3% for a retail-heavy
+small cap); prices match exactly. `av` also counts trades that never update a bar (odd lots and other
 conditions), so it rises faster than the sum of `v`.
 

@@ -64,6 +64,7 @@ def test_a_message_maps_to_the_agg_1s_columns():
     assert r[0]["symbol"] == "TCRT" and r[0]["price"] == 3.81 and r[0]["volume_i"] == 957
     assert r[0]["volume_cum"] == 25794291 and r[0]["vwap_session"] == 3.7832
     assert r[0]["avg_trade_size"] == 478 and r[0]["day_open"] is None and r[0]["otc"] is False
+    assert r[0]["volume_i_dec"] == 957.0 and r[0]["volume_cum_dec"] == 25794291.5  # sent as strings
     assert r[1]["day_open"] == 3.7 and r[1]["otc"] is True and r[1]["volume_i"] == 12
     assert cols.max_s == ms("09:31:08")
 
@@ -328,3 +329,46 @@ def test_uploads_after_a_compaction_are_never_skipped(roots):
     assert errors == [] and done[0]["duplicates"] == 2 and done[0]["rows"] == 3
     assert sorted(p.name for p in day_dir("2026-10-14").iterdir()) == [
         "day-2026-10-14.parquet", "h09-m40-z.parquet.tmp"]
+
+
+def _v1(table):
+    """The same bars as a schema-1 file (before the fractional volumes)."""
+    return table.drop_columns(["volume_i_dec", "volume_cum_dec"]).replace_schema_metadata(
+        {"agg_1s_schema_version": "1", "source": "massive_ws"})
+
+
+def test_a_v1_segment_left_open_converts_to_the_current_schema(roots):
+    import pyarrow as pa
+    from pyarrow import ipc
+
+    from sourcing_py.intraday.store import recover
+    from sourcing_py.massive_ws.rows import SORT_BY
+
+    cols = Columns()
+    cols.add(bar("BBB", ms("09:30:01")))
+    cols.add(bar("AAA", ms("09:30:00")))
+    old = _v1(cols.table())
+    path = mc.segments_root() / "massive_ws" / "date=2026-10-14" / "h09-m30-old.arrows"
+    path.parent.mkdir(parents=True)
+    with pa.OSFile(str(path), "wb") as f, ipc.new_stream(f, old.schema) as w:
+        w.write_table(old)
+    [out] = recover(mc.segments_root(), schema=AGG_1S_SCHEMA, sort_by=SORT_BY)
+    t = pq.read_table(out)
+    assert t.schema.equals(AGG_1S_SCHEMA, check_metadata=True)
+    assert t["symbol"].to_pylist() == ["AAA", "BBB"] and t["volume_i_dec"].null_count == 2
+
+
+def test_compact_merges_v1_and_v2_files_of_one_day(roots):
+    from sourcing_py.massive_ws.compact import compact, day_dir
+
+    cols = Columns()
+    cols.add(bar("AAA", ms("09:30:00")))
+    d = day_dir("2026-10-14")
+    d.mkdir(parents=True)
+    pq.write_table(_v1(cols.table()), d / "h09-m30-old.parquet")
+    _part("h13-m00-new.parquet", [bar("AAA", ms("13:00:00"))])
+    done, errors = compact(now=datetime(2026, 10, 14, 16, 30, tzinfo=NY))
+    assert errors == [] and done[0]["rows"] == 2
+    t = pq.read_table(d / "day-2026-10-14.parquet")
+    assert t.schema.equals(AGG_1S_SCHEMA, check_metadata=True)
+    assert t["volume_i_dec"].to_pylist() == [None, 957.0]

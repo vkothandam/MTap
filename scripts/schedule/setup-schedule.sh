@@ -147,6 +147,8 @@ install_services() {
         err "redis-server not found: brew install redis"; exit 1
     else
         unload com.mtap.redis
+        # bootout returns before our redis exits; a ping now would get its last answer.
+        for _ in $(seq 1 10); do mtap_redis_cli ping >/dev/null 2>&1 || break; sleep 1; done
         if mtap_redis_cli ping >/dev/null 2>&1; then
             info "something already answers on ${REDIS_URL:-redis://127.0.0.1:6379}; not installing com.mtap.redis"
         else

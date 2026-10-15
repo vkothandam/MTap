@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
@@ -213,9 +215,15 @@ def export_tft(
                 "count(*) FILTER (WHERE has_news = 1), "
                 "min(day_idx), max(day_idx), min(date), max(date) FROM _panel"
             ).fetchone()
-            tmp = out.with_name(out.name + ".tmp")
-            con.execute(f"COPY _panel TO '{_sql_str(tmp)}' (FORMAT parquet, COMPRESSION zstd)")
-            os.replace(tmp, out)
+            # DuckDB locks the file it writes, and SMB shares (the NAS data root) refuse the
+            # lock; so write locally, copy beside the target, then rename it into place.
+            config.state_root().mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=config.state_root()) as local_dir:
+                local = Path(local_dir) / out.name
+                con.execute(f"COPY _panel TO '{_sql_str(local)}' (FORMAT parquet, COMPRESSION zstd)")
+                tmp = out.with_name(out.name + ".tmp")
+                shutil.copyfile(local, tmp)
+                os.replace(tmp, out)
         finally:
             con.unregister("_cal")
 

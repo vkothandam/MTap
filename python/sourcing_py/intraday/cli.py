@@ -96,7 +96,7 @@ def _cmd_summary(params: dict) -> int:
 
 
 def _cmd_status(_params: dict) -> int:
-    from .upload import pending
+    from .upload import logged_failures, pending
 
     hb = config.state_root() / "intraday" / "store.heartbeat"
     if hb.exists():
@@ -116,6 +116,8 @@ def _cmd_status(_params: dict) -> int:
             print(f"  {name}: {w.get('polls')} polls, {w.get('rows')} rows, last {w.get('last_poll_utc')}")
     left = pending(config.state_root() / "segments")
     print(f"local segments: {left['files']} file(s), {left['bytes'] / 1e6:.1f} MB")
+    for e in logged_failures(config.state_root() / "segments").values():
+        print(f"  not uploaded: {e['file']} ({e['attempts']} attempt(s) since {e['first_at']}): {e['error']}")
     return 0
 
 

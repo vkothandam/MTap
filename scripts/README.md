@@ -7,7 +7,7 @@
 | `schedule/mtap-schedule.sh` | what the agents run: `start`, `stop`, `start-massive`, `stop-massive`, `sleep`, `status`, `validate`, `run-store` |
 | `schedule/daily-sourcing.sh` | the daily chain: Massive bars for every missed session, then `ingest-eod` … `export-tft` (only with `prod --with-daily`; `MTAP_DAILY_CAPTURE_ONLY=1` stops after the Massive bars) |
 | `schedule/redis-mtap.conf` | Redis for the feed: localhost only, no persistence, 2 GB cap |
-| `storage/mount-nas.sh` | mounts `MTAP_NAS_URL` using the password in the login Keychain |
+| `storage/mount-nas.sh` | mounts `MTAP_NAS_URL`, passing the user and the login-Keychain password to Finder; `--save-password` stores the password |
 
 Everything reads the repo-root `.env`. Paths come from the scripts' location, so the repo
 can live anywhere. ML jobs are never started from here.
@@ -32,6 +32,7 @@ All times are the Mac's local time, which must be **Pacific**.
 - `massive-<date>.log`: the Massive per-second collector;
 - `launchd-<label>.log`: each agent's own output;
 - `daily-summary.log`: rows and gaps per watchlist, one block per day.
+- `MTAP_STATE_ROOT/failures/upload_segments.jsonl` (and `upload_segments_massive.jsonl`): segments the store (or the Massive collector) could not move to the NAS (error, attempts). Each upload pass retries these first, remounting the share with `mount-nas.sh` if it dropped, and removes an entry once its file is uploaded. A segment is deleted locally only after its NAS copy is read back with the share still mounted.
 
 **Heartbeats:**
 - `MTAP_STATE_ROOT/etrade/collector.heartbeat`: the last poll;
@@ -61,7 +62,7 @@ If an E*TRADE login needs a one-time code, the collector texts a link to the OTP
    - `ET_USERNAME`, `ET_PASSWORD`, the SMS settings, and `OTP_HOST` (the LAN IP);
    - `MTAP_STATE_ROOT=~/mtap-state`;
    - `MTAP_DATA_ROOT=/Volumes/<share>/mtap` and `MTAP_NAS_URL=smb://<user>@<nas>/<share>`.
-4. **NAS password:** connect once in Finder (Go > Connect to Server, tick "Remember this password"). Then rerun `bootstrap.sh`, which mounts the share and runs `storage init`.
+4. **NAS password:** run `./scripts/storage/mount-nas.sh --save-password` (or connect once in Finder with "Remember this password"). Then rerun `bootstrap.sh`, which mounts the share and runs `storage init`.
 5. **State from the old machine** (optional), copied into `MTAP_STATE_ROOT`:
    - `etrade/session.json`, to skip the first OTP;
    - `etrade/fundamentals.duckdb`;

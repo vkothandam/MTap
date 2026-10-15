@@ -66,7 +66,7 @@ class FakeConsumer:
 
 @pytest.fixture
 def roots(monkeypatch, tmp_path):
-    for var in ("MTAP_DATA_ROOT", "MTAP_STATE_ROOT", "OUT_ROOT"):
+    for var in ("MTAP_DATA_ROOT", "MTAP_STATE_ROOT", "OUT_ROOT", "MTAP_NAS_URL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(config, "settings", lambda: {})
     monkeypatch.setenv("MTAP_STATE_ROOT", str(tmp_path / "local"))
@@ -194,6 +194,74 @@ def test_upload_after_a_crash_between_copy_and_delete(roots):
     dest.write_bytes(local.read_bytes())  # already on the NAS, local copy not yet deleted
     assert upload.upload_all(store.segments_root())[:2] == (1, 0)
     assert not local.exists() and len(list(dest.parent.glob("*.parquet"))) == 1
+
+
+def test_unmounted_share_is_remounted_then_uploaded(roots, monkeypatch):
+    storage.init()
+    local = _closed_segment()
+    mounted = {"up": False}
+    monkeypatch.setenv("MTAP_NAS_URL", "smb://u@nas/share")
+    monkeypatch.setattr(storage, "data_root_ready",
+                        lambda: (True, "ok") if mounted["up"] else (False, "x is under /Volumes but the share is not mounted"))
+    monkeypatch.setattr(upload, "remount", lambda: (mounted.update(up=True), (True, "mounted"))[1])
+    assert upload.upload_all(store.segments_root()) == (1, 0, None)
+    assert not local.exists() and not upload.logged_failures(store.segments_root())
+
+
+def test_failed_remount_keeps_the_segment_and_logs_it(roots, monkeypatch):
+    storage.init()
+    local = _closed_segment()
+    monkeypatch.setenv("MTAP_NAS_URL", "smb://u@nas/share")
+    monkeypatch.setattr(storage, "data_root_ready", lambda: (False, "the share is not mounted"))
+    monkeypatch.setattr(upload, "remount", lambda: (False, "could not mount"))
+    for attempt in (1, 2):
+        done, failed, reason = upload.upload_all(store.segments_root())
+        assert (done, failed) == (0, 0) and "not mounted" in reason
+        (entry,) = upload.logged_failures(store.segments_root()).values()
+        assert entry["attempts"] == attempt and entry["file"].endswith(local.name)
+    assert local.exists()
+
+    monkeypatch.setattr(storage, "data_root_ready", lambda: (True, "ok"))
+    assert upload.upload_all(store.segments_root()) == (1, 0, None)
+    assert not local.exists() and not failures_log().exists()
+
+
+def failures_log() -> Path:
+    return upload.failure_log(store.segments_root())
+
+
+def test_share_dropping_mid_copy_keeps_the_local_file(roots, monkeypatch):
+    storage.init()
+    local = _closed_segment()
+
+    real_copy = upload.shutil.copyfile
+    share = {"down": True}
+
+    def copy(src, dst):
+        if not share["down"]:
+            return real_copy(src, dst)
+        Path(dst).write_bytes(b"half")
+        raise OSError("Host is down")
+
+    monkeypatch.setattr(upload.shutil, "copyfile", copy)
+    done, failed, _ = upload.upload_all(store.segments_root(), mount=False)
+    assert (done, failed) == (0, 1) and local.exists()
+    assert not list((roots / "nas").rglob("*.tmp")) and not list((roots / "nas").rglob("*.parquet"))
+    assert "Host is down" in next(iter(upload.logged_failures(store.segments_root()).values()))["error"]
+
+    share["down"] = False
+    assert upload.upload_all(store.segments_root(), mount=False)[:2] == (1, 0)
+    assert not local.exists() and not upload.logged_failures(store.segments_root())
+
+
+def test_share_dropping_after_the_copy_does_not_delete_local(roots, monkeypatch):
+    storage.init()
+    local = _closed_segment()
+    calls = iter([(True, "ok"), (True, "ok"), (False, "the share is not mounted")])
+    monkeypatch.setattr(storage, "data_root_ready", lambda: next(calls, (False, "the share is not mounted")))
+    done, failed, _ = upload.upload_all(store.segments_root(), mount=False)
+    assert (done, failed) == (0, 1) and local.exists()
+    assert "data root lost" in next(iter(upload.logged_failures(store.segments_root()).values()))["error"]
 
 
 # -- the whole loop ----------------------------------------------------------------------
@@ -349,7 +417,7 @@ def test_uploader_stop_does_not_wait_on_a_hung_nas(roots, monkeypatch):
     storage.init()
     _closed_segment()
     release = threading.Event()
-    monkeypatch.setattr(upload, "upload_all", lambda root, *_: (release.wait(), (0, 0, None))[1])
+    monkeypatch.setattr(upload, "upload_all", lambda root, *_, **_kw: (release.wait(), (0, 0, None))[1])
     u = upload.Uploader(store.segments_root(), retry_s=300)
     u.start()
     import time as _t

@@ -2,7 +2,9 @@ import vanillaPuppeteer from "puppeteer";
 import { addExtra } from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import type { Browser as PuppeteerBrowser, BrowserContext, Page, PuppeteerLaunchOptions } from "puppeteer";
+import { join } from "node:path";
 import { ENV } from "./env.js";
+import { stateRoot } from "../../common/config.js";
 
 // puppeteer-extra ships a CommonJS `.d.ts` with no `exports`/`type` field, so a
 // default import resolves to the module namespace (not the PuppeteerExtra
@@ -36,6 +38,12 @@ export class Browser {
       headless: ENV.HEADLESS,
       protocolTimeout: 180000, // 3 minutes — long-running sessions
       timeout: 60000,
+      // A persistent profile keeps E*TRADE's device-trust and bot-manager cookies across
+      // runs, so a login looks like a returning browser instead of a fresh one each time.
+      userDataDir: ENV.CHROME_PROFILE_DIR ?? join(stateRoot(), "etrade", "chrome-profile"),
+      // --enable-automation sets navigator.webdriver and the "controlled by automated
+      // software" bar, both of which bot detection reads.
+      ignoreDefaultArgs: ["--enable-automation"],
       args: [
         // Security sandbox settings
         "--no-sandbox",
@@ -70,7 +78,7 @@ export class Browser {
       launchOptions.executablePath = ENV.PUPPETEER_EXECUTABLE_PATH;
     }
 
-    console.log(`[Browser] launching (headless=${ENV.HEADLESS})...`);
+    console.log(`[Browser] launching (headless=${ENV.HEADLESS}, profile=${launchOptions.userDataDir})...`);
     const launchStart = Date.now();
     this.browser = await puppeteer.launch(launchOptions);
     console.log(`[Browser] launched in ${Date.now() - launchStart}ms`);
@@ -92,9 +100,10 @@ export class Browser {
   private async setupPage(): Promise<void> {
     if (!this.page) throw new Error("Page not created");
     await this.page.setViewport({ width: 1280, height: 800 });
-    await this.page.setUserAgent(
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    );
+    // The real browser's UA (minus "Headless"), so it matches the version in the client
+    // hints; a fixed UA string from another Chrome version is itself a bot signal.
+    const userAgent = (await this.browser!.userAgent()).replace("HeadlessChrome", "Chrome");
+    await this.page.setUserAgent(userAgent);
     await this.page.setRequestInterception(true);
   }
 

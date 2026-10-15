@@ -1,5 +1,5 @@
 import axios, { type AxiosRequestConfig } from "axios";
-import { URLS } from "./constants.js";
+import { API_TIMEOUT_MS, BROWSER_USER_AGENT, URLS } from "./constants.js";
 import { CookieUtils } from "./utils/CookieUtils.js";
 import { BrowserGuard } from "./utils/BrowserGuard.js";
 import { EVENTS } from "../../common/bus/events.js";
@@ -306,6 +306,7 @@ export class ETPageScraper {
             ...(this.getRequestConfig(cookie).headers as Record<string, string>),
             Authorization: this.requestHeaders.Authorization ?? "",
           },
+          timeout: API_TIMEOUT_MS,
         });
         if (response.status === 401 || response.status === 403) {
           throw new Error("SESSION_EXPIRED");
@@ -353,7 +354,9 @@ export class ETPageScraper {
         origin: "https://us.etrade.com",
         host: "us.etrade.com",
         "x-requested-with": "XMLHttpRequest",
+        "user-agent": this.requestHeaders["user-agent"] ?? BROWSER_USER_AGENT,
       },
+      timeout: API_TIMEOUT_MS,
     };
   }
 }

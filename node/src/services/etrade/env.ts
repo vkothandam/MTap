@@ -25,6 +25,8 @@ export const ENV = {
   // Browser runtime. HEADLESS also honours MBin's legacy BROWSER_HEADLESS name.
   HEADLESS: flag(process.env.HEADLESS, false) || process.env.BROWSER_HEADLESS === "true",
   PUPPETEER_EXECUTABLE_PATH: process.env.PUPPETEER_EXECUTABLE_PATH,
+  // Persistent Chrome profile (cookies, "remember this device"); default <state root>/etrade/chrome-profile.
+  CHROME_PROFILE_DIR: process.env.CHROME_PROFILE_DIR,
 };
 
 /** True when the minimum credentials for a browser login are present. */

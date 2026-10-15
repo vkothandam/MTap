@@ -17,6 +17,15 @@ export const URLS = {
   QUOTE_URL: "https://api.etrade.com/v1/market/quote/",
 } as const;
 
+// The browser's user agent, also sent on the scraper's direct API calls: E*TRADE's edge
+// silently stalls requests carrying axios's default `axios/x.y` agent.
+export const BROWSER_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+// Per-request timeout for the scraper's direct API calls; a stalled call then fails as a
+// transient error and is retried instead of hanging the poll loop forever.
+export const API_TIMEOUT_MS = 15000;
+
 export const TRADING_HOURS = {
   START: { HOURS: 9, MINUTES: 30, SECONDS: 0 },
   END: { HOURS: 16, MINUTES: 0, SECONDS: 0 },

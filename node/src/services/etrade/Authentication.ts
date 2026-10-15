@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { HTTPRequest } from "puppeteer";
 import { URLS, SERVER_CONFIG, PHONE_CONFIG } from "./constants.js";
 import { ENV } from "./env.js";
@@ -5,6 +7,7 @@ import { SMSNotifier } from "./utils/SMSNotifier.js";
 import { BrowserGuard } from "./utils/BrowserGuard.js";
 import { BrowserClosedError } from "./utils/errors.js";
 import type { OtpCoordinator } from "./otp.js";
+import { stateRoot } from "../../common/config.js";
 
 // E*TRADE browser-login flow. Ported from MBin scrape/modules/Authentication.js.
 // Changes for MTap:
@@ -24,6 +27,9 @@ export interface AuthenticationOptions {
 }
 
 export class Authentication {
+  /** How long to wait after "Log on" for the verification step or the logged-in page. */
+  static LOGIN_OUTCOME_TIMEOUT_MS = 60000;
+
   private readonly guard: BrowserGuard;
   private readonly otpCoordinator: OtpCoordinator;
   private readonly onOtpRequired?: () => void;
@@ -85,21 +91,15 @@ export class Authentication {
         await this.guard.type("#USER", username, { delay: 100 });
         await this.guard.type("#password", password, { delay: 100 });
 
-        // In headless mode, Promise.all with navigation can cause frame detachment;
-        // click first, then wait for navigation separately.
-        if (ENV.HEADLESS) {
-          await this.guard.click("#mfaLogonButton");
-          try {
-            await this.guard.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 });
-          } catch {
-            // Navigation may have completed via a fast redirect; give it a moment.
-            await this.sleep(3000);
-          }
-        } else {
-          await Promise.all([
-            this.guard.click("#mfaLogonButton"),
-            this.guard.waitForNavigation({ waitUntil: "networkidle2" }),
-          ]);
+        // Click first, then wait for navigation separately (Promise.all can detach the
+        // frame headless). The step-up page may not navigate at all, so a timeout here is
+        // not an error: handlePhoneVerification waits for the actual outcome.
+        await this.guard.click("#mfaLogonButton");
+        try {
+          await this.guard.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 });
+        } catch (error) {
+          if (error instanceof BrowserClosedError) throw error;
+          await this.sleep(3000);
         }
 
         const shouldRetry = await this.handleLoginErrors(attempts);
@@ -175,8 +175,9 @@ export class Authentication {
   async handlePhoneVerification(): Promise<void> {
     let verificationDetected = false;
     try {
-      const bodyText: string = await this.guard.$eval("body", (el: HTMLElement) => el.innerText);
-      if (!bodyText.includes("Help us confirm your identity")) {
+      // After "Log on" the page can spin for a while (longer headless) before it shows the
+      // verification step or leaves the login page; decide only once one of them happens.
+      if (!(await this.waitForLoginOutcome())) {
         console.log("[Auth] No phone verification needed");
         return;
       }
@@ -192,12 +193,18 @@ export class Authentication {
 
       await this.sleep(4000);
 
-      await this.guard.waitForSelector("#sendOTPCodeBtn");
-      await this.guard.click("#sendOTPCodeBtn");
+      // #send-otp-btn is the current page; #sendOTPCodeBtn the older one.
+      const sendButton = "#send-otp-btn, #sendOTPCodeBtn";
+      await this.guard.waitForSelector(sendButton);
+      await this.guard.click(sendButton);
       console.log("[Auth] Clicked Send Code button");
 
-      const otp = await this.otpCoordinator.waitForCode(PHONE_CONFIG.OTP_TIMEOUT);
-      await this.enterOTPAndRemember(otp);
+      const otp = await this.waitForCodeOrManualEntry();
+      if (otp === null) {
+        console.log("[Auth] Verification completed in the browser window");
+      } else {
+        await this.enterOTPAndRemember(otp);
+      }
     } catch (error) {
       if (error instanceof BrowserClosedError) throw error;
       console.error(
@@ -207,6 +214,53 @@ export class Authentication {
         error,
       );
       throw error;
+    }
+  }
+
+  /**
+   * Wait until the login either reaches the phone verification step (true) or leaves the
+   * login pages (false). Throws if it is still on the login page after LOGIN_OUTCOME_TIMEOUT_MS.
+   */
+  private async waitForLoginOutcome(): Promise<boolean> {
+    const deadline = Date.now() + Authentication.LOGIN_OUTCOME_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const bodyText: string = await this.guard
+        .$eval("body", (el: HTMLElement) => el.innerText)
+        .catch((error: unknown) => {
+          if (error instanceof BrowserClosedError) throw error;
+          return ""; // mid-navigation
+        });
+      if (bodyText.includes("Help us confirm your identity")) return true;
+      if (!this.guard.url().includes("/etx/pxy/login")) return false;
+      await this.sleep(1000);
+    }
+    throw new Error(`still on the login page ${Authentication.LOGIN_OUTCOME_TIMEOUT_MS / 1000}s after "Log on"`);
+  }
+
+  /**
+   * Wait for the code from the /auth/otp page, or for someone to enter it directly in the
+   * (non-headless) browser window, seen as the page leaving the login pages. Returns the
+   * code, or null when it was entered in the window.
+   */
+  private async waitForCodeOrManualEntry(): Promise<string | null> {
+    const fromOtpPage = this.otpCoordinator.waitForCode(PHONE_CONFIG.OTP_TIMEOUT);
+    let done = false;
+    const inWindow = (async (): Promise<null> => {
+      while (!done) {
+        await this.sleep(2000);
+        if (!done && !this.guard.url().includes("/etx/pxy/login")) return null;
+      }
+      return null;
+    })();
+    try {
+      const result = await Promise.race([fromOtpPage, inWindow]);
+      if (result === null) {
+        this.otpCoordinator.cancel("code entered in the browser window");
+        fromOtpPage.catch(() => {}); // its rejection is expected now
+      }
+      return result;
+    } finally {
+      done = true;
     }
   }
 
@@ -226,6 +280,12 @@ export class Authentication {
         "[Auth] Available phone numbers:",
         phoneNumbers.map((p) => p.phoneNumber),
       );
+
+      // With a single number on the account the page just shows it, with no radio list.
+      if (phoneNumbers.length === 0) {
+        console.log("[Auth] No phone number choice on the page (single number); nothing to select");
+        return;
+      }
 
       let selectedPhone: { id: string; phoneNumber: string } | undefined;
       for (const suffix of PHONE_CONFIG.SELECT_PRIORITY) {
@@ -269,16 +329,32 @@ export class Authentication {
     const formattedOTP = otp.replace(/\D/g, "").slice(0, 6);
 
     console.log("[Auth] Waiting for OTP input field...");
-    await this.guard.waitForSelector("#verificationCode", { timeout: 30000 });
+    // #verificationCode on the older page; the others match a standard one-time-code field.
+    const codeInput = '#verificationCode, input[autocomplete="one-time-code"], input[name*="code" i], input[id*="code" i]';
+    try {
+      await this.guard.waitForSelector(codeInput, { timeout: 30000 });
+    } catch (error) {
+      if (error instanceof BrowserClosedError) throw error;
+      const file = join(stateRoot(), "logs", `otp-page-${Date.now()}.html`);
+      writeFileSync(file, await this.guard.evaluate(() => document.documentElement.outerHTML));
+      console.error(`[Auth] No OTP input field found; page saved to ${file}`);
+      throw error;
+    }
 
     // Clear the field first.
-    await this.guard.evaluate(() => {
-      const input = document.getElementById("verificationCode") as HTMLInputElement | null;
+    await this.guard.evaluate((selector: string) => {
+      const input = document.querySelector(selector) as HTMLInputElement | null;
       if (input) input.value = "";
-    });
+    }, codeInput);
 
-    await this.guard.type("#verificationCode", formattedOTP, { delay: 100 });
-    await this.guard.click("#saveDevice");
+    await this.guard.type(codeInput, formattedOTP, { delay: 100 });
+    // "Remember this device", when the page offers it, so later logins skip the code.
+    const remembered: boolean = await this.guard.evaluate(() => {
+      const box = document.getElementById("saveDevice") as HTMLInputElement | null;
+      if (box && !box.checked) box.click();
+      return box !== null;
+    });
+    if (!remembered) console.log("[Auth] No 'remember this device' option on the OTP page");
 
     // Small delay to let form validation settle, then submit.
     await this.sleep(500);

@@ -21,8 +21,9 @@ downloaded and not kept) takes about **45 minutes**, or 1.5–3 hours on a slowe
 Disk: about 1.7 GB of temporary staging under `<MTAP_STATE_ROOT>/massive_ext/`, removed at
 the end; about 2.4 GB (daily bars) + 2–2.5 GB (extended hours) added on the NAS.
 
-The plan keeps 5 years on a **rolling** basis: on 2026-10-15 the first date served was
-2021-10-18 (2021-10-15 was refused). Use the dates below.
+The plan keeps 5 years on a **rolling** basis: this changes every day. **Today (2026-10-18) the
+first date served is 2021-10-21** (2021-10-18 was refused). Use the dates below; adjust
+the day-of-run if you wait longer.
 
 ```bash
 cd <repo> && git pull && (cd python && uv sync)
@@ -31,16 +32,16 @@ grep -q '^MASSIVE_RATE_LIMIT_PER_MIN=' .env || echo 'MASSIVE_RATE_LIMIT_PER_MIN=
 grep -q '^MASSIVE_WORKERS=' .env || echo 'MASSIVE_WORKERS=16' >> .env
 cd python
 uv run sourcing-py storage check                                  # the NAS must be mounted
-caffeinate -dims uv run sourcing-py run massive_grouped_daily --fromdate 2021-10-18 --todate 2024-08-15
+caffeinate -dims uv run sourcing-py run massive_grouped_daily --fromdate 2021-10-21 --todate 2024-08-15
 uv run sourcing-py run massive_grouped_daily --retry-failed       # holidays print "no data", not a failure
 uv run sourcing-py run massive_tickers_cs                         # common stocks, listed and delisted
-caffeinate -dims uv run sourcing-py massive-ext fetch --fromdate 2021-10-18 --todate 2026-10-14
+caffeinate -dims uv run sourcing-py massive-ext fetch --fromdate 2021-10-21 --todate 2026-10-17
 #   prints "N/8224 fetched" every 250 stocks, then "done: ... date file(s) written"
 ```
 
 - **Interrupted, or "N ticker(s) failed":** rerun the same `massive-ext fetch` command. Stocks already fetched are skipped; nothing is written to `out/extended_hours/` until every stock is in.
 - **2026-10-15 itself** comes with the normal 06:40 run (`massive-ext gaps`), as every later session will.
-- **Check:** `ls <MTAP_DATA_ROOT>/out/extended_hours | wc -l` is about 1,255, and `ls <MTAP_DATA_ROOT>/out/daily_summary | head -1` is `daily_summary-2021-10-18.jsonl`.
+- **Check:** `ls <MTAP_DATA_ROOT>/out/extended_hours | wc -l` is about 1,255, and `ls <MTAP_DATA_ROOT>/out/daily_summary | head -1` is `daily_summary-2021-10-21.jsonl`.
 - The DuckDB load (`ingest-eod` → `derive-features` → `export-tft`) runs on the other Mac, which reads these files from the NAS.
 
 ## Update of 2026-10-14: switch to the per-session collector (for the iMac agent)

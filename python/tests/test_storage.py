@@ -86,3 +86,39 @@ def testunmounted_volume_is_refused(clean, monkeypatch):
 def test_dotenv_parse():
     text = '# c\nA=1\nexport B="two words"\nC=\'x=y\'\n\nbad line\nD=  spaced  \n'
     assert config._parse_dotenv(text) == {"A": "1", "B": "two words", "C": "x=y", "D": "spaced"}
+
+
+def test_writer_refuses_a_data_root_that_is_not_ready(clean, monkeypatch, tmp_path):
+    from sourcing_py.common import writer
+
+    monkeypatch.setenv("MTAP_DATA_ROOT", "/Volumes/mtap-test-not-mounted/data")
+    with pytest.raises(ConfigError, match="not mounted"):
+        writer.write([{"a": 1}], source="s", dataset="d", fmt="jsonl")
+    assert not Path("/Volumes/mtap-test-not-mounted").exists()
+    # an OUT_ROOT outside the data root is not the NAS's business
+    monkeypatch.setenv("OUT_ROOT", str(tmp_path / "out"))
+    assert writer.write([{"a": 1}], source="s", dataset="d", fmt="jsonl").exists()
+
+
+def test_writer_replaces_atomically_and_leaves_no_temp_file(clean, monkeypatch, tmp_path):
+    from datetime import date
+
+    from sourcing_py.common import writer
+    from sourcing_py.etrade import symbols
+
+    monkeypatch.setenv("OUT_ROOT", str(tmp_path))
+    d = date(2026, 10, 14)
+    path = writer.write([{"ticker": "A"}], source="s", dataset="daily_summary", fmt="jsonl", dt=d)
+    assert path.name == "daily_summary-2026-10-14.jsonl"
+
+    def boom(records, p):
+        p.write_text("half")
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(writer, "_write_jsonl", boom)
+    with pytest.raises(OSError):
+        writer.write([{"ticker": "B"}], source="s", dataset="daily_summary", fmt="jsonl", dt=d)
+    assert '"A"' in path.read_text()  # the old file is untouched
+    assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
+    (path.parent / f".{path.name}.tmp").write_text("partial")  # e.g. the other machine mid-write
+    assert symbols.select_files(directory=path.parent) == [path]

@@ -8,6 +8,41 @@ The 06:16 start job starts it next to E*TRADE. It ends by itself once its window
 
 A key allows only one WebSocket connection, so only this iMac runs it (`MTAP_MASSIVE_WS=1` in `.env`).
 
+## 2026-10-15: one-off 5-year backfill (tonight, for the iMac agent)
+
+Adds 5 years of daily bars, and pre-market / after-hours prices and volumes for every
+common stock (`sourcing-py massive-ext`), to `<MTAP_DATA_ROOT>/out/`. REST only: no
+WebSocket, so it never clashes with the per-second collector. Run it **after the 13:15 PT
+sleep job** (wake the iMac first), and let it finish before the 06:16 PT start.
+
+Measured on 2026-10-15: 64 random stocks × 5 years took 20 s with 16 workers (about 48 MB/s
+down). The whole universe (about 8,200 stocks, 1.25 billion minute bars, about 120 GB
+downloaded and not kept) takes about **45 minutes**, or 1.5–3 hours on a slower link.
+Disk: about 1.7 GB of temporary staging under `<MTAP_STATE_ROOT>/massive_ext/`, removed at
+the end; about 2.4 GB (daily bars) + 2–2.5 GB (extended hours) added on the NAS.
+
+The plan keeps 5 years on a **rolling** basis: on 2026-10-15 the first date served was
+2021-10-18 (2021-10-15 was refused). Use the dates below.
+
+```bash
+cd <repo> && git pull && (cd python && uv sync)
+# paid plan: no client-side throttle, 16 parallel requests
+grep -q '^MASSIVE_RATE_LIMIT_PER_MIN=' .env || echo 'MASSIVE_RATE_LIMIT_PER_MIN=0' >> .env
+grep -q '^MASSIVE_WORKERS=' .env || echo 'MASSIVE_WORKERS=16' >> .env
+cd python
+uv run sourcing-py storage check                                  # the NAS must be mounted
+caffeinate -dims uv run sourcing-py run massive_grouped_daily --fromdate 2021-10-18 --todate 2024-08-15
+uv run sourcing-py run massive_grouped_daily --retry-failed       # holidays print "no data", not a failure
+uv run sourcing-py run massive_tickers_cs                         # common stocks, listed and delisted
+caffeinate -dims uv run sourcing-py massive-ext fetch --fromdate 2021-10-18 --todate 2026-10-14
+#   prints "N/8224 fetched" every 250 stocks, then "done: ... date file(s) written"
+```
+
+- **Interrupted, or "N ticker(s) failed":** rerun the same `massive-ext fetch` command. Stocks already fetched are skipped; nothing is written to `out/extended_hours/` until every stock is in.
+- **2026-10-15 itself** comes with the normal 06:40 run (`massive-ext gaps`), as every later session will.
+- **Check:** `ls <MTAP_DATA_ROOT>/out/extended_hours | wc -l` is about 1,255, and `ls <MTAP_DATA_ROOT>/out/daily_summary | head -1` is `daily_summary-2021-10-18.jsonl`.
+- The DuckDB load (`ingest-eod` → `derive-features` → `export-tft`) runs on the other Mac, which reads these files from the NAS.
+
 ## Update of 2026-10-14: switch to the per-session collector (for the iMac agent)
 
 Today the iMac still runs the old always-on agent `com.mtap.massive`. Massive is already installed: do **not** redo any install step.
@@ -95,6 +130,7 @@ Each session starts fresh, so a `git pull` takes effect at the next 06:16 start.
   - The evening sleep job combines each day's 5-minute files into one `day-YYYY-MM-DD.parquet`: the same data, about 40% smaller.
   - It takes about a minute and up to 4 GB of memory, and is safe to interrupt.
   - By hand: `sourcing-py massive-ws compact [--date D]`.
+- **Rule:** data files live only on the NAS; DuckDB files stay local (python/README.md, "One central store"). Deferred storage work: [docs/TODO.md](../docs/TODO.md).
 - **NAS down:** files stay local and upload at the next start.
   - If more than 10 GB is waiting, or less than 20 GB of disk is free, the collector disconnects until uploads catch up.
   - Nothing is deleted before it is uploaded.

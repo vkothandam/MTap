@@ -9,6 +9,11 @@ daily_summary jsonl file in one statement (far faster than row-by-row Python). E
 file is upserted on (symbol, date), so re-loading a corrected file refreshes it and
 re-running is idempotent.
 
+A second pass attaches the pre-market / after-hours columns from the extended_hours
+files (sourcing_py/massive_ext) for the same dates: an UPDATE on (symbol, date), so it
+never creates a bar, and the upsert above doesn't list those columns, so reloading a
+daily file keeps them.
+
 After loading, the `symbols` master is refreshed from `daily_bars` so first_seen /
 last_seen / days_seen reflect the full ingested history (Phase 1 seeded it from a
 narrower recent window).
@@ -16,7 +21,7 @@ narrower recent window).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import db
@@ -40,6 +45,23 @@ ON CONFLICT (symbol, date) DO UPDATE SET
     run_id = excluded.run_id, loaded_at = excluded.loaded_at
 """
 
+# One extended_hours file onto the bars it matches. fetched_at is an ISO string with an
+# offset; stored as naive UTC like ingested_at.
+_UPDATE_EXTENDED = """
+UPDATE daily_bars b SET
+    pre_market_price = e.pre_market_price, pre_market_last = e.pre_market_last,
+    pre_market_volume = e.pre_market_volume, regular_volume = e.regular_volume,
+    after_hours_price = e.after_hours_price, after_hours_volume = e.after_hours_volume,
+    ext_fetched_at = timezone('UTC', TRY_CAST(e.fetched_at AS TIMESTAMPTZ))
+FROM read_json(?, format = 'newline_delimited', columns = {
+    'ticker': 'VARCHAR', 'date': 'DATE', 'pre_market_price': 'DOUBLE',
+    'pre_market_last': 'DOUBLE', 'pre_market_volume': 'DOUBLE', 'regular_volume': 'DOUBLE',
+    'after_hours_price': 'DOUBLE', 'after_hours_volume': 'DOUBLE', 'fetched_at': 'VARCHAR'}) e
+WHERE b.symbol = e.ticker AND b.date = e.date
+"""
+
+EXTENDED_DATASET = "extended_hours"
+
 # Rebuild the symbols master's date fields from the fuller daily_bars history.
 _REFRESH_SYMBOLS = """
 INSERT INTO symbols (symbol, first_seen, last_seen, days_seen, updated_at)
@@ -59,6 +81,19 @@ def _load_file(con, path: Path, now: datetime) -> int:
     return con.execute(
         "SELECT count(*) FROM read_json_auto(?) WHERE ticker IS NOT NULL", [str(path)]
     ).fetchone()[0]
+
+
+def extended_files(daily_dir: Path, lo: date, hi: date) -> list[Path]:
+    """The extended_hours files (a sibling of the daily_summary folder) dated lo..hi."""
+    out = []
+    for p in sorted((daily_dir.parent / EXTENDED_DATASET).glob(f"{EXTENDED_DATASET}-*.jsonl")):
+        try:
+            d = date.fromisoformat(p.name[len(EXTENDED_DATASET) + 1:-len(".jsonl")])
+        except ValueError:
+            continue
+        if lo <= d <= hi and p.stat().st_size:
+            out.append(p)
+    return out
 
 
 def ingest_eod(
@@ -94,6 +129,14 @@ def ingest_eod(
                 continue
             if i % log_every == 0 or i == len(files):
                 print(f"  loaded {i}/{len(files)} files, {rows:,} bars so far")
+        ext_files = extended_files(directory or daily_summary_dir(), _file_date(files[0]), _file_date(files[-1]))
+        ext_rows = 0
+        for path in ext_files:
+            try:
+                ext_rows += con.execute(_UPDATE_EXTENDED, [str(path)]).fetchone()[0]
+            except Exception as exc:  # noqa: BLE001 — per-file: log and keep going
+                failed.append({"file": path.name, "error": f"{type(exc).__name__}: {exc}"})
+                print(f"{path.name}: FAILED — {type(exc).__name__}: {exc}")
         con.execute(_REFRESH_SYMBOLS, [now])
         bars_total = con.execute("SELECT count(*) FROM daily_bars").fetchone()[0]
         symbols_total = con.execute("SELECT count(*) FROM symbols").fetchone()[0]
@@ -103,6 +146,8 @@ def ingest_eod(
         "failed_files": failed,
         "window": (str(_file_date(files[0])), str(_file_date(files[-1]))),
         "bars_loaded": rows,
+        "extended_files": len(ext_files),
+        "bars_extended": ext_rows,
         "bars_total": bars_total,
         "symbols_total": symbols_total,
     }

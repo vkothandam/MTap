@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "massive_extended_hours",
+  "title": "massive_extended_hours record",
+  "description": "One common stock's pre-market and after-hours activity for one day, summed from Massive 1-minute bars (adjusted). Sessions by bar start time in New York: pre-market 04:00-09:29, regular 09:30 to the close (16:00, 13:00 on half days), after-hours from the close minute to 19:59. Daily volume in daily_summary already covers the whole day and is larger than the three volumes here by the auction and other prints that are in no minute bar.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ticker", "date", "pre_market_volume", "regular_volume", "after_hours_volume", "minute_bars", "fetched_at"],
+  "properties": {
+    "ticker": { "type": "string", "description": "Ticker symbol." },
+    "date": { "type": "string", "format": "date", "description": "Trading date (YYYY-MM-DD, New York)." },
+    "pre_market_price": { "type": ["number", "null"], "description": "First pre-market price: the open of the first bar before 09:30 (Massive open-close preMarket). Null with no pre-market trades." },
+    "pre_market_last": { "type": ["number", "null"], "description": "Last pre-market price: the close of the last bar before 09:30." },
+    "pre_market_volume": { "type": "number", "description": "Shares traded 04:00-09:29 (sum of 1-min bars)." },
+    "regular_volume": { "type": "number", "description": "Shares in the regular-session 1-min bars (09:30 to the close). Lower than daily volume: auction prints are in no minute bar." },
+    "after_hours_price": { "type": ["number", "null"], "description": "Last after-hours price: the close of the last bar from the close minute on (Massive open-close afterHours)." },
+    "after_hours_volume": { "type": "number", "description": "Shares traded from the close minute to 19:59 (sum of 1-min bars, the 16:00 minute included)." },
+    "minute_bars": { "type": "integer", "description": "1-min bars that day (quality check)." },
+    "fetched_at": { "type": "string", "description": "When the bars were fetched (UTC ISO). Split adjustment is as of this time." }
+  }
+}

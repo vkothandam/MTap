@@ -288,3 +288,17 @@ Off by default because the news history is still near-empty.
 | --- | --- |
 | `vwap_nx_10d`, `vwap_end_week`, `vwap_nx_qtr` | forward VWAPs over the next 10 sessions / rest of the week / up to the next filing |
 | `vwap_nx_1d` | not dropped: it is exported as `target_tomorrow_vwap`, the answer key on day t's row (section 1) |
+
+## 11. In `daily_bars` but not exported yet (pre-market / after-hours, added 2026-10-15)
+
+From Massive 1-minute bars (`sourcing-py massive-ext`), loaded by `ingest-eod`. Whether and how the panel uses them is an open model decision.
+
+| column (`daily_bars`) | meaning |
+| --- | --- |
+| `pre_market_price`, `pre_market_last` | first and last pre-market trade (04:00–09:29 ET) |
+| `pre_market_volume`, `regular_volume`, `after_hours_volume` | minute-bar volume before the open, 09:30 to the close, and from the close minute to 19:59 (the 16:00 minute counts as after-hours). `volume` stays the whole-day figure: it is about 19% above their sum, the auction prints that are in no minute bar. |
+| `after_hours_price` | last after-hours trade |
+| `pre_market_pct_prev_close` | `pre_market_last` vs the previous session's close, split-adjusted (fraction) |
+| `after_hours_pct_close` | `after_hours_price` vs the same day's close, split-adjusted (fraction) |
+
+Timing: day t's after-hours is known by 20:00 ET on day t, so it is a fair observed input for forecasting day t+1. Day t+1's pre-market is known only on the morning of t+1, so it is usable only if the forecast is made after it, before the open.

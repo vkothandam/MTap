@@ -1,0 +1,207 @@
+{
+ "data": {
+  "lightyearList": {
+   "main": {
+    "stream": [
+     {
+      "__typename": "HydratedAsset",
+      "asset": {
+       "__typename": "Story",
+       "id": "5bfa9b58-9569-36e3-9d2d-d15047137138",
+       "title": "What ETFs Are Buying and Selling: New GuruFocus Page Tracks Daily ETF Flows",
+       "isPremiumNews": false,
+       "isLiveBlog": false,
+       "contentAttributes": {
+        "pubDate": "2026-10-14T17:27:43Z",
+        "displayTime": "2026-10-14T17:27:43Z",
+        "isHosted": true,
+        "canonicalUrl": "https://finance.yahoo.com/markets/stocks/articles/etfs-buying-selling-gurufocus-page-172743544.html",
+        "clickthroughUrl": "https://finance.yahoo.com/markets/stocks/articles/etfs-buying-selling-gurufocus-page-172743544.html",
+        "provider": {
+         "displayName": "GuruFocus.com",
+         "providerContentUrl": "https://www.gurufocus.com/news/9123686/what-etfs-are-buying-and-selling-new-gurufocus-page-tracks-daily-etf-flows?utm_source=yahoo_finance&utm_medium=syndication&utm_campaign=headlines&r=caf6fe0e0db70d936033da5461e60141"
+        }
+       },
+       "finance": {
+        "stockTickers": [
+         {
+          "symbol": "AAPL"
+         }
+        ]
+       }
+      }
+     },
+     {
+      "__typename": "HydratedAsset",
+      "asset": {
+       "__typename": "Story",
+       "id": "b400cd26-02ed-32b8-8b4a-f9c6933fd9a2",
+       "title": "Bond Market Mayhem: History Says This Is the 1 Thing That Matters Most for Investors",
+       "isPremiumNews": false,
+       "isLiveBlog": false,
+       "contentAttributes": {
+        "pubDate": "2026-10-14T17:22:00Z",
+        "displayTime": "2026-10-14T17:22:00Z",
+        "isHosted": true,
+        "canonicalUrl": "https://www.fool.com/investing/2026/10/14/bond-market-mayhem-history-says-1-thing-matters/",
+        "clickthroughUrl": "https://finance.yahoo.com/markets/options/articles/bond-market-mayhem-history-says-172200410.html",
+        "provider": {
+         "displayName": "Motley Fool",
+         "providerContentUrl": "https://www.fool.com/investing/2026/10/14/bond-market-mayhem-history-says-1-thing-matters/"
+        }
+       },
+       "finance": {
+        "stockTickers": [
+         {
+          "symbol": "TLT"
+         },
+         {
+          "symbol": "NVDA"
+         }
+        ]
+       }
+      }
+     },
+     {
+      "__typename": "HydratedAsset",
+      "asset": {
+       "__typename": "Story",
+       "id": "671d0dc4-7279-3a39-89bb-3c2d758c5224",
+       "title": "Elon Musk's SpaceX Just Announced Good (and Bad) News to Apple Shareholders",
+       "isPremiumNews": false,
+       "isLiveBlog": false,
+       "contentAttributes": {
+        "pubDate": "2026-10-14T17:20:00Z",
+        "displayTime": "2026-10-14T17:20:00Z",
+        "isHosted": true,
+        "canonicalUrl": "https://www.fool.com/investing/2026/10/14/elon-musks-spacex-just-announced-bad-news-to-apple/",
+        "clickthroughUrl": "https://finance.yahoo.com/markets/stocks/articles/elon-musks-spacex-just-announced-172000460.html",
+        "provider": {
+         "displayName": "Motley Fool",
+         "providerContentUrl": "https://www.fool.com/investing/2026/10/14/elon-musks-spacex-just-announced-bad-news-to-apple/"
+        }
+       },
+       "finance": {
+        "stockTickers": [
+         {
+          "symbol": "SPCX"
+         },
+         {
+          "symbol": "AAPL"
+         },
+         {
+          "symbol": "NVDA"
+         },
+         {
+          "symbol": "VZ"
+         },
+         {
+          "symbol": "T"
+         },
+         {
+          "symbol": "TMUS"
+         }
+        ]
+       }
+      }
+     },
+     {
+      "__typename": "HydratedAsset",
+      "asset": {
+       "__typename": "Story",
+       "id": "e7396a5f-59db-30ad-b0ed-49dbca81119f",
+       "title": "Why Gartner AI Outlook Sent CoreWeave Stock, Neoclouds Reeling",
+       "isPremiumNews": false,
+       "isLiveBlog": false,
+       "contentAttributes": {
+        "pubDate": "2026-10-14T17:06:16Z",
+        "displayTime": "2026-10-14T17:06:16Z",
+        "isHosted": false,
+        "canonicalUrl": "https://www.investors.com/news/technology/coreweave-stock-neoclouds-tumble-gartner-financial-forecast/?src=A00220&yptr=yahoo",
+        "clickthroughUrl": null,
+        "provider": {
+         "displayName": "Investor's Business Daily",
+         "providerContentUrl": "https://www.investors.com/news/technology/coreweave-stock-neoclouds-tumble-gartner-financial-forecast/?src=A00220"
+        }
+       },
+       "finance": {
+        "stockTickers": [
+         {
+          "symbol": "IT"
+         },
+         {
+          "symbol": "IREN"
+         },
+         {
+          "symbol": "HUT"
+         },
+         {
+          "symbol": "CIFR"
+         },
+         {
+          "symbol": "APLD"
+         },
+         {
+          "symbol": "CRWV"
+         },
+         {
+          "symbol": "NBIS"
+         },
+         {
+          "symbol": "DOCN"
+         }
+        ]
+       }
+      }
+     },
+     {
+      "__typename": "HydratedAsset",
+      "asset": {
+       "__typename": "Video",
+       "id": "7637828d-287c-427b-a883-09945c1ef94e",
+       "title": "Who's up and who's down among big bank earnings reports",
+       "contentAttributes": {
+        "pubDate": "2026-10-14T13:59:46Z",
+        "canonicalUrl": "https://finance.yahoo.com/video/whos-up-and-whos-down-among-big-bank-earnings-reports-135946222.html"
+       }
+      }
+     },
+     {
+      "__typename": "HydratedAsset",
+      "asset": {
+       "__typename": "Story",
+       "id": "e07c635b-8c87-3f2d-a483-7f3c39fec608",
+       "title": "Bank of America Third-Quarter Earnings Unexpectedly Decline Amid $1.2 Billion Treasury Fine",
+       "isPremiumNews": true,
+       "isLiveBlog": false,
+       "contentAttributes": {
+        "pubDate": "2026-10-14T13:01:38Z",
+        "displayTime": "2026-10-14T13:01:38Z",
+        "isHosted": true,
+        "canonicalUrl": "https://finance.yahoo.com/markets/stocks/articles/bank-america-third-quarter-earnings-130138160.html",
+        "clickthroughUrl": "https://finance.yahoo.com/markets/stocks/articles/bank-america-third-quarter-earnings-130138160.html",
+        "provider": {
+         "displayName": "MT Newswires",
+         "providerContentUrl": "https://www.mtnewswires.com/individual-subscribers"
+        }
+       },
+       "finance": {
+        "stockTickers": [
+         {
+          "symbol": "BAC"
+         }
+        ]
+       }
+      }
+     }
+    ],
+    "pageInfo": {
+     "totalCount": 200,
+     "start": 0,
+     "nextPage": true,
+     "count": 6
+    }
+   }
+  }
+ }
+}

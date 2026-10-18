@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "massive_tickers_cs",
+  "title": "massive_tickers_cs record",
+  "description": "One common stock (type CS) from Massive.com /v3/reference/tickers, listed or delisted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ticker", "active"],
+  "properties": {
+    "ticker": { "type": "string", "description": "Ticker symbol." },
+    "name": { "type": ["string", "null"], "description": "Company name." },
+    "primary_exchange": { "type": ["string", "null"], "description": "Primary listing exchange MIC, e.g. XNAS, XNYS." },
+    "active": { "type": "boolean", "description": "True while listed; false once delisted." },
+    "cik": { "type": ["string", "null"], "description": "SEC CIK." },
+    "composite_figi": { "type": ["string", "null"], "description": "Composite FIGI." },
+    "share_class_figi": { "type": ["string", "null"], "description": "Share-class FIGI." },
+    "delisted_utc": { "type": ["string", "null"], "description": "When it was delisted (inactive names)." },
+    "last_updated_utc": { "type": ["string", "null"], "description": "When Massive last updated the entry." }
+  }
+}

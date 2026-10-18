@@ -36,6 +36,11 @@ features the downstream TFT panel needs, and writes them back onto `daily_bars`:
                    the bar's date and its download (`adjusted=true` already applied earlier
                    ones). All VWAP columns above are computed on split-adjusted prices and
                    volumes (price * factor, volume / factor).
+  ext_split_factor — the same for the pre-market / after-hours columns, keyed on when
+                   those were fetched (ext_fetched_at), which can differ from the bar's.
+  pre_market_pct_prev_close — last pre-market price vs the previous bar's close; and
+  after_hours_pct_close — last after-hours price vs the same day's close. Fractions on
+                   split-adjusted prices; NULL with no extended-hours trade (or no prior bar).
 
 The recompute is FULL and idempotent — every derived column is reset and rewritten each
 run — because the forward-looking columns for existing rows change as new bars land, so
@@ -221,6 +226,20 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
             bars_split_adjusted = con.execute(
                 f"SELECT count(*) FROM daily_bars WHERE split_factor <> 1.0{and_scope}"
             ).fetchone()[0]
+            # 1c. ext_split_factor: the same rule, for the extended-hours columns' own fetch time.
+            con.execute(f"UPDATE daily_bars SET ext_split_factor = 1.0{where_scope}")
+            con.execute(
+                f"UPDATE daily_bars b SET ext_split_factor = f.factor FROM ("
+                f"  SELECT b.symbol, b.date, exp(sum(ln(sp.split_from / sp.split_to))) AS factor"
+                f"  FROM daily_bars b JOIN stock_splits sp ON sp.ticker = b.symbol"
+                f"    AND sp.execution_date > b.date"
+                f"    AND sp.execution_date > COALESCE(CAST(timezone('America/New_York',"
+                f"      timezone('UTC', b.ext_fetched_at)) AS DATE), b.date)"
+                f"    AND sp.execution_date <= current_date"
+                f"  WHERE b.ext_fetched_at IS NOT NULL{s('b')}"
+                f"  GROUP BY b.symbol, b.date"
+                f") f WHERE b.symbol = f.symbol AND b.date = f.date"
+            )
             con.execute(
                 "CREATE OR REPLACE TEMP VIEW _adj_bars AS SELECT symbol, date, day_idx, "
                 "vwap * COALESCE(split_factor, 1.0) AS vwap, "
@@ -340,6 +359,23 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
                 f") v WHERE b.symbol = v.symbol AND b.date = v.date"
             )
 
+            # 5b. Extended hours vs the regular close, both sides split-adjusted (LAG over
+            #     day_idx, as vwap_pct_prev_day). NULL where there was no such trade.
+            con.execute(
+                f"UPDATE daily_bars b SET pre_market_pct_prev_close = x.pre, after_hours_pct_close = x.post FROM ("
+                f"  SELECT symbol, date,"
+                f"    pre_market_last * ext_split_factor"
+                f"      / NULLIF(LAG(close * COALESCE(split_factor, 1.0)) OVER pv, 0) - 1 AS pre,"
+                f"    after_hours_price * ext_split_factor"
+                f"      / NULLIF(close * COALESCE(split_factor, 1.0), 0) - 1 AS post"
+                f"  FROM daily_bars WHERE day_idx IS NOT NULL{and_scope}"
+                f"  WINDOW pv AS (PARTITION BY symbol ORDER BY day_idx)"
+                f") x WHERE b.symbol = x.symbol AND b.date = x.date"
+            )
+            bars_extended = con.execute(
+                f"SELECT count(*) FROM daily_bars WHERE ext_fetched_at IS NOT NULL{and_scope}"
+            ).fetchone()[0]
+
             # 6. vwap_nx_qtr: current day .. next filing day (inclusive). Reset first, since
             #    rows with no future filing must end up NULL, not carry a stale value.
             con.execute(f"UPDATE daily_bars SET vwap_nx_qtr = NULL{where_scope}")
@@ -386,4 +422,5 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
         "announcements": announcements,
         "bars_missing_day_idx": missing,
         "bars_split_adjusted": bars_split_adjusted,
+        "bars_extended": bars_extended,
     }

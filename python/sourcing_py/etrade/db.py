@@ -94,6 +94,16 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     ingested_at     TIMESTAMP,  -- upstream `_ingested_at` (when the jsonl was produced)
     run_id          TEXT,       -- upstream `_run_id`
     loaded_at       TIMESTAMP,  -- when Phase 1a loaded this row into DuckDB
+    -- Pre-market / after-hours from 1-min bars (extended_hours files; eod.py second pass).
+    -- `volume` already covers the whole day: it exceeds pre + regular + after-hours by the
+    -- auction prints that are in no minute bar, so these never replace it.
+    pre_market_price     DOUBLE,    -- first pre-market trade (04:00-09:29 ET bar open)
+    pre_market_last      DOUBLE,    -- last pre-market trade (close of the last bar before 09:30)
+    pre_market_volume    DOUBLE,    -- sum of 04:00-09:29 minute bars
+    regular_volume       DOUBLE,    -- sum of 09:30-close minute bars (close 16:00, 13:00 half days)
+    after_hours_price    DOUBLE,    -- last after-hours trade (close minute .. 19:59 ET)
+    after_hours_volume   DOUBLE,    -- sum of close-minute .. 19:59 bars (the 16:00 minute counts here)
+    ext_fetched_at       TIMESTAMP, -- when the extended-hours bars were fetched (naive UTC)
     -- Phase 1c derived features (features.py; rewritten in full on every derive-features run)
     day_idx              BIGINT,    -- global trading-day index (-> trading_calendar.date)
     is_10k               SMALLINT,  -- 1 on the (snapped) trading day of a 10-K filing, else 0
@@ -111,6 +121,9 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     vwap_pct_prev_day    DOUBLE,    -- vwap % change vs previous trading day (fraction; NULL on 1st bar)
     split_factor         DOUBLE,    -- price multiplier for splits not yet applied upstream (1.0 = none);
                                     --   adjusted price = raw * factor, adjusted volume = raw / factor
+    ext_split_factor     DOUBLE,    -- split_factor for the extended-hours columns (keyed on ext_fetched_at)
+    pre_market_pct_prev_close DOUBLE, -- pre_market_last vs the previous bar's close (fraction, adjusted)
+    after_hours_pct_close     DOUBLE, -- after_hours_price vs the same day's close (fraction, adjusted)
     features_computed_at TIMESTAMP, -- when derive-features last wrote this row
     PRIMARY KEY (symbol, date)
 );
@@ -219,6 +232,17 @@ _MIGRATIONS = (
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS days_to_results INTEGER",
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS days_to_results_is_est SMALLINT",
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS days_to_results_est INTEGER",
+    # Pre-market / after-hours (eod.py loads them; features.py derives the split factor and pcts).
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS pre_market_price DOUBLE",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS pre_market_last DOUBLE",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS pre_market_volume DOUBLE",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS regular_volume DOUBLE",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS after_hours_price DOUBLE",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS after_hours_volume DOUBLE",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS ext_fetched_at TIMESTAMP",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS ext_split_factor DOUBLE",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS pre_market_pct_prev_close DOUBLE",
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS after_hours_pct_close DOUBLE",
 )
 
 

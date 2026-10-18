@@ -38,8 +38,11 @@ async def get_async_client(**kwargs) -> AsyncIterator[httpx.AsyncClient]:
         yield client
 
 
-async def aget_text(client: httpx.AsyncClient, url: str, *, retries: int = DEFAULT_RETRIES, **kwargs):
-    """Async twin of get_text: GET with retry/backoff, returning (final_url, text).
+async def aget_text(
+    client: httpx.AsyncClient, url: str, *, method: str = "GET", retries: int = DEFAULT_RETRIES, **kwargs
+):
+    """Async twin of get_text: GET (or `method`, e.g. a JSON POST) with retry/backoff,
+    returning (final_url, text).
 
     Same policy as get_text (retry the RETRY_STATUS set + transport errors, fail fast on
     other 4xx) but non-blocking, so many fetches can overlap on one event loop.
@@ -48,7 +51,7 @@ async def aget_text(client: httpx.AsyncClient, url: str, *, retries: int = DEFAU
     status: int | None = None
     for attempt in range(retries + 1):
         try:
-            resp = await client.get(url, **kwargs)
+            resp = await client.request(method, url, **kwargs)
             if resp.status_code in RETRY_STATUS:
                 raise httpx.HTTPStatusError("retryable status", request=resp.request, response=resp)
             resp.raise_for_status()
@@ -65,7 +68,7 @@ async def aget_text(client: httpx.AsyncClient, url: str, *, retries: int = DEFAU
                 break
             await asyncio.sleep(2**attempt)
     raise FetchError(
-        f"GET {url} failed ({'HTTP ' + str(status) if status else 'transport error'}): {last_exc}",
+        f"{method} {url} failed ({'HTTP ' + str(status) if status else 'transport error'}): {last_exc}",
         status_code=status,
     ) from last_exc
 

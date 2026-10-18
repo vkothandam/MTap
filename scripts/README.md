@@ -5,7 +5,7 @@
 | `setup/bootstrap.sh` | new checkout: checks tools, `uv sync`, `npm ci`, puppeteer Chrome, creates `.env` / `settings.toml` from the examples, mounts the NAS, `storage init` |
 | `schedule/setup-schedule.sh` | installs the LaunchAgents and the wake/sleep schedule (`services`, `test`, `prod`, `status`, `stop`) |
 | `schedule/mtap-schedule.sh` | what the agents run: `start`, `stop`, `start-massive`, `stop-massive`, `sleep`, `status`, `validate`, `run-store` |
-| `schedule/daily-sourcing.sh` | the daily chain: Massive bars for every missed session, then `ingest-eod` … `export-tft` (only with `prod --with-daily`; `MTAP_DAILY_CAPTURE_ONLY=1` stops after the Massive bars) |
+| `schedule/daily-sourcing.sh` | the daily chain: Massive bars and pre-market / after-hours (`massive-ext gaps`) for every missed session, then `ingest-eod` … `export-tft`, then a copy of the DuckDB to `DATA_ROOT/backup/etrade/` (only with `prod --with-daily`; `MTAP_DAILY_CAPTURE_ONLY=1` stops after the Massive fetches; `--ingest-only` / `MTAP_DAILY_INGEST_ONLY=1` skips them, for the Mac that owns the DuckDB) |
 | `schedule/redis-mtap.conf` | Redis for the feed: localhost only, no persistence, 2 GB cap |
 | `storage/mount-nas.sh` | mounts `MTAP_NAS_URL`, passing the user and the login-Keychain password to Finder; `--save-password` stores the password |
 

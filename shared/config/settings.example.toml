@@ -39,6 +39,9 @@ api_key = "REPLACE_WITH_YOUR_KEY"
 # several Massive programs at once won't exceed it. Raise this on a paid plan.
 # Override with env MASSIVE_RATE_LIMIT_PER_MIN.
 rate_limit_per_min = 5
+# Concurrent per-ticker requests for `sourcing-py massive-ext` (pre-market / after-hours
+# bars). With a paid key set rate_limit_per_min = 0 (no throttle). Env MASSIVE_WORKERS.
+workers = 16
 
 [massive_ws]
 # Massive per-second bars (sourcing-py massive-ws follow, started by mtap-schedule.sh start).
@@ -102,9 +105,10 @@ url_template = "https://news.google.com/rss/search?q={symbol}+stock&hl=en-US&gl=
 tag = "symbol"
 fetch_article = true
 
-# Yahoo Finance topic scraper (`sourcing-py news scrape-yahoo`, sourcing_py/news/yahoo.py):
-# the stock-market-news topic pages (1..pages; Yahoo keeps 6) -> each article's full text
-# with its exact published/modified time. Env overrides: NEWS_YAHOO_<KEY>.
+# Yahoo Finance page scraper (`sourcing-py news scrape-yahoo`, sourcing_py/news/yahoo.py):
+# the stock-market-news topic pages (1..pages; Yahoo keeps 6) and the most-active page's
+# news stream -> each article's full text with its exact published/modified time.
+# Env overrides: NEWS_YAHOO_<KEY>.
 [news.yahoo]
 topic_url = "https://finance.yahoo.com/topic/stock-market-news/"
 pages = 6
@@ -115,6 +119,13 @@ max_concurrency = 3
 # Gzipped raw HTML, kept to evaluate the parser later (disposable). Default
 # <data root>/news/yahoo/raw.
 # raw_dir = "/Volumes/mtap/mtap/news/yahoo/raw"
+# most-active: its screener table gives the tickers; the news column is a GraphQL stream
+# (what the page's infinite scroll requests) across all its tickers, `stream_count` per request,
+# back to the --since cutoff or Yahoo's cap of `stream_max` items, whichever comes first.
+most_active_url = "https://finance.yahoo.com/markets/stocks/most-active/"
+stream_url = "https://nexus-gateway-prod.media.yahoo.com/"
+stream_count = 50
+stream_max = 200
 
 [edgar]
 # SEC EDGAR submissions API (sourcing_py/etrade/edgar.py): 8-K item 2.02 results releases

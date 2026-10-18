@@ -6,10 +6,11 @@ Implements the rules in schemas/conventions.md so no source has to reinvent them
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import config
+from . import config, storage
 
 
 def _run_id() -> str:
@@ -27,8 +28,11 @@ def _with_provenance(records: list[dict], source: str, run_id: str) -> list[dict
 
 def _output_path(dataset: str, fmt: str, stamp: str) -> Path:
     ext = "jsonl" if fmt == "jsonl" else "parquet"
+    root = config.out_root()
+    if root.resolve().is_relative_to(config.data_root().resolve()):
+        storage.require_data_root()  # a dropped NAS share must not fill the local /Volumes folder
     # Flat: one folder per info-type, the date (or run stamp) in the filename.
-    return config.out_root() / dataset / f"{dataset}-{stamp}.{ext}"
+    return root / dataset / f"{dataset}-{stamp}.{ext}"
 
 
 def write(
@@ -50,12 +54,16 @@ def write(
     path = _output_path(dataset, fmt, stamp)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    if fmt == "jsonl":
-        _write_jsonl(enriched, path)
-    elif fmt == "parquet":
-        _write_parquet(enriched, path)
-    else:
+    if fmt not in ("jsonl", "parquet"):
         raise ValueError(f"Unsupported format {fmt!r}")
+    # Write a hidden temp file, then rename: a reader on the other machine (the NAS is
+    # shared) sees the old file or the new one, never half of one.
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        (_write_jsonl if fmt == "jsonl" else _write_parquet)(enriched, tmp)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return path
 
 

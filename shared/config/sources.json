@@ -19,6 +19,20 @@
       "dataset": "daily_summary",
       "schema": "schemas/massive_grouped_daily.schema.json",
       "description": "Massive.com grouped daily bars for the US stocks market (one row per ticker per day)."
+    },
+    "massive_tickers_cs": {
+      "runtime": "python",
+      "format": "jsonl",
+      "dataset": "tickers_cs",
+      "schema": "schemas/massive_tickers_cs.schema.json",
+      "description": "Massive.com common stocks (type CS), listed and delisted: the massive-ext universe."
+    },
+    "massive_extended_hours": {
+      "runtime": "python",
+      "format": "jsonl",
+      "dataset": "extended_hours",
+      "schema": "schemas/massive_extended_hours.schema.json",
+      "description": "Pre-market / after-hours prices and volumes per common stock per day, from Massive 1-min bars (sourcing-py massive-ext)."
     }
   }
 }

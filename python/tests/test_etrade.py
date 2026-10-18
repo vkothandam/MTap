@@ -1158,6 +1158,71 @@ def test_split_factor_uses_new_york_date_of_fetch(tmp_path):
     assert got[split_day] == 1.0
 
 
+
+def _write_extended(daily_dir, date_str, rows):
+    """rows: {ticker: (pre_last, pre_v, after_price, after_v)}, next to the daily_summary dir."""
+    d = daily_dir.parent / "extended_hours"
+    d.mkdir(exist_ok=True)
+    lines = [json.dumps({
+        "ticker": t, "date": date_str, "pre_market_price": pl - 0.5, "pre_market_last": pl,
+        "pre_market_volume": pv, "regular_volume": 1000.0, "after_hours_price": ap,
+        "after_hours_volume": av, "minute_bars": 500, "fetched_at": "2026-10-15T04:00:00+00:00",
+        "_source": "massive_extended_hours", "_run_id": "r",
+    }) for t, (pl, pv, ap, av) in rows.items()]
+    (d / f"extended_hours-{date_str}.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def test_ingest_eod_attaches_extended_hours_without_creating_bars(tmp_path):
+    d = tmp_path / "daily_summary"
+    d.mkdir()
+    _write_bars(d, "2024-08-16", {"AAA": 10.0})
+    _write_extended(d, "2024-08-16", {"AAA": (9.8, 50.0, 10.2, 40.0), "ZZZ": (1, 1, 1, 1)})
+    _write_extended(d, "2024-08-19", {"AAA": (1, 1, 1, 1)})  # outside the daily window
+    dbp = tmp_path / "f.duckdb"
+    summary = eod.ingest_eod(days=None, directory=d, db_path=dbp)
+    assert (summary["extended_files"], summary["bars_extended"], summary["bars_total"]) == (1, 1, 1)
+    q = ("SELECT close, volume, pre_market_price, pre_market_last, pre_market_volume, regular_volume, "
+         "after_hours_price, after_hours_volume, ext_fetched_at FROM daily_bars")
+    with db.connect(dbp) as con:
+        got = con.execute(q).fetchall()
+    assert got == [(10.0, 100.5, 9.3, 9.8, 50.0, 1000.0, 10.2, 40.0, datetime(2026, 10, 15, 4, 0))]
+    # a corrected daily file reloads OHLCV and keeps the extended-hours columns
+    _write_bars(d, "2024-08-16", {"AAA": 11.0})
+    (d.parent / "extended_hours" / "extended_hours-2024-08-16.jsonl").unlink()
+    eod.ingest_eod(days=None, directory=d, db_path=dbp)
+    with db.connect(dbp) as con:
+        assert con.execute(q).fetchall() == [(11.0, *got[0][1:])]
+
+
+def test_extended_hours_pcts_use_their_own_split_factor(tmp_path):
+    # Bars fetched day by day before a 1-for-10 reverse split (never adjusted upstream);
+    # extended hours backfilled after it (already adjusted). The pcts must not jump 10x.
+    dbp = tmp_path / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 1, 26))
+    split_day = sess[4]
+    with db.connect(dbp) as con:
+        _symbol(con, "AAA")
+        for d in sess:
+            _bar_ingested(con, "AAA", d, 1.0 if d < split_day else 10.0, 100.0, d)
+        con.execute(
+            "UPDATE daily_bars SET pre_market_last = 10.2, after_hours_price = 9.9, "
+            "ext_fetched_at = TIMESTAMP '2024-02-01 12:00:00'"
+        )
+        con.execute(f"UPDATE daily_bars SET pre_market_last = NULL WHERE date = DATE '{sess[2]}'")
+        _split(con, "AAA", split_day, 10, 1)
+    summary = features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        got = {d: rest for d, *rest in con.execute(
+            "SELECT date, split_factor, ext_split_factor, pre_market_pct_prev_close, "
+            "after_hours_pct_close FROM daily_bars").fetchall()}
+    assert summary["bars_extended"] == len(sess)
+    assert got[sess[1]][:2] == [pytest.approx(10.0), 1.0]
+    assert got[sess[0]][2] is None  # no previous bar
+    assert got[sess[2]][2] is None  # no pre-market trade
+    for d in (sess[1], sess[3], split_day, sess[5]):
+        assert got[d][2] == pytest.approx(0.02)  # 10.2 vs an adjusted prior close of 10
+        assert got[d][3] == pytest.approx(-0.01)  # 9.9 vs an adjusted close of 10
+
 def _subs(*filings):
     """A submissions-API filings block: filings are (accession, form, filed, items)."""
     return {

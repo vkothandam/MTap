@@ -33,6 +33,17 @@ in settings.toml. Unset, everything stays where it was: the repo root and `./sta
 feed contract is [schemas/intraday_feed.md](../schemas/intraday_feed.md); the schedule that
 runs the store is in [scripts/README.md](../scripts/README.md).
 
+**One central store.** With `MTAP_DATA_ROOT` set, every data file (`out/` datasets,
+`agg_1s`, `intraday_feed`) lives on the NAS and is the only copy: the iMac fetches into
+it and this Mac reads from it. Files are written to a hidden `.<name>.tmp` and renamed,
+so a reader on the other Mac never sees half a file, and nothing is written while the
+share is not mounted. DuckDB database files are **never** opened on the NAS (SMB has no
+file locks): each stays local to the one Mac that writes it, as a rebuildable index over
+the NAS files, and `daily-sourcing.sh` copies `fundamentals.duckdb` to
+`DATA_ROOT/backup/etrade/`. A Mac that kept files in `./out` before moves them up once
+with `scripts/storage/reconcile-out.sh`. Storing the bars twice (NAS files + DuckDB) is
+a known cost; see [docs/TODO.md](../docs/TODO.md).
+
 ## Test (includes schema conformance)
 
 ```bash

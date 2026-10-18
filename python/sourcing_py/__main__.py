@@ -97,6 +97,10 @@ def main(argv: list[str] | None = None) -> int:
         from .massive_ws.cli import main as massive_ws_main
 
         return massive_ws_main(argv[1:])
+    if argv and argv[0] == "massive-ext":
+        from .massive_ext.cli import main as massive_ext_main
+
+        return massive_ext_main(argv[1:])
     if argv and argv[0] == "daily-gaps":
         from .sources.massive_grouped_daily.gaps import main as gaps_main
 
@@ -110,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             "       sourcing-py storage <check|init>\n"
             "       sourcing-py intraday <store --follow|upload --drain|summary|status|ingest-mbin|export-tft> [options]\n"
             "       sourcing-py massive-ws <follow|status|upload|wait-idle|compact> [options]\n"
+            "       sourcing-py massive-ext <fetch|gaps> [options]   (pre-market / after-hours)\n"
             "       sourcing-py daily-gaps [--max 10]   (sessions missing a daily_summary file)",
             file=sys.stderr,
         )

@@ -56,13 +56,34 @@ makes the overlapping multi-month windows Yahoo/Google return cheap to re-poll. 
 forces a full re-fetch/re-extract. Per-symbol feed failures are logged to
 `state/news/failures.jsonl`.
 
-## Segment 1b — Yahoo topic scraper (`news scrape-yahoo`)
+## Segment 1b — Yahoo Finance page scraper (`news scrape-yahoo`)
 
 ```bash
-uv run sourcing-py news scrape-yahoo               # pages 1..6, new articles only
-uv run sourcing-py news scrape-yahoo --pages 2 --no-raw
+uv run sourcing-py news scrape-yahoo               # both pages, new articles only
+uv run sourcing-py news scrape-yahoo --source most-active --since 2026-10-12
+uv run sourcing-py news scrape-yahoo --source stock-market-news --pages 2 --no-raw
 uv run sourcing-py news scrape-yahoo --no-resume   # re-extract everything still listed
 ```
+
+Two sources (`--source`, default both), one article store: a story is fetched once, and
+`listed_on` records every page that showed it (`stock-market-news`, `most-active`; a
+stored story seen on another page later just gets the tag added).
+
+- **most-active** (`https://finance.yahoo.com/markets/stocks/most-active/`): the screener
+  table gives the day's 25 most-traded tickers (re-read every run). The news column is not
+  in the HTML: its infinite scroll POSTs a GraphQL query (`GetQSPLeafNewsStream`) to
+  `nexus-gateway-prod.media.yahoo.com`, no cookies needed. The scraper sends the same
+  query (all 25 tickers in one stream) and pages back to `--since` (default 00:00 New York
+  yesterday). Yahoo stops the stream at 200 items, only a few hours on a busy day; when
+  that comes before the cutoff the run says how far back it reached, so it must run often
+  to see every story. Each item has the exact publish time, stored as
+  `stream_published_at` next to the page's `published_at` (and used for it, with
+  `timestamp_source 'stream'`, when the page lacks one). The two agree except for Yahoo's own
+  stories updated later: there the page shows the update time and the stream the original
+  (a warning is printed) and a premium
+  flag (→ `body_status='paywalled'`). Dropped: videos, outlinks, live blogs, and stories
+  Yahoo doesn't host (publisher site only, mostly paywalled: Barron's, IBD).
+- **stock-market-news**: the topic pages, below.
 
 Scrapes Yahoo's curated stream `https://finance.yahoo.com/topic/stock-market-news/` (and
 `/2/`..`/6/`; Yahoo keeps 6 pages, ~150–170 stories, about two days — page 7+ redirects to
@@ -93,6 +114,9 @@ see each one. Code: `yahoo.py`; config: `[news.yahoo]`.
   failures / empty bodies are retried while still listed.
 - **Raw HTML** (listing pages + articles) is gzipped to `raw_dir/date=YYYY-MM-DD/` for
   evaluating the parser; disposable. `--no-raw` skips it.
+- **Run report:** each run ends with a table per page (and the urls on both pages, and the
+  unique total): listed = stored (by an earlier run) + new + duplicate (same story under
+  another url or syndicated copy, dropped) + failed. Counted during the run, no DB query.
 - Yahoo returns 429 to the default mtap User-Agent, so this sends a browser UA. Exit 1 when
   any article fails or the listing is empty (layout drift).
 
@@ -150,7 +174,7 @@ news_articles(article_id PK, feed, feed_symbol, site, url, title, summary, body_
               body_status['full'|'paywalled'|'short'|'missing'],
               fetched_at, modified_at, timestamp_source, author, provider, original_url,
               section, tickers[], content_uuid, listing_page, listing_position,
-              first_listed_at, listing_age, raw_path)   -- all times naive UTC (session TimeZone=UTC)
+              first_listed_at, listing_age, listed_on[], stream_published_at, raw_path)   -- all times naive UTC (session TimeZone=UTC)
               -- one row per unique article; presence == "already processed" (skip on re-run)
 
 article_symbols(article_id, symbol, match_method['ticker+name'|'name'|'cashtag'], matched_at,

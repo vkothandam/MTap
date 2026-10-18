@@ -6,12 +6,15 @@ Dispatched from `sourcing_py.__main__` when the first arg is `news`:
     sourcing-py news analyze [--no-resume]                 # FinBERT + verified attribution
     sourcing-py news build-daily [--fromdate D1 --todate D2]   # segment 3, on-demand
     sourcing-py news run [--symbols A,B | --all] [--days N]     # aggregate -> analyze
-    sourcing-py news scrape-yahoo [--pages N] [--no-resume] [--no-raw]   # Yahoo topic stream
+    sourcing-py news scrape-yahoo [--source stock-market-news,most-active] [--since YYYY-MM-DD]
+                                  [--pages N] [--no-resume] [--no-raw]   # Yahoo Finance pages
 """
 
 from __future__ import annotations
 
 import sys
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from ..common.errors import ConfigError, FetchError
 from . import aggregator, daily, sentiment, yahoo
@@ -22,8 +25,10 @@ _USAGE = (
     "  sourcing-py news analyze [--no-resume]   (FinBERT sentiment + verified symbol matching)\n"
     "  sourcing-py news build-daily [--fromdate D1 --todate D2]   (segment 3, on-demand)\n"
     "  sourcing-py news run [--symbols A,B | --all] [--days N]     (aggregate -> analyze)\n"
-    "  sourcing-py news scrape-yahoo [--pages N] [--no-resume] [--no-raw]\n"
-    "      (Yahoo Finance stock-market-news topic pages -> full articles with exact timestamps)"
+    "  sourcing-py news scrape-yahoo [--source stock-market-news,most-active] [--since YYYY-MM-DD]\n"
+    "                               [--pages N] [--no-resume] [--no-raw]\n"
+    "      (Yahoo Finance topic pages + most-active news stream -> full articles with exact\n"
+    "       timestamps; --since bounds most-active, default 00:00 New York yesterday)"
 )
 
 
@@ -93,8 +98,14 @@ def _cmd_build_daily(p: dict) -> int:
 def _cmd_scrape_yahoo(p: dict) -> int:
     try:
         pages = int(p["pages"]) if p.get("pages") else None
+        sources = [x.strip() for x in str(p["source"]).split(",") if x.strip()] if p.get("source") else None
+        since = None
+        if p.get("since"):
+            day = date.fromisoformat(str(p["since"]))
+            since = datetime(day.year, day.month, day.day, tzinfo=ZoneInfo("America/New_York"))
         summary = yahoo.scrape(
-            pages=pages, resume=not p.get("no-resume"), keep_raw=not p.get("no-raw")
+            sources=sources, pages=pages, since=since,
+            resume=not p.get("no-resume"), keep_raw=not p.get("no-raw"),
         )
     except (ConfigError, FetchError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -103,17 +114,24 @@ def _cmd_scrape_yahoo(p: dict) -> int:
         print(f"  failed: {err}", file=sys.stderr)
     for msg in summary["age_mismatch"]:
         print(f"  warning: {msg}", file=sys.stderr)
+    if summary["capped"]:
+        print(f"  note: the most-active stream ends at Yahoo's cap ({summary['capped']:%Y-%m-%d %H:%M}Z), "
+              "after the cutoff; older stories in it were not reachable", file=sys.stderr)
+    dropped = ", ".join(f"{n} {r}" for r, n in sorted(summary["dropped"].items())) or "none"
+    head = ["listed", "stored", "new", "duplicate", "failed"]
+    print(f"{'':<20}" + "".join(f"{h:>10}" for h in head))
+    for name, counts in summary["report"].items():
+        print(f"{name:<20}" + "".join(f"{counts[h]:>10}" for h in head))
     print(
-        f"scraped {summary['pages']} page(s), {summary['listed']} article(s) listed: "
-        f"{summary['fetched']} fetched ({summary['ok']} ok, {summary['no_timestamp']} without "
-        f"timestamp, {summary['failed']} failed; {summary['paywalled']} paywalled teaser(s), "
-        f"{summary['short']} short body(ies)), "
-        f"{summary['skipped_seen']} already stored, "
-        f"{summary['duplicates']} duplicate(s) of a stored story dropped; "
-        f"{summary['total_articles']:,} yahoo-topic articles total in DB"
+        f"stored = by an earlier run; duplicate = same story under another url, dropped. "
+        f"{summary['pages']} topic page(s), most-active since {summary['since']:%Y-%m-%d %H:%M}Z "
+        f"(not listed: {dropped})\n"
+        f"{summary['fetched']} fetched: {summary['ok']} ok, {summary['no_timestamp']} without timestamp, "
+        f"{summary['failed']} failed; {summary['paywalled']} paywalled teaser(s), "
+        f"{summary['short']} short body(ies); {summary['total_articles']:,} yahoo-topic articles in DB"
     )
     # an empty listing means the page layout changed under the selectors
-    bad = summary["listed"] == 0 or summary["failed"] or summary["no_timestamp"]
+    bad = summary["listed"] == 0 or summary["failed"] or summary["no_timestamp"] or summary["errors"]
     return 1 if bad else 0
 
 

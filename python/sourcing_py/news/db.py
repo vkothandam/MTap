@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS news_articles (
     fetched_at     TIMESTAMP,         -- UTC
     modified_at      TIMESTAMP,       -- UTC; article page's last update (topic scraper)
     timestamp_source TEXT,            -- where published_at came from: 'ld+json' | 'time-tag'
-                                      --   | 'listing-age' (approximate, no exact time on the page)
+                                      --   | 'stream' (most-active API time) | 'listing-age' (approximate)
     author           TEXT,            -- byline; several authors joined with '; '
     provider         TEXT,            -- syndicating publisher, e.g. 'Reuters' | 'Barchart'
     original_url     TEXT,            -- publisher's own url for a syndicated article
@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS news_articles (
     listing_position INTEGER,
     first_listed_at  TIMESTAMP,       -- UTC; scrape run that first saw it on the listing
     listing_age      TEXT,            -- the listing's relative age then, e.g. '21h ago'
+    listed_on        VARCHAR[],       -- Yahoo pages it was seen on: 'stock-market-news' | 'most-active'
+    stream_published_at TIMESTAMP,    -- UTC; publish time in the most-active stream (the original for an updated story)
     raw_path         TEXT             -- gzipped raw HTML kept for re-parsing (may be purged)
 );
 
@@ -99,7 +101,7 @@ _MIGRATIONS: tuple[str, ...] = tuple(
         "modified_at TIMESTAMP", "timestamp_source TEXT", "author TEXT", "provider TEXT",
         "original_url TEXT", "section TEXT", "tickers VARCHAR[]", "content_uuid TEXT",
         "listing_page INTEGER", "listing_position INTEGER", "first_listed_at TIMESTAMP",
-        "raw_path TEXT", "listing_age TEXT", "body_status TEXT",
+        "raw_path TEXT", "listing_age TEXT", "body_status TEXT", "listed_on VARCHAR[]", "stream_published_at TIMESTAMP",
     )
 )
 

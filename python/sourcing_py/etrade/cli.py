@@ -74,7 +74,8 @@ def _cmd_ingest_eod(p: dict) -> int:
     print(
         f"ingested EOD bars from {summary['files']} file(s) [{lo} .. {hi}]: "
         f"{summary['bars_loaded']:,} loaded, {summary['bars_total']:,} bars total, "
-        f"{summary['symbols_total']:,} symbols in DB"
+        f"{summary['symbols_total']:,} symbols in DB; extended hours on "
+        f"{summary['bars_extended']:,} bars from {summary['extended_files']} file(s)"
     )
     if summary["failed_files"]:
         print(f"  {len(summary['failed_files'])} file(s) failed to parse", file=sys.stderr)
@@ -167,7 +168,8 @@ def _cmd_derive_features(p: dict) -> int:
         f"derived features for {summary['bars']:,} bars across {summary['symbols']:,} symbols; "
         f"{summary['calendar_sessions']:,} calendar sessions, "
         f"{summary['filings_snapped']:,} filings mapped, "
-        f"{summary['bars_split_adjusted']:,} bars split-adjusted"
+        f"{summary['bars_split_adjusted']:,} bars split-adjusted, "
+        f"{summary['bars_extended']:,} with extended hours"
     )
     if summary["bars_missing_day_idx"]:
         print(

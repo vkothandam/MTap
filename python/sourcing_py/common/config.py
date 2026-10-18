@@ -178,11 +178,15 @@ def massive_config() -> dict:
             "Massive API key not configured. Set [massive].api_key in "
             "shared/config/settings.toml or the MASSIVE_API_KEY env var."
         )
-    rpm_raw = os.environ.get("MASSIVE_RATE_LIMIT_PER_MIN") or section.get("rate_limit_per_min") or 5
+    rpm_raw = os.environ.get("MASSIVE_RATE_LIMIT_PER_MIN") or section.get("rate_limit_per_min")
+    rpm_raw = 5 if rpm_raw in (None, "") else rpm_raw  # 0 = no throttle (paid key)
+    workers_raw = os.environ.get("MASSIVE_WORKERS") or section.get("workers") or 16
     return {
         "base_url": base_url.rstrip("/"),
         "api_key": api_key,
         "rate_limit_per_min": int(rpm_raw),
+        # concurrent per-ticker requests (massive-ext); a paid key has no per-minute cap
+        "workers": max(1, int(workers_raw)),
     }
 
 
@@ -326,6 +330,15 @@ def news_config() -> dict:
             os.environ.get("NEWS_YAHOO_RAW_DIR") or ysec.get("raw_dir")
             or data_root() / "news" / "yahoo" / "raw"
         ),
+        # most-active: the page lists the tickers; its news column is a GraphQL stream
+        # (the infinite scroll's request), read one ticker at a time.
+        "most_active_url": os.environ.get("NEWS_YAHOO_MOST_ACTIVE_URL") or ysec.get("most_active_url")
+        or "https://finance.yahoo.com/markets/stocks/most-active/",
+        "stream_url": os.environ.get("NEWS_YAHOO_STREAM_URL") or ysec.get("stream_url")
+        or "https://nexus-gateway-prod.media.yahoo.com/",
+        "stream_count": int(os.environ.get("NEWS_YAHOO_STREAM_COUNT") or ysec.get("stream_count") or 50),
+        # Yahoo serves at most 200 items per stream query
+        "stream_max": int(os.environ.get("NEWS_YAHOO_STREAM_MAX") or ysec.get("stream_max") or 200),
     }
     return {
         "db_path": db_path,

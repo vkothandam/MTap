@@ -30,6 +30,13 @@ erDiagram
         TIMESTAMP ingested_at
         VARCHAR run_id
         TIMESTAMP loaded_at
+        DOUBLE pre_market_price
+        DOUBLE pre_market_last
+        DOUBLE pre_market_volume
+        DOUBLE regular_volume
+        DOUBLE after_hours_price
+        DOUBLE after_hours_volume
+        TIMESTAMP ext_fetched_at
         BIGINT day_idx
         SMALLINT is_10k
         SMALLINT is_10q
@@ -45,6 +52,9 @@ erDiagram
         DOUBLE vwap_nx_qtr
         DOUBLE vwap_pct_prev_day
         DOUBLE split_factor
+        DOUBLE ext_split_factor
+        DOUBLE pre_market_pct_prev_close
+        DOUBLE after_hours_pct_close
         TIMESTAMP features_computed_at
     }
     fundamentals {
@@ -208,6 +218,8 @@ erDiagram
         INTEGER listing_position
         TIMESTAMP first_listed_at
         VARCHAR listing_age
+        VARCHAR[] listed_on
+        TIMESTAMP stream_published_at
         VARCHAR raw_path
     }
     symbol_sentiment_daily {

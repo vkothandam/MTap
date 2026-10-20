@@ -11,7 +11,9 @@ where L is an assumed lag (positive = the poll describes an earlier moment than 
 Checks, per tier (by market cap) and watchlist, over the regular session:
     A  are Massive timestamps event times? which L lines the feeds up? (lag scan, volume
        crossing, time of the opening / closing cross)
-    B  price at a timestamp: |ΔP| bp, exact matches, staleness, inside E*TRADE's bid/ask
+    B  price at a timestamp: |ΔP| bp, exact matches, staleness, inside E*TRADE's bid/ask;
+       B2 where each mismatched E*TRADE price shows up in Massive (a bar close a second or two
+       away, inside a bar's range, ..., the previous session's close, or nowhere within 2 min), with sampled examples
     C  volume at a timestamp: E*TRADE volume vs Massive av / dav
     D  VWAP over the session / trailing 5 / 60 min at checkpoints: E*TRADE rebuilt the way the
        intraday panel does it (export.series_for_day + window_vwap) vs Massive
@@ -30,7 +32,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -42,6 +44,7 @@ import pyarrow.csv as pcsv
 
 from sourcing_py.common import config, http
 from sourcing_py.intraday import export
+from sourcing_py.utils.trading_calendar import sessions
 
 ET = ZoneInfo("America/New_York")
 OUT = Path("/tmp/feed_quality")
@@ -208,10 +211,10 @@ def lag_scan(con, day: date) -> pa.Table:
     return pa.concat_tables(out)
 
 
-def best_lag(scan: pa.Table) -> int:
-    """The dense-grid lag with the highest poll-weighted match rate on the Experimental watchlist."""
+def best_lag(scan: pa.Table, wl: str = "Experimental") -> int:
+    """The dense-grid lag with the highest poll-weighted match rate on one watchlist."""
     rows = [r for r in scan.to_pylist() if r["lag_ms"] in DENSE_LAGS_MS]
-    exp = [r for r in rows if r["wl"] == "Experimental"] or rows
+    exp = [r for r in rows if r["wl"] == wl] or rows
     score: dict[int, list[float]] = {}
     for r in exp:
         s = score.setdefault(r["lag_ms"], [0.0, 0.0])
@@ -252,6 +255,61 @@ def polls(con, day: date, lag: int) -> tuple[pa.Table, pa.Table]:
     per_sym = _q(con, f"SELECT {head}, symbol, tier, wl, {_POLL_METRICS} FROM j GROUP BY ALL ORDER BY tier, symbol")
     per_tier = _q(con, f"SELECT {head}, tier, wl, {_POLL_METRICS} FROM j GROUP BY ALL ORDER BY tier, wl")
     return per_sym, per_tier
+
+
+def mismatches(con, day: date, lags: dict[str, int]) -> tuple[pa.Table, pa.Table]:
+    """Check B2: for polls whose price differs at each watchlist's best lag, where that price shows up in
+    Massive around the moment the poll describes. Returns a summary and sampled examples."""
+    lag = "CASE wl " + " ".join(f"WHEN '{w}' THEN {L}" for w, L in lags.items()) + " END"
+    near = "x.p BETWEEN b.l - 0.00005 AND b.h + 0.00005"
+    con.execute(f"""CREATE OR REPLACE TEMP TABLE mm AS
+        WITH x AS (
+            SELECT e.symbol, e.tier, e.wl, e.ms, e.tq, p, bid, ask, m.ms AS m_ms, c, (p / c - 1) * 1e4 AS dp_bp
+            FROM (SELECT *, ms - {lag} AS tq FROM eok) e
+            ASOF JOIN m ON e.symbol = m.symbol AND e.tq >= m.end_ms
+            WHERE NOT {MATCH}),
+        n10 AS (  -- nearest bar whose close is the E*TRADE price; nearest bar whose range holds it
+            SELECT x.symbol, x.ms,
+                   arg_min(b.end_ms - x.tq, abs(b.end_ms - x.tq)) FILTER (WHERE abs(x.p - b.c) < 0.00005) AS off_close,
+                   min(abs(b.end_ms - x.tq)) FILTER (WHERE {near}) AS off_range
+            FROM x JOIN m b ON b.symbol = x.symbol AND abs(b.end_ms - x.tq) <= 10000 GROUP BY ALL),
+        n120 AS (
+            SELECT x.symbol, x.ms, min(abs(b.end_ms - x.tq)) AS off_range_2m
+            FROM x LEFT JOIN n10 USING (symbol, ms)
+            JOIN m b ON b.symbol = x.symbol AND abs(b.end_ms - x.tq) <= 120000 AND {near}
+            WHERE n10.off_range IS NULL GROUP BY ALL)
+        SELECT x.*, off_close, coalesce(off_range, off_range_2m) AS off_range,
+               CASE WHEN off_close > 0 AND off_close <= 2000 THEN '1 close of a bar <=2 s later'
+                    WHEN off_close BETWEEN -2000 AND 0 THEN '2 close of a bar <=2 s earlier'
+                    WHEN off_range <= 2000 THEN '3 inside a bar <=2 s away'
+                    WHEN off_range IS NOT NULL THEN '4 printed 2-10 s away'
+                    WHEN off_range_2m IS NOT NULL THEN '5 printed 10-120 s away'
+                    WHEN abs(p - pd.prev_c) < 0.00005 THEN '6 previous session close'
+                    ELSE '7 not printed within 2 min' END AS cat
+        FROM x LEFT JOIN n10 USING (symbol, ms) LEFT JOIN n120 USING (symbol, ms) LEFT JOIN pd USING (symbol)""")
+    summary = _q(con, f"""
+        SELECT '{day}' AS date, tier, wl, any_value({lag}) AS lag_ms, cat, count(*) AS polls,
+               count(*) / sum(count(*)) OVER (PARTITION BY tier, wl) AS share_of_mismatches,
+               any_value(t.n) AS tier_polls, count(*) / any_value(t.n) AS share_of_polls,
+               median(abs(dp_bp)) AS dp_bp_med, quantile_cont(abs(dp_bp), 0.9) AS dp_bp_p90,
+               avg(CASE WHEN bid > 0 AND ask > 0 THEN (p BETWEEN bid - 0.01 AND ask + 0.01)::INT END) AS e_in_bidask,
+               avg(CASE WHEN bid > 0 AND ask > 0 THEN (c BETWEEN bid - 0.01 AND ask + 0.01)::INT END) AS m_in_bidask
+        FROM mm JOIN (SELECT tier, wl, count(*) AS n FROM eok GROUP BY ALL) t USING (tier, wl)
+        GROUP BY tier, wl, cat ORDER BY tier, wl, cat""")
+    ex = con.execute("""
+        WITH s AS (SELECT * FROM mm QUALIFY row_number() OVER (PARTITION BY tier, cat ORDER BY hash(symbol, ms)) <= 5)
+        SELECT s.symbol, s.tier, s.wl, s.cat, s.ms, s.tq, s.p, s.bid, s.ask, s.m_ms, s.c, s.dp_bp, s.off_close,
+               s.off_range, list(struct_pack(t := b.ms, c := b.c, l := b.l, h := b.h) ORDER BY b.ms) AS bars
+        FROM s LEFT JOIN m b ON b.symbol = s.symbol AND b.end_ms BETWEEN s.tq - 3000 AND s.tq + 3000
+        GROUP BY ALL ORDER BY s.tier, s.cat, s.symbol, s.ms""").fetchall()
+    rows = [{"date": str(day), "symbol": r[0], "tier": r[1], "wl": r[2], "cat": r[3],
+             "poll_et": _et(r[4]), "snapshot_et": _et(r[5]), "e_price": r[6], "e_bid": r[7], "e_ask": r[8],
+             "m_bar_et": _et(r[9]), "m_close": r[10], "dp_bp": r[11], "nearest_close_s": r[12] and r[12] / 1000,
+             "nearest_range_s": r[13] and r[13] / 1000,
+             "massive_bars_3s": "; ".join(f"{_et(b['t'])[:8]} c {b['c']:g} [{b['l']:g}-{b['h']:g}]"
+                                          for b in r[14] if b["t"] is not None)}
+            for r in ex]
+    return summary, pa.Table.from_pylist(rows)
 
 
 def vwaps(con, day: date, tiers: dict[str, str], lag: int, open_ms: int, close_ms: int) -> pa.Table:
@@ -410,6 +468,8 @@ def main() -> None:
             open_ms, close_ms = export._session_ms(day)
             con.register("d_arrow", grouped_daily(client, cfg, day))
             con.execute("CREATE OR REPLACE TEMP TABLE d AS SELECT * FROM d_arrow")
+            con.register("pd_arrow", grouped_daily(client, cfg, sessions(day - timedelta(days=10), day - timedelta(days=1))[-1]))
+            con.execute("CREATE OR REPLACE TEMP TABLE pd AS SELECT symbol, d_c AS prev_c FROM pd_arrow")
             load(con, root, day)
             first_m = con.execute("SELECT min(ms) FROM m").fetchone()[0]
             if first_m is None:
@@ -435,6 +495,10 @@ def main() -> None:
                 per_sym, per_tier = polls(con, day, L)
                 res.setdefault("per_symbol_day", []).append(per_sym)
                 res.setdefault("per_tier", []).append(per_tier)
+            lags = {w: best_lag(scan, w) for w in set(scan["wl"].to_pylist())}
+            mm, ex = mismatches(con, day, lags)
+            res.setdefault("price_mismatches", []).append(mm)
+            res.setdefault("price_mismatch_examples", []).append(ex)
             res.setdefault("vwap_windows", []).append(vwaps(con, day, tiers, lag, open_ms, close_ms))
             res.setdefault("daily", []).append(daily(con, day, lag, close_ms))
             bars, last = semantics(con, day, open_ms, close_ms)
@@ -479,6 +543,17 @@ def summarize(con, out: dict[str, pa.Table | None]) -> None:
         SELECT date, lag_ms, tier, wl, polls, price_match, dp_bp_med, dp_bp_p90, dp_bp_p99, stale_s_med,
                m_in_bidask, e_in_bidask, vol_rel_med, vol_abs_rel_med, vol_abs_rel_p90, vol_rel_dec_med
         FROM per_tier ORDER BY date, lag_ms, tier"""))
+    if out.get("price_mismatches") is not None:
+        _show("B2 where mismatched E*TRADE prices show up in Massive, all dates (at each watchlist's best lag; "
+              "bp and bid/ask columns are medians of the daily values)", _q(con, """
+            WITH tot AS (SELECT tier, sum(tier_polls) AS n
+                         FROM (SELECT DISTINCT date, tier, wl, tier_polls FROM price_mismatches) GROUP BY tier)
+            SELECT tier, cat, sum(polls) AS polls,
+                   sum(polls) / sum(sum(polls)) OVER (PARTITION BY tier) AS share_of_mismatches,
+                   sum(polls) / any_value(tot.n) AS share_of_polls,
+                   median(dp_bp_med) AS dp_bp_med, median(dp_bp_p90) AS dp_bp_p90,
+                   median(e_in_bidask) AS e_in_bidask, median(m_in_bidask) AS m_in_bidask
+            FROM price_mismatches JOIN tot USING (tier) GROUP BY tier, cat ORDER BY tier, cat"""))
     if out.get("vwap_windows") is not None:
         _show("D VWAP: E*TRADE (panel method) vs Massive, |bp| over symbols × checkpoints", _q(con, """
             SELECT tier, "window", count(*) AS n,

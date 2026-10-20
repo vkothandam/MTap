@@ -9,6 +9,9 @@
 | `schedule/redis-mtap.conf` | Redis for the feed: localhost only, no persistence, 2 GB cap |
 | `storage/mount-nas.sh` | mounts `MTAP_NAS_URL`, passing the user and the login-Keychain password to Finder; `--save-password` stores the password |
 
+The 1-second REST backfill runs on the NAS, not from here: see [nas/README.md](../nas/README.md)
+(`nas/deploy.sh` prepares it from this Mac).
+
 Everything reads the repo-root `.env`. Paths come from the scripts' location, so the repo
 can live anywhere. ML jobs are never started from here.
 

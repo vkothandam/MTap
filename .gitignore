@@ -7,6 +7,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Rust (nas/massive1s; cargo's target/ only if built in place)
+nas/massive1s/target/
+
 # Node
 node_modules/
 dist/
@@ -21,6 +24,7 @@ data/
 temp/
 .mtap-data-root
 *.parquet
+!python/tests/fixtures/**/*.parquet
 *.jsonl
 
 # Local run state (DuckDB stores, session cookies, rate-limiter locks, logs)

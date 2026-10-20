@@ -139,14 +139,18 @@ def fetch_ticker(client: httpx.Client, cfg: dict, ticker: str, d0: date, d1: dat
     return summarize(ticker, _pages(client, cfg, ticker, d0, d1), fetched_at)
 
 
-def universe(d0: date) -> list[str]:
-    """Common stocks listed now or delisted on/after d0, from the newest tickers_cs file."""
+def latest_tickers() -> list[dict]:
+    """The rows of the newest tickers_cs file (common stocks, listed and delisted)."""
     files = sorted((config.out_root() / "tickers_cs").glob("tickers_cs-*.jsonl"))
     if not files:
         raise FileNotFoundError("no tickers_cs file: run `sourcing-py run massive_tickers_cs` first")
+    return [json.loads(line) for line in files[-1].read_text().splitlines() if line.strip()]
+
+
+def universe(d0: date) -> list[str]:
+    """Common stocks listed now or delisted on/after d0, from the newest tickers_cs file."""
     keep: dict[str, None] = {}
-    for line in files[-1].read_text().splitlines():
-        r = json.loads(line)
+    for r in latest_tickers():
         gone = r.get("delisted_utc")
         if r.get("active") or (gone and gone[:10] >= d0.isoformat()):
             keep.setdefault(r["ticker"], None)

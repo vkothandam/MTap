@@ -44,6 +44,10 @@ the NAS files, and `daily-sourcing.sh` copies `fundamentals.duckdb` to
 with `scripts/storage/reconcile-out.sh`. Storing the bars twice (NAS files + DuckDB) is
 a known cost; see [docs/TODO.md](../docs/TODO.md).
 
+**1-second history** (`agg_1s/…/source=massive_rest`) is fetched on the NAS by a Rust
+tool; Python only writes its inputs (`sourcing-py massive-1s prepare`, run by
+`nas/deploy.sh`). See [nas/README.md](../nas/README.md).
+
 ## Test (includes schema conformance)
 
 ```bash

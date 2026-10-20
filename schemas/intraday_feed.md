@@ -114,3 +114,35 @@ minute reads a little lower than REST (median 0.1% for AAPL, about 3% for a reta
 small cap); prices match exactly. `av` also counts trades that never update a bar (odd lots and other
 conditions), so it rises faster than the sum of `v`.
 
+
+### `source=massive_rest`: the REST backfill (nas/massive1s)
+
+History before the live feed, from Massive custom bars
+(`/v2/aggs/ticker/{T}/range/1/second/{from}/{to}`, `adjusted=true`), fetched on the NAS by
+the Rust tool in `nas/massive1s` (runbook: [nas/README.md](../nas/README.md)).
+
+- NAS: `DATA_ROOT/agg_1s/date=D/source=massive_rest/day-D.parquet`, one file per session,
+  sorted by (`symbol`, `ts_utc`), zstd 19, 1M-row groups. `massive-ws compact` never touches it.
+- Same columns and types as the table above; metadata `agg_1s_schema_version=2`,
+  `source=massive_rest`.
+- Window: bars with 09:00:00 New York ≤ `ts_utc` < session close + 7 min (16:06:59, or
+  13:06:59 on a half day), the live feed's span. The endpoint itself returns 04:00–19:59
+  every day, so the cut is made on each bar's timestamp.
+- Universe: the common stocks listed when the inputs were prepared (`massive_1s/inputs/
+  universe.csv`, notes, preferreds, depositary shares, funds and rights removed). Stocks
+  delisted before then are not in it.
+- Mapping: `c→price`, `o/h/l→open_i/high_i/low_i`, `vw→vwap_i`, `v→volume_i` (rounded) and
+  `volume_i_dec`, `round(v/n)→avg_trade_size`, `otc=false`.
+- **Always null:** `volume_cum`, `volume_cum_dec`, `vwap_session`, `day_open`. In the live feed
+  these are Massive's running day totals, which include prints that are in no second bar, so
+  they cannot be rebuilt from the bars. Compute running sums from `volume_i` if needed and
+  treat them as "bar volume so far", not the day's volume.
+- Prices are split-adjusted as of the fetch date; the live feed is not adjusted.
+- REST `v` includes fractional shares (11% of 2026-09 bars are fractional), like the live
+  feed's `dv`, so `volume_i_dec` means the same in both sources. `volume_i` differs: the live
+  feed's `v` is `floor(dv)` (every bar on 14–16 Oct), while this source rounds. Use
+  `volume_i_dec` when mixing the two.
+- Over the same stocks, the two sources have the same profile (2026-09 REST vs 14–16 Oct
+  live): about 500 bars per stock-day, and the 16:00:00 bar holds about 0.07% of the
+  window's volume. The closing auction is therefore not in the second bars of either source.
+  The bars in the window cover about 73% of the daily bar's volume (median per stock-day).

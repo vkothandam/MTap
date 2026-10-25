@@ -1,0 +1,17 @@
+# Build context for deploy/container (both images build from the repo root): only the
+# core the images copy. Secrets, local state, data and the Mac's environments stay out.
+*
+!python
+!node
+!schemas
+!shared
+!deploy
+python/.venv*
+python/.pytest_cache
+python/.ruff_cache
+**/__pycache__
+node/node_modules
+node/dist
+shared/config/settings.toml
+**/.DS_Store
+**/*.log

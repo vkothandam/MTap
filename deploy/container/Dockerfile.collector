@@ -1,0 +1,56 @@
+# The E*TRADE collector: the Node feed driving a headed Chrome on a virtual display that
+# noVNC shows on :7900, so a login challenge can be answered by hand in a web browser.
+# Build from the repo root (jobs.sh build does this):
+#   docker build -f deploy/container/Dockerfile.collector -t mtap-collector .
+#
+# The selenium image is the desktop (Xvfb, fluxbox, x11vnc, noVNC, supervisord) and the
+# browser: its Google Chrome (compose.yml PUPPETEER_EXECUTABLE_PATH), a current build with
+# Chrome's own client hints. Puppeteer's Chrome for Testing (installed by npm ci, the Mac's
+# build) stays as the fallback. The selenium server does not run.
+ARG SELENIUM_IMAGE=selenium/standalone-chrome@sha256:d6843a37cd2852fac7f33099709a203769f864dcf260e740a34e9605055c1dd5
+FROM node:20-bookworm-slim AS node
+FROM ${SELENIUM_IMAGE}
+
+USER root
+
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# The image's user (seluser, 1200:1201) becomes the host's data owner, so the Chrome
+# profile, session and logs in the state folder have one owner with the py containers.
+ARG MTAP_UID=1026
+ARG MTAP_GID=100
+RUN set -eu; \
+    other="$(getent passwd "$MTAP_UID" | cut -d: -f1 || true)"; \
+    if [ -n "$other" ] && [ "$other" != seluser ]; then userdel "$other"; fi; \
+    getent group "$MTAP_GID" >/dev/null || groupadd -g "$MTAP_GID" mtap; \
+    usermod -u "$MTAP_UID" -g "$MTAP_GID" seluser; \
+    find / -xdev \( -uid 1200 -o -gid 1201 \) -not -path '/proc/*' -exec chown -h "$MTAP_UID:$MTAP_GID" {} + ; \
+    rm -f /etc/supervisor/conf.d/selenium.conf /etc/supervisor/conf.d/recorder.conf \
+          /etc/supervisor/conf.d/uploader.conf /etc/supervisor/conf.d/chrome-cleanup.conf
+ENV SEL_UID=${MTAP_UID} SEL_GID=${MTAP_GID}
+
+COPY deploy/container/collector/supervisord.conf /etc/supervisor/conf.d/mtap.conf
+COPY deploy/container/collector/run-etrade.sh /opt/bin/mtap-run-etrade.sh
+RUN chmod 755 /opt/bin/mtap-run-etrade.sh
+
+# Node deps first (cached until package-lock.json changes); puppeteer's postinstall
+# downloads its Chrome into PUPPETEER_CACHE_DIR.
+ENV PUPPETEER_CACHE_DIR=/opt/puppeteer
+WORKDIR /app/node
+COPY node/package.json node/package-lock.json ./
+RUN npm ci --no-audit --no-fund \
+    && ls -d /opt/puppeteer/chrome/* \
+    && chmod -R a+rX /opt/puppeteer
+COPY shared /app/shared
+COPY schemas /app/schemas
+COPY node /app/node
+# COPY keeps the build context's modes, which depend on the host's filesystem (on the NAS's
+# ACL share some folders arrived as 700), so make the code readable by the runtime user.
+RUN find /app /etc/supervisor/conf.d/mtap.conf /opt/bin/mtap-run-etrade.sh \
+        -path /app/node/node_modules -prune -o -exec chmod u+rwX,go+rX,go-w {} +
+
+USER ${MTAP_UID}:${MTAP_GID}
+# The image's entry point starts supervisord (supervisord.conf above).

@@ -44,3 +44,6 @@ shared/config/settings.toml
 .idea/
 .vscode/
 .obsidian/workspace*.json
+
+# deploy/synology/push.sh --trial writes this on the NAS only
+deploy/synology/host.override.env

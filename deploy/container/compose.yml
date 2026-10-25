@@ -1,0 +1,103 @@
+# MTap sourcing on any Docker host (the NAS now, a cloud VM later). Driven by jobs.sh,
+# which exports the host's env file before calling compose; see README.md.
+#
+#   profile etrade      redis + store (Redis -> hourly segments -> DATA/intraday_feed)
+#                       + etrade (the E*TRADE collector, headed Chrome, noVNC on :7900)
+#   profile massive-ws  the Massive per-second collector (exits 0 after its window)
+#   profile job         one-off sourcing-py commands (jobs.sh daily / evening / status / run)
+#
+# Two host folders: MTAP_DATA_DIR (/data, the large parquet) and MTAP_STATE_DIR (/state:
+# segments, heartbeats, the Chrome profile, logs). Settings come from the host's env file
+# (MTAP_ENV_FILE) and the secrets file (MTAP_SECRETS_FILE), never from the image.
+name: mtap
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: 10m, max-file: "3" }
+
+x-py: &py
+  image: mtap-py
+  build:
+    context: ../..
+    dockerfile: deploy/container/Dockerfile.py
+  user: "${MTAP_UID:?}:${MTAP_GID:?}"
+  init: true
+  env_file:
+    - ${MTAP_ENV_FILE:?jobs.sh sets this}
+    - ${MTAP_SECRETS_FILE:?set in the host env file}
+  environment:
+    MTAP_DATA_ROOT: /data
+    MTAP_STATE_ROOT: /state
+    REDIS_URL: redis://redis:6379
+    BUS_TRANSPORT: redis
+  volumes:
+    - ${MTAP_DATA_DIR:?}:/data
+    - ${MTAP_STATE_DIR:?}:/state
+  logging: *logging
+
+services:
+  redis:
+    image: redis:7-alpine
+    profiles: [etrade]
+    # Memory only, 2 GB, noeviction (as scripts/schedule/redis-mtap.conf). Flags, not a
+    # mounted file: the redis user could not read a file on the NAS's ACL share.
+    command: ["redis-server", "--bind", "0.0.0.0", "--protected-mode", "no", "--save", "",
+              "--appendonly", "no", "--dir", "/tmp", "--maxmemory", "2gb",
+              "--maxmemory-policy", "noeviction"]
+    restart: unless-stopped
+    logging: *logging
+
+  store:
+    <<: *py
+    profiles: [etrade]
+    # SIGTERM closes and uploads the open segments (the evening job's flush).
+    command: ["sh", "-c", "exec sourcing-py intraday store --follow >> /state/logs/store-$$(date +%F).log 2>&1"]
+    depends_on: [redis]
+    restart: unless-stopped
+    stop_grace_period: 120s
+
+  etrade:
+    image: mtap-collector
+    build:
+      context: ../..
+      dockerfile: deploy/container/Dockerfile.collector
+      args:
+        MTAP_UID: ${MTAP_UID:?}
+        MTAP_GID: ${MTAP_GID:?}
+    profiles: [etrade]
+    env_file:
+      - ${MTAP_ENV_FILE:?jobs.sh sets this}
+      - ${MTAP_SECRETS_FILE:?set in the host env file}
+    environment:
+      MTAP_STATE_ROOT: /state
+      REDIS_URL: redis://redis:6379
+      BUS_TRANSPORT: redis
+      # Headed on the container's display; the OTP page listens on every interface while
+      # the texted link keeps OTP_HOST (the host's LAN address).
+      HEADLESS: "false"
+      OTP_BIND_HOST: 0.0.0.0
+      # The image's Google Chrome, not puppeteer's Chrome for Testing: E*TRADE's bot manager
+      # (Akamai) refused that older build here, even for a login typed by hand.
+      PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+    volumes:
+      - ${MTAP_STATE_DIR:?}:/state
+    ports:
+      - "${MTAP_NOVNC_PORT:-7900}:7900"
+      - "${OTP_PORT:-8787}:${OTP_PORT:-8787}"
+    shm_size: 2gb
+    depends_on: [redis]
+    restart: unless-stopped
+    stop_grace_period: 60s
+    logging: *logging
+
+  massive-ws:
+    <<: *py
+    profiles: [massive-ws]
+    # One connection per key: only one host may run this role.
+    command: ["sh", "-c", "exec sourcing-py massive-ws follow --until-close >> /state/logs/massive-$$(date +%F).log 2>&1"]
+    restart: on-failure
+    stop_grace_period: 120s
+
+  job:
+    <<: *py
+    profiles: [job]

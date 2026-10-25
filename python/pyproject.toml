@@ -38,6 +38,16 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["sourcing_py"]
 
+# Linux (the containers in deploy/container) installs the CPU-only torch wheel: the default
+# Linux wheel pulls ~3 GB of CUDA libraries no host here uses. macOS resolves from PyPI as before.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.ruff]
 line-length = 100
 

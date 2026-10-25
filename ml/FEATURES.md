@@ -1,9 +1,14 @@
-# Model fields
+# Daily model (tft_vwap): fields, training and testing
 
 Every panel column and what the TFT does with it. The panel (`panel.parquet`, schema 3, written
 by `sourcing-py etrade export-tft`) is the model's only input: one row per stock and trading
 session. The groups are the tuples in [tft_vwap/config.py](tft_vwap/config.py), and `prepare()`
 in [tft_vwap/dataset.py](tft_vwap/dataset.py) applies the transforms listed here.
+
+- **Fields** (sections 1–11): what the model predicts, every column by its role, and the columns
+  not used yet.
+- **Training and testing** (sections 12–16): how runs are trained and graded, the results so
+  far, the parameters you can change, candidate inputs, and how to add one and test it.
 
 **Leakage rule:** every input on day t's row is known at the close of day t. The model forecasts
 day t+1, so the only inputs it has for t+1 itself are the calendar ones (known in advance).
@@ -27,6 +32,23 @@ The TFT sorts its fields into the roles below. Defaults are shown (`--target ret
 | Index and display | `day_idx`, `date` | Time index | 9 |
 | Text the flags come from | `results_window`, `results_window_pit` | Turned into the 0/1 window flags | 6 |
 | Not an input with the default target | `today_vwap` | Converts forecast moves into prices. It is the target with `--target vwap`. | 1 |
+
+### Inputs by run
+
+Columns the model reads, by group (`--target return`):
+
+| group | `--earnings exact` (default) | `--earnings pit` (the 10-11 retrain) | production (`20261005-025909Z-return-3712sym`) |
+| --- | --- | --- | --- |
+| static categoricals | 4 | 4 | 4 |
+| known-future reals | 5 | 5 | 5 |
+| target history (`vwap_pct_prev_day`) | 1 | 1 | 1 |
+| price/volume and filing reals | 7 | 7 | 7 |
+| earnings reals | 8 | 7 | none: trained before they existed |
+| sentiment reals | 3 with `--use-sentiment`, else none | the same | none |
+| series breaks | on | on | off |
+
+No full-panel run has used `exact` yet. The 10-11 retrain is `20261011-173109Z-return-3785sym`
+(section 13).
 
 ## 1. What the model predicts
 
@@ -291,7 +313,9 @@ Off by default because the news history is still near-empty.
 
 ## 11. In `daily_bars` but not exported yet (pre-market / after-hours, added 2026-10-15)
 
-From Massive 1-minute bars (`sourcing-py massive-ext`), loaded by `ingest-eod`. Whether and how the panel uses them is an open model decision.
+From Massive 1-minute bars (`sourcing-py massive-ext`), loaded by `ingest-eod`. Whether and how
+the panel uses them is an open model decision (section 15). As of 2026-10-25 this Mac's DuckDB
+doesn't have them yet: the files are on the NAS.
 
 | column (`daily_bars`) | meaning |
 | --- | --- |
@@ -301,4 +325,242 @@ From Massive 1-minute bars (`sourcing-py massive-ext`), loaded by `ingest-eod`. 
 | `pre_market_pct_prev_close` | `pre_market_last` vs the previous session's close, split-adjusted (fraction) |
 | `after_hours_pct_close` | `after_hours_price` vs the same day's close, split-adjusted (fraction) |
 
-Timing: day t's after-hours is known by 20:00 ET on day t, so it is a fair observed input for forecasting day t+1. Day t+1's pre-market is known only on the morning of t+1, so it is usable only if the forecast is made after it, before the open.
+Timing: day t's after-hours is known by 20:00 ET on day t, so it is a fair observed input for
+forecasting day t+1. Day t+1's pre-market is known only on the morning of t+1, so it is usable
+only if the forecast is made after it, before the open.
+
+## 12. How training and testing work
+
+`uv run tft-vwap` ([train.py](tft_vwap/train.py)) trains one model per walk-forward fold. Each
+model is tested on sessions it never saw.
+
+- **Data:** the panel covers 2024-08-16 … 2026-10-06: 536 sessions, 3,763 stocks, 1.91M rows.
+  `export-tft` keeps common stocks and ADRs that have:
+  - at least 120 bars
+  - a median VWAP of at least $1
+  - a median volume of at least 50,000
+- **Samples:** one per stock and day with at least 20 sessions of history before it. The encoder
+  reads up to 60 sessions. The decoder is the next session.
+
+**Folds.** Four test blocks of 60 sessions. Each has a 20-session early-stop block before it and
+trains on everything earlier. These are the folds of production and of the 10-11 retrain, pinned
+by `--test-end 1663`:
+
+| fold | trains on targets up to | early-stop block | test block | training samples |
+| --- | --- | --- | --- | --- |
+| 0 | 2025-08-01 | 2025-08-04 … 08-29 | 2025-09-02 … 11-24 | 0.75M |
+| 1 | 2025-10-27 | 2025-10-28 … 11-24 | 2025-11-25 … 2026-02-23 | 0.97M |
+| 2 | 2026-01-23 | 2026-01-26 … 02-23 | 2026-02-24 … 05-19 | 1.18M |
+| 3 | 2026-04-21 | 2026-04-22 … 05-19 | 2026-05-20 … 08-14 | 1.40M |
+
+Encoders may read back across these boundaries; targets never do. Without `--test-end` the folds
+end at the panel's last session.
+
+**Training.**
+- The loss is the quantile loss over the 19 levels (section 1), with Adam at learning rate 1e-3
+  and batches of 512.
+- An epoch is 500 random batches: 256k samples, a fifth to a third of a fold's samples.
+- A fold trains for up to 15 epochs. It stops after 3 epochs without a better early-stop loss and
+  keeps the best checkpoint, `fold_<k>/best.ckpt`.
+- The 10-11 run stopped after 7, 8, 5 and 8 epochs.
+- All four folds take about 1.5 h on this Mac.
+
+**Outputs.**
+- The printed summary and `summary.json`: loss against the naive forecast, direction and
+  coverage, per fold and pooled.
+- `fold_<k>/test_predictions.parquet` and `calibration_*.csv`.
+- `tft-vwap-report` adds `report/`, and the dashboard reads all of it.
+- The grades are the table in section 1.
+
+```
+cd ml
+export PYTHONWARNINGS="ignore::UserWarning:sklearn.utils.validation"  # else 13 h of warning spam
+uv run tft-vwap --symbols 200 --max-epochs 2           # smoke test, minutes
+uv run tft-vwap --earnings pit --test-end 1663         # full run on production's folds, ~1.5 h
+uv run tft-vwap-report runs/<run_id>                   # grids, ladders, bias tables
+cd ../dashboard && uv run forecast-dash --runs ../ml/runs   # Compare runs tab
+```
+
+## 13. Results so far, and what they point to
+
+- **Production** is `20261005-025909Z-return-3712sym`: no earnings inputs, no series breaks.
+- **The 10-11 retrain** `20261011-173109Z-return-3785sym` added `--earnings pit` and series
+  breaks, on the same folds.
+
+The comparison below uses the same 863k forecasts for both, leaving out the 22 split symbols:
+
+| measure | production | 10-11 retrain | aim |
+| --- | --- | --- | --- |
+| pinball loss | reference | −2.7% (lower on 62% of test days) | lower |
+| skill vs the naive forecast | 0.239 | 0.260 | higher |
+| P5–P95 coverage | 86.7% | 88.1% | 90% |
+| P25–P75 coverage | 43.7% | 46.9% | 50% |
+| direction of `q50` | 57.8% | 58.8% | above 50% |
+| Earnings_Day pinball loss | reference | −3.0% | lower |
+| Earnings_Day P5–P95 coverage | 42% | 49% | 90% |
+
+- By fold the pinball change is −0.5%, −0.0%, −8.3% and −1.1%. Production's fold 2 was weak.
+- Including the 22 split symbols the gain is −4.0%, much of it from AKTS.
+- Details are in [docs/LEARNINGS.md](../docs/LEARNINGS.md) (`tag-ml-daily`).
+
+**What the numbers point to**, largest gap first:
+1. **Earnings days.** The 90% band holds on only 49% of results days. The model doesn't see:
+   - whether a release has already come out after the close
+   - how the stock traded after hours
+   - the surprise
+
+   And with `pit`, the Eve and Runup flags fall on the right session only about half the time.
+   Candidates are in section 15.
+2. **The bands are a little too narrow everywhere:** 88% coverage against 90%, and 47% against
+   50%. Fixes are better inputs, more training, or a calibration layer.
+3. **The skill score flatters.** The naive forecast has zero width, so beating it is easy. A
+   real baseline is needed before small gains can be judged.
+4. **Fold 0 trains on one year.** Five years of data would give every fold more history and
+   more market regimes.
+5. **The retrain changed two things at once,** so the earnings and series-break shares of the
+   gain are unknown. Change one thing per run.
+
+### Improving the testing
+
+| improvement | why | status |
+| --- | --- | --- |
+| A baseline: each stock's trailing 60-session quantiles of the move | the honest yardstick (MODEL-STRATEGY.md Q1, Q2) | not built |
+| Two seeds per configuration | The day-by-day comparison only measures noise across days. Re-training with another seed shows how much a gain varies from training luck alone. | not done |
+| One change per run (ablation) | to know what each input is worth | practice |
+| Test the latest sessions | `--test-end 1663` leaves 2026-08-17 … 10-06 untested. Move it once production's folds aren't needed. | |
+| Grades by segment: earnings days, ADRs, low-priced and thin stocks, volatile days | an input can help one segment and hurt another | partly in the dashboard (by industry, by day) |
+| A calibration layer | show raw and calibrated grades side by side | allowed since 2026-10-14, not built |
+| A paired run comparison with a per-day confidence interval | The 10-11 numbers came from a scratch script. The dashboard's Compare runs tab scores runs on the same rows but has no interval. | not built |
+
+## 14. Training parameters you can change
+
+All are `TrainConfig` fields in [config.py](tft_vwap/config.py), and each run saves them in
+`config.json`. Those with a flag can be set on the `tft-vwap` command line. For the rest, edit
+the default in config.py for now.
+
+| parameter | flag | default | what it does | ideas |
+| --- | --- | --- | --- | --- |
+| `target` | `--target` | `return` | the predicted series (section 1) | |
+| `normalizer` | `--normalizer` | `encoder` | scale each sample by its window, or one scale per stock (`group`) | `group` once there are 5 years |
+| `earnings` | `--earnings` | `exact` | the results-calendar inputs (section 6) | a full `exact` run against the `pit` run |
+| `series_breaks` | | on | section 1 | keep |
+| `use_sentiment` | `--use-sentiment` | off | section 7 | only once news is backfilled |
+| `symbols` | `--symbols` | all | a random subset, for quick trials | 200 for smoke tests |
+| `n_folds`, `fold_len`, `early_stop_len` | `--n-folds` | 4, 60, 20 | the walk-forward layout | more folds with 5 years |
+| `test_end` | `--test-end` | the panel's last session | pins the folds | 1663 to compare with production |
+| `only_folds` | `--folds` | all | run some folds only | `--folds 3` for a quicker check |
+| `encoder_length`, `min_encoder_length` | | 60, 20 | sessions of history per sample | 120, once there are 5 years |
+| `hidden_size` | `--hidden-size` | 32 | network width | 16 or 64 |
+| `attention_head_size`, `hidden_continuous_size` | | 2, 16 | attention heads; width of each real input's encoding | 4 heads |
+| `dropout` | | 0.1 | randomly switches off parts of the network while training, so it can't lean on any one path | 0.2 if test scores fall behind early-stop scores |
+| `learning_rate` | `--learning-rate` | 1e-3 | step size | 3e-4 with more epochs |
+| `gradient_clip_val` | | 0.1 | caps each update | |
+| `embedding_sizes` | | symbol 16, industry 4, exchange 2, issue type 1 | the learned numbers per category (MODEL-STRATEGY.md glossary) | symbol 8: less room to memorise one stock's past jumps (MODEL-STRATEGY.md Q6) |
+| `batch_size` | `--batch-size` | 512 | samples per step | |
+| `max_epochs`, `limit_train_batches`, `patience` | `--max-epochs`, `--limit-train-batches` | 15, 500, 3 | training length | `--limit-train-batches 1000`: today an epoch sees 18–34% of the samples, and runs stop after 5–8 epochs |
+| `quantiles` | | P5 … P95 | the output levels | keep: grading and the dashboard read them |
+| `moves`, `confidences`, `prob_buckets` | | | scoring only, never the model | |
+| `seed` | `--seed` | 42 | the subset choice and the training randomness | a second seed per comparison |
+
+## 15. Candidate inputs to add or change
+
+**The timing rule.** Every candidate must be known before the forecast is made. Today the
+forecast runs after midnight ET from the bars up to the previous close. Moving it to after the
+close or to before the open is open decision 1 in MODEL-STRATEGY.md. A value known only later,
+such as day t+1's pre-market, fits only with a later cutoff. Training must then use the same
+clock time.
+
+**Data to load first.**
+- This Mac's DuckDB `daily_bars` covers 2024-08-16 … 2026-10-06 and has no pre-market or
+  after-hours columns. The 5-year bars (first file 2021-10-21) and the extended-hours files are
+  on the NAS ([docs/STATUS.md](../docs/STATUS.md)).
+- Load them with `daily-sourcing.sh` and `MTAP_DAILY_INGEST_ONLY=1` (see
+  [docs/TODO.md](../docs/TODO.md)).
+- Then run, in order:
+  - `fetch-edgar`. The stored 8-Ks start 2023-07-13. By default it reaches back to 400 days
+    before the first bar. Without it, the 2021–2023 rows have no results dates and read as
+    Normal_Trading.
+  - `derive-features`
+  - `export-tft`
+
+  The panel grows about 2.5×.
+- **Survivorship.** Of the 2,923 tickers whose bars stopped before 2026-09, 2,557 have no issue
+  type in `symbols`.
+  - Most are likely delisted or renamed tickers that E*TRADE no longer returns. Some may never
+    have been common stocks.
+  - `export-tft` keeps only `CS`/`DR`, so it drops them, and the panel over-represents stocks
+    that survived.
+  - They need an issue type before a 5-year retrain, for example from Massive's ticker
+    reference.
+
+`Qn` below refers to the Q&A log in [MODEL-STRATEGY.md](MODEL-STRATEGY.md).
+
+**A. From data already collected**
+
+| candidate | from | known | role | why it may help |
+| --- | --- | --- | --- | --- |
+| A results release already out: an 8-K 2.02 accepted after day t's close and before the cutoff | `results_announcements` (acceptance time) | at the cutoff | known-future 0/1 for t+1 | tomorrow is certainly a results day. With the after-midnight cutoff this catches after-close releases; a pre-open cutoff also catches most pre-market ones. |
+| After-hours move `after_hours_pct_close`, and after-hours volume / `volume` | `daily_bars` (section 11) | 20:00 ET on t | observed real | the first reaction to after-close results and news |
+| Pre-market move of t+1, `pre_market_pct_prev_close` | `daily_bars` (section 11) | the morning of t+1 | known-future real | the strongest single clue to t+1's VWAP, but only for a pre-open forecast |
+| Market and sector moves: SPY, QQQ, IWM, the sector ETFs (XLK …), VXX | `daily_bars` (all present for the panel's 536 sessions) | close of t | observed reals, the same for every stock that day (the sector one by industry) | tells calm days from market-wide sell-offs |
+| Overnight gap: open(t) / close(t−1) − 1 | `daily_bars` | open of t | observed real | |
+| Trailing volatility: the spread of `vwap_pct_prev_day` and the mean `intraday_spread_pct` over 5 and 20 sessions | the panel | close of t | observed reals | Band width is the most predictable part (Q2). The TFT can work it out from the encoder, but explicit columns usually help, and LightGBM needs them. |
+| Dollar volume: median VWAP × volume over 20 sessions | the panel | close of t | observed real | small, thin stocks move more |
+| Other 8-K items (agreements, leadership changes, other events …) | `sec_edgar_filings`: 148,765 8-Ks since 2023-07 with their item codes, 45,443 of them 2.02 | the filing date; acceptance times are fetched for 2.02 only | observed 0/1 per item group | the event type matters more than sentiment (Q3) |
+| Calendar events: monthly options expiry (third Friday), quarterly index rebalances, the Russell reconstitution (June), half-day sessions | the exchange calendar | ahead | known-future reals | volume and closing-auction spikes move VWAP |
+
+**B. Needs new collection**
+
+| candidate | source | note |
+| --- | --- | --- |
+| News per stock and day: count, sentiment, and a coverage flag | Massive `/v2/reference/news` backfill (paid plan, since 2016), then the scrapers | "No news collected" must not look like "no news" (Q6). `--use-sentiment` exists, but the panel has 0 news rows. |
+| Earnings surprise, guidance, analyst rating changes | Benzinga through Massive, if the plan includes partner data | open decision 3 |
+| Short interest, options implied volatility | no source yet | implied volatility is the market's own forecast of the band width |
+
+**C. Changes to current inputs**
+
+| input | change | why |
+| --- | --- | --- |
+| earnings mode | a full `exact` run, compared with the 10-11 `pit` run | `exact` is the default but has never been trained on the full panel. Its live row uses the estimate (section 6), so compare the test grades with live grading. |
+| `industry_code` | the sector level, or a better choice than the lowest code | the lowest code of a many-to-many map is arbitrary for multi-industry stocks |
+| missing values become 0 | a 0/1 "known" flag wherever 0 is also a real value | e.g. `transactions_per_volume` when the trade count is missing; the news columns |
+| `volume_velocity` | add a 5-session version | catches volume spikes sooner |
+| history window | 2 years → 5 | more results days per stock (about 8 → 20) and several market regimes. Fix survivorship first (above). |
+
+## 16. How to add or change an input, and test it
+
+1. **Decide when it is known**, relative to the forecast cutoff (section 15). Day t's row may hold
+   only what is known before the forecast for t+1. A value describing t+1 itself goes in the
+   known-future group.
+2. **Get it into DuckDB.** Raw bars come in through `ingest-eod`. Derived columns are computed
+   in `derive-features` ([features.py](../python/sourcing_py/etrade/features.py)).
+3. **Export it.** Add it to the panel query in
+   [export.py](../python/sourcing_py/etrade/export.py). A known-future column also goes into the
+   calendar and into `next_session` in `panel.meta.json`. When the model starts requiring the
+   column, bump the panel's schema version and `SUPPORTED_SCHEMA_VERSIONS` in config.py.
+4. **Give it a role** in [config.py](tft_vwap/config.py): `KNOWN_REALS`, an observed group, or a
+   new optional group.
+   - An optional group gets a `TrainConfig` switch and a flag in train.py.
+   - Put the switch in `ADDED_INPUTS` with its "off" value, so runs saved before it still load
+     with their original inputs. `earnings` and `series_breaks` work this way.
+5. **Clean it** in `prepare()` ([dataset.py](tft_vwap/dataset.py)): fill missing values, clip,
+   and take the log of heavy tails. A new categorical also needs an `embedding_sizes` entry.
+6. **Check the forecast path.** `tft-vwap-predict` builds the decoder row in `future_rows()`,
+   which copies one calendar row to every stock. A known-future input that differs by stock has
+   to be filled per stock there.
+7. **Document it** in this file: the at-a-glance table and its section.
+8. **Test it** in [tests/test_features.py](tests/test_features.py). Check its values, and that
+   day t's value uses nothing from after the cutoff.
+9. **Smoke run:** `uv run tft-vwap --symbols 200 --max-epochs 2`. This takes minutes and catches
+   errors, not gains.
+10. **Full run on production's folds:** `uv run tft-vwap --earnings pit --test-end 1663` plus the
+    new flag, with `PYTHONWARNINGS` set as in section 12. It takes about 1.5 h. Change one
+    thing per run.
+11. **Compare** it with the run it should beat, in the dashboard's Compare runs tab on the same
+    rows. Check:
+    - the pinball loss
+    - the coverage of each band
+    - the earnings-day numbers
+    - each fold: a real gain holds in most folds, not just one
+12. **Record it** in [docs/LEARNINGS.md](../docs/LEARNINGS.md) under `tag-ml-daily`. Update
+    [MODEL-STRATEGY.md](MODEL-STRATEGY.md)'s Current position if the result changes the plan.

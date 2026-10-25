@@ -20,6 +20,7 @@ Every section carries a `Tags:` line. To find every section on a subject, search
 | `tag-vwap` | VWAP fields and rebuilt VWAPs |
 | `tag-open-close` | The open, the close, auctions and end-of-day values |
 | `tag-sourcing-host` | **Topic: Where the sourcing runs.** The iMac, the NAS containers, later a VM: what differs between hosts |
+| `tag-ml-daily` | **Topic: Daily model experiments.** Training runs of the daily model (`ml/tft_vwap`) compared on the same test days |
 
 ## Adding a learning
 
@@ -670,3 +671,73 @@ new container finds one. Then the production `daily` wrote 10-23 (12,557 rows; 1
 **Not covered** (no market): a full day's volume, a 09:00–16:21 ET massive-ws window, and the
 evening compact on real data. The Monday 10-26 checks in the runbook cover them.
 
+
+## Daily model experiments
+
+Tags: `tag-ml-daily`
+
+Training runs of the daily model (`ml/tft_vwap`) compared with each other. The setup, the
+parameters and the candidate inputs are in [ml/FEATURES.md](../ml/FEATURES.md), sections 12–16.
+This topic keeps what each comparison found.
+
+### 2026-10 pit earnings and series breaks vs production (test sessions 2025-09-02 to 2026-08-14)
+
+Tags: `tag-ml-daily`
+
+**The runs** (2026-10-11), on the panel to 2026-10-06 (schema 3, 3,763 stocks):
+- **Production** `20261005-025909Z-return-3712sym`: no earnings inputs, no series breaks.
+- **Retrain** `20261011-173109Z-return-3785sym`, from `uv run tft-vwap --earnings pit
+  --test-end 1663`.
+  - It has the same four folds as production (FEATURES.md section 12).
+  - Its 3,785 symbols are the 3,763 stocks plus 22 earlier segments (`SYMBOL~1`). For the
+    comparison these map back to the ticker.
+- The two runs are scored on the (stock, forecast day) rows both forecast.
+
+**Results.** These leave out the 22 split tickers, 863,201 rows:
+
+| measure | production | retrain |
+| --- | --- | --- |
+| pinball loss | reference | −2.74%. The 95% interval over test days excludes 0, and the retrain is lower on 62% of days. |
+| skill vs the naive forecast | 0.239 | 0.260 |
+| P5–P95 coverage (aim 90%) | 86.65% | 88.11% |
+| P25–P75 coverage (aim 50%) | 43.7% | 46.9% |
+| direction of `q50` | 57.8% | 58.8% |
+
+- **By fold:** −0.5%, −0.0%, −8.3% and −1.1%. Production's fold 2 was weak.
+- **By results window** (the forecast day's window):
+  - Earnings_Day, 12,726 rows: −3.0%, and P5–P95 coverage 42.3% → 49.3%.
+  - Earnings_Eve −2.3%; Post_Earnings_Reaction −3.5%.
+  - In fold 3, Earnings_Day is −6.6%, with coverage 46% → 61%.
+- **With the 22 split tickers included** the change is −4.0%, much of it from AKTS.
+
+**Examples by stock** (mean pinball over the shared rows, in moves):
+
+| stock | rows | production | retrain | change | why |
+| --- | --- | --- | --- | --- | --- |
+| AKTS | 130 | 0.5725 | 0.0106 | −98% | A missed reverse split: production's encoder read a fake 10x jump. |
+| BNY | 148 | 0.0170 | 0.0019 | −89% | A closed-end fund held the ticker before BNY Mellon. The breaks split it. |
+| IXHL | 240 | 0.0151 | 0.0153 | +1.7% | Not split. It has the largest move left, +529%. |
+| AAPL | 240 | 0.0041 | 0.0039 | −5.6% | |
+| NVDA | 240 | 0.0063 | 0.0060 | −4.3% | |
+
+**Examples on results days** (moves from the previous session's VWAP):
+
+| stock, forecast day | actual | production P5 … P95 | retrain P5 … P95 | |
+| --- | --- | --- | --- | --- |
+| MSFT 2026-07-30 | +13.0% | −4.1% … +2.0% | −8.5% … +7.5% | Both miss. The retrain is closer: pinball 0.066 → 0.060. |
+| NVDA 2026-05-21 | −1.1% | −2.4% … +4.5% | −7.9% … +8.5% | Both hold. The retrain's band is about twice as wide. |
+| ADBE 2026-06-12 | −7.6% | −5.3% … +4.5% | −9.3% … +9.7% | Only the retrain holds. |
+| AMZN 2026-07-31 | +12.3% | −4.0% … +1.6% | −5.5% … +2.4% | Both miss, leaning down. The retrain is slightly worse: 0.063 → 0.065. |
+
+**What it shows:**
+- The earnings inputs widen the band on results days, but not enough: 49% coverage against
+  90%. At the cutoff the model can't know which way the surprise goes, so a lean in the band
+  can turn out wrong, as with AMZN.
+- Series breaks remove fake jumps that ruined a few stocks' forecasts (AKTS, BNY).
+- The two changes went in together, so their separate shares are not measured.
+
+**To run it again:**
+- The dashboard's Compare runs tab gives the pooled metrics, with "Only rows present in every
+  chosen run" ticked.
+- The per-day interval, the split exclusion and the per-window numbers came from a scratch
+  script that is not in the repo (FEATURES.md section 13, "Improving the testing").

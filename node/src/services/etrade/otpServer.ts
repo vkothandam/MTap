@@ -8,7 +8,7 @@ import type { OtpCoordinator } from "./otp.js";
 // OtpCoordinator resolves the pending login in-process. No bus hop, no MBin.
 //
 // Deliberately tiny (no framework): one route, GET renders a form, POST submits
-// the code. It binds to OTP_HOST/OTP_PORT (see constants.ts / .env.example).
+// the code. It binds to OTP_BIND_HOST (default OTP_HOST) / OTP_PORT (see constants.ts / .env.example).
 
 const MAX_BODY_BYTES = 4 * 1024;
 
@@ -23,7 +23,7 @@ export class OtpServer {
   }
 
   /** Start listening. Idempotent — a second call while running resolves immediately. */
-  start(port: number = SERVER_CONFIG.PORT, host: string = SERVER_CONFIG.HOST): Promise<void> {
+  start(port: number = SERVER_CONFIG.PORT, host: string = SERVER_CONFIG.BIND_HOST): Promise<void> {
     if (this.server) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const server = createServer((req, res) => this.handle(req, res));

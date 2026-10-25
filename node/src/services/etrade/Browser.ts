@@ -26,7 +26,11 @@ export class Browser {
   page: Page | null = null;
 
   constructor() {
-    puppeteer.use(StealthPlugin());
+    const stealth = StealthPlugin();
+    // Headed, Chrome's own UA and client hints are already a real browser's; this evasion
+    // would replace them (on Linux with a Windows UA the rest of the browser contradicts).
+    if (!ENV.HEADLESS) stealth.enabledEvasions.delete("user-agent-override");
+    puppeteer.use(stealth);
   }
 
   /** Launch the browser and open the working page. Returns null if scraping is disabled. */
@@ -102,8 +106,12 @@ export class Browser {
     await this.page.setViewport({ width: 1280, height: 800 });
     // The real browser's UA (minus "Headless"), so it matches the version in the client
     // hints; a fixed UA string from another Chrome version is itself a bot signal.
-    const userAgent = (await this.browser!.userAgent()).replace("HeadlessChrome", "Chrome");
-    await this.page.setUserAgent(userAgent);
+    // Headed, the UA has no "Headless" and an override would only drop the client hints
+    // (navigator.userAgentData, Sec-CH-UA), so it is left alone.
+    const nativeUserAgent = await this.browser!.userAgent();
+    if (nativeUserAgent.includes("HeadlessChrome")) {
+      await this.page.setUserAgent(nativeUserAgent.replace("HeadlessChrome", "Chrome"));
+    }
     await this.page.setRequestInterception(true);
   }
 

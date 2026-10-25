@@ -76,12 +76,15 @@ export const PHONE_CONFIG = {
  * The OTP entry page is served by MTap itself (otpServer.ts). OTP_HOST is
  * embedded in the SMS link, so it must be reachable from the device that opens
  * it — use the machine's LAN IP (not 127.0.0.1) when reading it on a phone.
+ * OTP_BIND_HOST is the address the page listens on, OTP_HOST by default; in a
+ * container it is 0.0.0.0 (the container does not have the host's LAN IP).
  */
 const OTP_HOST = process.env.OTP_HOST ?? "127.0.0.1";
 const OTP_PORT = Number(process.env.OTP_PORT ?? 8787);
 
 export const SERVER_CONFIG = {
   HOST: OTP_HOST,
+  BIND_HOST: process.env.OTP_BIND_HOST || OTP_HOST,
   PORT: OTP_PORT,
   BASE_URL: `http://${OTP_HOST}:${OTP_PORT}`,
   OTP_PATH: "/auth/otp",

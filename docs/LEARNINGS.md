@@ -677,7 +677,7 @@ evening compact on real data. The Monday 10-26 checks in the runbook cover them.
 Tags: `tag-ml-daily`
 
 Training runs of the daily model (`ml/tft_vwap`) compared with each other. The setup, the
-parameters and the candidate inputs are in [ml/FEATURES.md](../ml/FEATURES.md), sections 12–16.
+parameters and the candidate inputs are in [ml/FEATURES.md](../ml/FEATURES.md), sections 12–17.
 This topic keeps what each comparison found.
 
 ### 2026-10 pit earnings and series breaks vs production (test sessions 2025-09-02 to 2026-08-14)
@@ -741,3 +741,37 @@ Tags: `tag-ml-daily`
   chosen run" ticked.
 - The per-day interval, the split exclusion and the per-window numbers came from a scratch
   script that is not in the repo (FEATURES.md section 13, "Improving the testing").
+
+### 2026-10 first full run, fold 0 calibration (test sessions 2025-09-02 to 11-24)
+
+Tags: `tag-ml-daily`
+
+Run `20261004-231546Z-return-3712sym` (2026-10-04), the first full-panel run, before the
+earnings inputs. Fold 0 has 213k test forecasts, graded with `tft-vwap-report`.
+- **Overall the probabilities are well calibrated:** calls made at a given probability come true
+  about that often.
+- **Downside calls at 70–80% are about 6 points overconfident.**
+- **Per-stock bias labels at 60 test days are about chance level:** 170 of 3,517 stocks are past
+  |z| > 2, close to the 5% expected from noise alone. One fold is too few days per stock to
+  call a stock biased.
+
+### 2026-10 live grades of production (forecasts for 2026-10-05 and 10-06)
+
+Tags: `tag-ml-daily`
+
+Production `20261005-025909Z-return-3712sym --fold 3`, 3,679 stocks each day, graded from
+`actuals.parquet` (moves vs the previous session's VWAP):
+
+| forecast day (from) | P10–P90 coverage (aim 80%) | above P90 / below P10 | `q50` direction right | bias (negative = pessimistic) | skill vs naive |
+| --- | --- | --- | --- | --- | --- |
+| 10-05 (10-02) | 85.1% | 10.0% / 4.9% | 58.9% | −0.023 | 24.7% |
+| 10-06 (10-05) | 85.6% | 9.7% / 4.7% | 52.6% | −0.054 | 21.1% |
+
+- The live bands were wider than needed (85% inside against 80%). In testing they were a little
+  narrow (production: 86.7% inside P5–P95 against 90%), so these two days were probably calmer
+  than the test blocks.
+- **The model leans pessimistic:** twice as many moves land above the band as below, and the
+  bias is negative both days.
+- Two days are not a sample: the next grades decide whether the lean is real.
+- No grades after 10-06: the panel on this Mac ends there, so the 10-07 forecast is not graded
+  yet.

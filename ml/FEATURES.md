@@ -9,6 +9,8 @@ in [tft_vwap/dataset.py](tft_vwap/dataset.py) applies the transforms listed here
   not used yet.
 - **Training and testing** (sections 12–16): how runs are trained and graded, the results so
   far, the parameters you can change, candidate inputs, and how to add one and test it.
+- **Current state** (section 17): the production run, the daily routine, the runs to keep, known
+  data issues and standing decisions.
 
 **Leakage rule:** every input on day t's row is known at the close of day t. The model forecasts
 day t+1, so the only inputs it has for t+1 itself are the calendar ones (known in advance).
@@ -211,6 +213,11 @@ move left is +529%. Runs saved before the setting existed load with it off.
 
 These are E*TRADE's filing dates, often days after the results release (section 6).
 
+**Stale since 2026-08-24.** E*TRADE's filings were last fetched then (no token since), so both
+flags are 0 on every session after it, including the live forecast rows. The test blocks end
+2026-08-14 and are unaffected. EDGAR (`sec_edgar_filings`) has the same forms up to 2026-10-09
+(section 15 C).
+
 ## 6. Observed reals: financial-results calendar (`--earnings exact|pit|off`, default `exact`)
 
 The windows are counted in sessions from a results announcement, t = 0:
@@ -381,6 +388,21 @@ uv run tft-vwap-report runs/<run_id>                   # grids, ladders, bias ta
 cd ../dashboard && uv run forecast-dash --runs ../ml/runs   # Compare runs tab
 ```
 
+**Pitfalls** found so far:
+- `sourcing-py etrade export-tft --help` has no help: it runs the export, without the inference
+  rows. Always pass `--include-inference`.
+- Without the `PYTHONWARNINGS` setting above, a full run takes 13 h, not 1.5 h. The warning
+  ("X does not have valid feature names") is harmless; it comes from pytorch-forecasting's
+  target-scale transform.
+- pytorch-forecasting scores the loss in target units, so a price target (`--target vwap`) needs
+  1/price loss weights, or dear stocks dominate.
+- A per-stock GroupNormalizer on the raw price loses badly to the naive forecast. The
+  EncoderNormalizer (the default) fixes it.
+- `model.predict()` changes the `trainer_kwargs` dict it is given. Pass a fresh one each call.
+- Evaluation sets need `longest_encoder()` (dataset.py), else each stock-day is scored once per
+  encoder length from 20 up.
+- "`VIRTUAL_ENV=.venv-test` does not match" from uv is harmless.
+
 ## 13. Results so far, and what they point to
 
 - **Production** is `20261005-025909Z-return-3712sym`: no earnings inputs, no series breaks.
@@ -522,6 +544,7 @@ clock time.
 | input | change | why |
 | --- | --- | --- |
 | earnings mode | a full `exact` run, compared with the 10-11 `pit` run | `exact` is the default but has never been trained on the full panel. Its live row uses the estimate (section 6), so compare the test grades with live grading. |
+| `is_10k`, `is_10q` | take the filing dates from EDGAR (`sec_edgar_filings`, current) instead of E*TRADE (stale since 2026-08-24, section 5) | the flags are 0 on every live row today |
 | `industry_code` | the sector level, or a better choice than the lowest code | the lowest code of a many-to-many map is arbitrary for multi-industry stocks |
 | missing values become 0 | a 0/1 "known" flag wherever 0 is also a real value | e.g. `transactions_per_volume` when the trade count is missing; the news columns |
 | `volume_velocity` | add a 5-session version | catches volume spikes sooner |
@@ -564,3 +587,60 @@ clock time.
     - each fold: a real gain holds in most folds, not just one
 12. **Record it** in [docs/LEARNINGS.md](../docs/LEARNINGS.md) under `tag-ml-daily`. Update
     [MODEL-STRATEGY.md](MODEL-STRATEGY.md)'s Current position if the result changes the plan.
+
+## 17. Current state (2026-10-25)
+
+**Production** is `runs/20261005-025909Z-return-3712sym --fold 3`. Switching to the 10-11 retrain
+(`runs/20261011-173109Z-return-3785sym --fold 3`) is the user's open decision. The latest live
+forecast is for 2026-10-07. This Mac's panel ends 2026-10-06, so nothing after that has been
+forecast or graded.
+
+**Daily routine.**
+- The NAS fetches the day's Massive bars at 06:40 ([docs/STATUS.md](../docs/STATUS.md)).
+- This Mac then loads them by hand, since nothing schedules it yet (docs/TODO.md):
+
+```
+scripts/schedule/daily-sourcing.sh --ingest-only   # ingest-eod, fetch-splits, fetch-edgar,
+                                                   # derive-features, export-tft --include-inference
+cd ml && uv run tft-vwap-predict runs/20261005-025909Z-return-3712sym --fold 3
+```
+
+`tft-vwap-predict` writes `forecast_<date>.*` and then grades every earlier forecast whose day is
+now in the panel, into the run's `actuals.parquet`. The dashboard's Forecast page reads both. The
+live grades so far are in [docs/LEARNINGS.md](../docs/LEARNINGS.md) (`tag-ml-daily`).
+
+**Runs in `ml/runs`:**
+
+| run | size | keep? |
+| --- | --- | --- |
+| `20261005-025909Z-return-3712sym` | 230M | yes: production, live forecasts and `actuals.parquet` |
+| `20261011-173109Z-return-3785sym` | 208M | yes: the candidate, and the intraday model reads its fold 1 (`daily_run` in [tft_intraday/config.py](tft_intraday/config.py)) |
+| `20261004-231546Z-return-3712sym` | 117M | the first full run (one `forecast_2026-08-17`); can go |
+| `20261004-*-200sym`, `20261005-025856Z-return-10sym` | 2–4M each | smoke tests; can go |
+| `pit-test1663.log` | 3M | the 10-11 run's log |
+| `intraday/` | 1.7G | the intraday model ([FEATURES-intraday.md](FEATURES-intraday.md)) |
+
+Re-check the intraday model whenever the daily model it reads changes (MODEL-STRATEGY.md Q5).
+Backups from before the EDGAR change: `state/etrade/fundamentals.pre-edgar.duckdb` and
+`out/tft/panel.schema2.*`.
+
+**Known data issues:**
+- PSKY's 2026-10-05 bar is about twice its history (a 2-for-1 split Massive applied on 10-05):
+  a fake +107% move. Flagged, not patched.
+- XRPN's VWAP goes 20.6 → 39.5 → 19.6 with no split: a Massive glitch.
+- About 12 splits Massive never adjusted (BVC, CLBK …). **Standing decision: ignore them.** A
+  "raw jump = split ratio" detector was tried and reverted; don't re-add it. Series breaks
+  (section 1) are a different rule: a 10x move or a 20-session gap.
+- `is_10k` / `is_10q` stale since 2026-08-24 (section 5).
+- 18% of the panel stocks have no results dates (section 6).
+- Survivorship: delisted tickers without an issue type are dropped (section 15).
+
+**Standing decisions:**
+- Live forecasts are for the next session only. No wider `--asof` backfill.
+- The goal is the percentile distribution of the move, graded per stock, to show each stock's
+  bias (for example "AAPL's 70% call for +2% comes true 55% of the time").
+- Retraining and recalibration are allowed (since 2026-10-14). The aim is 5 years of bars plus
+  news, and the model choice (TFT, LightGBM, Chronos-2) is open, compared through the run-file
+  contract ([dashboard/README.md](../dashboard/README.md)).
+- `ml/` never imports `sourcing_py` or reads DuckDB: `panel.parquet` and its meta are the only
+  input. Every dashboard chart and table needs its ⓘ help text (a test checks).

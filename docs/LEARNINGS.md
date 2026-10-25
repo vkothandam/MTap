@@ -19,6 +19,7 @@ Every section carries a `Tags:` line. To find every section on a subject, search
 | `tag-volume` | Running and daily volume |
 | `tag-vwap` | VWAP fields and rebuilt VWAPs |
 | `tag-open-close` | The open, the close, auctions and end-of-day values |
+| `tag-sourcing-host` | **Topic: Where the sourcing runs.** The iMac, the NAS containers, later a VM: what differs between hosts |
 
 ## Adding a learning
 
@@ -533,3 +534,139 @@ MTAP_DATA_ROOT=/Volumes/Backups/MTap-Data uv run python scripts/check_feed_quali
   | `daily.csv` | Open, close, end of day |
   | `massive_semantics.csv`, `massive_last_bar.csv` | VWAP field checks |
   | `coverage_gaps.csv` | Only written when there are gaps |
+
+## Where the sourcing runs
+
+Tags: `tag-sourcing-host`
+
+The iMac ran all the sourcing until 2026-10-25; the NAS containers take over from
+2026-10-26 ([nas-migration.md](nas-migration.md)). These sections record what differs
+when the same code runs on another host.
+
+### 2026-10 NAS trial (2026-10-24, a Saturday)
+
+Tags: `tag-sourcing-host`
+
+Run with the runbook's trial steps ([deploy/synology/README.md](../deploy/synology/README.md))
+into `MTap-Trial`, with only the `etrade` role (no market: login, polling and the file flow,
+not market data).
+
+**E*TRADE login: refused, then passed.**
+
+- **Refused.** E*TRADE runs Akamai Bot Manager (the `_abck` and `bm_sz` cookies). With
+  puppeteer's Chrome for Testing 127, headed on Xvfb, about ten logins stayed on the login
+  page with "We're unable to process your request". A login typed by hand in the same
+  noVNC window failed too. A normal browser on the same home IP logged in, so the block was
+  on the browser, not the IP or the account.
+- **What a page could read** (a probe through `Browser.ts`, against example.com):
+
+  | | iMac (headless, macOS, CfT 127) | NAS before (headed, Linux, CfT 127) | NAS after (headed, Linux, Chrome 155) |
+  | --- | --- | --- | --- |
+  | `navigator.userAgentData` brands | `[]` | `[]` | Google Chrome 155, Chromium 155, platform Linux |
+  | window outer vs inner (1280×800) | 1200×955 | 945×1060 (outer smaller than inner) | 1280×885 |
+  | WebGL | none | none | none |
+  | stealth `user-agent-override` | on | overridden by `page.setUserAgent` | off |
+
+- **Why the hints were empty.** `page.setUserAgent(ua)` without metadata drops the client
+  hints. Skipping only that call was worse: stealth's `user-agent-override` then claimed
+  Windows (`Win32`, a Windows UA) on a Linux browser.
+- **The fix**, for headed runs only:
+  - no UA override, and stealth's `user-agent-override` evasion off;
+  - Google Chrome 155 (`PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome`);
+  - a fresh profile (the flagged one is `MTap-State/etrade/chrome-profile.cft127-2026-10-24`).
+
+  The next login reached "confirm your identity" at once. After the texted code was entered
+  in noVNC, it polled.
+- **The iMac** is unchanged: headless, with the override. It logs in with the same empty
+  hints, so its aged profile (and macOS) probably carry it.
+
+**The E*TRADE file flow matches the store's counts.** Two runs (20:41 and 20:50 PT) wrote two
+segments, of 60,578 and 84,266 rows. `intraday summary` read 144,844 rows from the two
+uploaded files: 135,138 Experimental (606 symbols) and 9,706 MidCap (422). The restart at
+20:50 needed no login: the profile's session was still valid.
+
+**Massive daily files match MTap-Data apart from the fetch time.**
+`python3 python/scripts/compare_daily_roots.py /Volumes/Backups/MTap-Trial /Volumes/Backups/MTap-Data`
+compares the NAS's fetches (made 2026-10-25 03:56Z) with the iMac's (each the next
+morning, or the 10-18 backfill), by ticker and field.
+
+| file | tickers in both | differ | what differs |
+| --- | --- | --- | --- |
+| daily_summary 10-12, 10-13, 10-16 | 12,584–12,630 | 14–17 | all OHLCV fields, by a whole factor: reverse splits |
+| daily_summary 10-14 to 10-22 | 12,584–12,670 | 1,068–2,901 | mostly `volume` and `transactions`, by a little: late corrections; plus the split rows |
+| extended_hours 10-12 to 10-16 | 5,161–5,204 | 11–54 | split rows; 105–115 tickers only in MTap-Data (the backfill used the full universe, delisted stocks included) |
+| extended_hours 10-19 to 10-22 | 5,158–5,198 | 0–70 | single ticks and minute counts; QETA only on the NAS |
+
+**Examples:**
+
+| ticker | file | iMac's value | NAS's value | why |
+| --- | --- | --- | --- | --- |
+| SKIN | daily_summary 10-12 close | 0.525 | 10.5 | ×20: a reverse split after the iMac's fetch; Massive returns adjusted bars |
+| AMTD | daily_summary 10-12 close | 0.4173 | 25.038 | ×60, the same |
+| MBRX | extended_hours 10-12 pre-market price | 0.4498 | 8.996 | ×20, the same |
+| AMT | daily_summary 10-14 volume / trades | 3,118,771.32 / 53,672 | 3,118,770.59 / 53,671 | a late correction |
+| SLSN | daily_summary 10-20 volume / low | 18,407.44 / 0.869 | 18,795.44 / 0.851 | late prints added after the iMac's 06:40 fetch |
+| INTU | extended_hours 10-19 after-hours volume / bars | 265,510.66 / 432 | 260,610.66 / 431 | a later revision of the minute bars |
+
+The test tickers MTEST, MTEST.A, NTEST and NTEST.H appear only in the NAS's daily files for
+10-14 to 10-22. Massive listed them after the iMac's fetch.
+
+So the host makes no difference; the fetch time does. A rebuild of history from a later
+fetch carries the split adjustments (`split_factor` in `daily_bars` handles that) and
+Massive's corrections.
+
+**Massive WebSocket from the NAS.** `ws-test` (120 s) authenticated and subscribed to `A.*`.
+Massive restarted mid-test: a 1012 close, then two HTTP 503s. The client reconnected after
+1, 2 and 4 s and re-subscribed. No bars, as expected on a Saturday.
+
+**Login with the password only (step 9, 21:20–21:31).**
+
+- **First `start`:** it reused the saved session; the 21:20 browser went straight to
+  polling.
+- **Log-off by hand:** after a log-off in the window, the watchlist calls returned 401. The
+  collector's recovery navigation was aborted (`ERR_ABORTED`), and it logged `CRITICAL:
+  Session recovery FAILED`.
+  - Then it stopped polling and stayed up, idle (`EtradeService.handleSessionExpired` →
+    `stopMonitoring`). So supervisord (and launchd on the iMac) did not restart it.
+- **After `stop` and `start`:** `Login attempt 1 of 3` → `Login successful` → `No phone
+  verification needed`, then polling. The Chrome profile keeps the device trust across a
+  log-off, so a weekday start should need no code.
+
+**Sunday 10-25: logins after the containers ran overnight.**
+
+- **06:02, 70 failed logins:** the trial containers were still up at the 22:10 power-off.
+  `restart: unless-stopped` brought them back at boot, and every login stayed on the login
+  page.
+  - **Cause:** Chrome had saved the login typed by hand in the window on 10-24. Chrome
+    filled it, and puppeteer's typing appended to it, so the ID and password were doubled.
+  - **A red herring:** the quotes in `~/.mtap.env`. Compose (v2.20) strips matching quotes
+    from `env_file` values; the selftest showed the username with no quotes.
+  - **A filled password reads as empty** to the page until the first keystroke commits it.
+    So clearing the field before typing missed it: the field held 20 characters after 10
+    were typed. `Authentication.typeInto` now checks the length, clears the value that is
+    now visible and types once more; it never clicks "Log on" with the wrong length.
+  - **What fixed it today:** deleting the saved password in the window
+    (`chrome://password-manager`) and turning off "Offer to save passwords". The next
+    attempt (11:42) logged in with no code.
+- **A log-off gave a refresh loop:** after a log-off the session cookies stay, so the
+  navigation step of the recovery declared success on the login page and repeated.
+  - **Fix:** the step now needs a page that is not the login page, and it runs at most
+    once a minute. If the recovery fails, the collector exits and the restart loop starts
+    a fresh one.
+- **"Profile in use on another computer":** Chrome's `SingletonLock` names the host and
+  pid. A rebuilt container has a new hostname, so the old container's lock blocked the
+  profile.
+  - A plain `stop` and `start` reuses the container (the same hostname), and Chrome clears
+    its own stale lock. Only `build` or a config change makes a new container.
+  - **Fix:** `run-etrade.sh` removes the lock at container start when it names another
+    host.
+
+**The cutover build (11:50–12:30).** On the trial, a new container logged
+`removing a stale Chrome profile lock from host 43e4feedf158`, then reused the session with
+no login. Chrome does not remove its lock when the container is stopped (SIGTERM), so every
+new container finds one. Then the production `daily` wrote 10-23 (12,557 rows; 10-22 had
+12,605).
+
+**Not covered** (no market): a full day's volume, a 09:00–16:21 ET massive-ws window, and the
+evening compact on real data. The Monday 10-26 checks in the runbook cover them.
+

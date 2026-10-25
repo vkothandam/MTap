@@ -1,6 +1,30 @@
 # TODO
 
-Running list of follow-ups that were decided but deferred. Newest first; tick and date an item when done.
+Running list of follow-ups that were decided but deferred. Newest first; tick and date an item when done. What runs today, and where: [STATUS.md](STATUS.md).
+
+- [ ] **A second copy of MTap-Data (contingency, low priority).** Added 2026-10-25.
+  - **Why:** the NAS holds the only copy of the data, and since the cutover it is also
+    what writes to it.
+  - **Why not done:** volume2 is ext4, and DSM's Snapshot Replication needs Btrfs.
+  - **Benefits of a copy:**
+    - a bad job (or a bug) that overwrites or deletes files can be undone;
+    - a mistaken delete by hand (in Finder over SMB, or over ssh) can be undone;
+    - ransomware on a Mac that mounts the share cannot reach a read-only copy;
+    - a failed disk or volume does not lose the 5-year history (refetching it costs hours
+      of Massive REST), and lost E*TRADE watchlist and live massive-ws days cannot be
+      refetched at all.
+  - **Options, cheapest first:**
+    - Hyper Backup (works on ext4), daily and versioned, to a USB disk or another volume;
+      or to a cloud target (C2, B2, S3) for an off-site copy;
+    - a Btrfs volume for MTap-Data, then snapshots (needs a volume migration).
+
+- [x] **E*TRADE collector: exit when the session recovery fails.** Added 2026-10-24
+  (trial step 9, LEARNINGS.md `tag-sourcing-host`). Done 2026-10-25:
+  `handleSessionExpired` exits 1 after `CRITICAL: Session recovery FAILED`, and the restart
+  loop (`run-etrade.sh` on the NAS, `mtap-schedule.sh supervise` on the iMac) starts a fresh
+  collector with backoff.
+
+- [ ] **Move the sourcing to the NAS.** Added 2026-10-24. Trial 10-24/25, cutover Sunday 10-25, live from the open on 10-26. Design: [nas-migration.md](nas-migration.md); runbook: [deploy/synology/README.md](../deploy/synology/README.md). After a stable week, decide whether the iMac target (`scripts/schedule`) stays as the fallback.
 
 - [ ] **1-second history: after the one-month measurement.** Added 2026-10-19. `nas/massive1s` fetches Massive REST 1-second bars on the NAS (nas/README.md).
   - Phase 0: `./nas/deploy.sh 2026-09-01 2026-09-30`, Run on the NAS; report bars, calls, time, GB, CPU/RAM, B/bar; DuckDB size comparison; REST vs WS on 14–16 Oct (prices, `v` vs `v`/`dv`); then choose the storage.

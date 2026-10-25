@@ -1,5 +1,8 @@
 # MTap — Sourcing Module
 
+**Start at [docs/STATUS.md](docs/STATUS.md):** what runs where and when, the data paths,
+where the secrets live, the external limits and the standing rules. Keep it current.
+
 A polyglot sourcing module. Each **source** consumes data from an API or a scraped
 web page, extracts fields, and emits **parquet** or **jsonl**. Sources are written in
 either **Python** or **Node.js**, chosen per-source based on the strongest tool for
@@ -35,7 +38,8 @@ python/           Python sources + shared common lib (uv)
 node/             Node.js sources + shared common lib (TypeScript)
 shared/config/    source registry, credential layout (no secrets)
 scripts/          new-Mac setup, LaunchAgents + wake/sleep schedule, NAS mount (scripts/README.md)
-docs/             generated reference — see database-schema.md (DuckDB ER diagrams)
+deploy/           container target (any Docker host) + the Synology NAS wrapper and runbook
+docs/             STATUS.md (living reference), LEARNINGS.md, TODO.md, nas-migration.md, database-schema.md
 ```
 
 The DuckDB stores (E*TRADE fundamentals + news) are documented as ER diagrams in

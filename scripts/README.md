@@ -1,5 +1,7 @@
 # scripts/: setup, schedule and storage (sourcing only)
 
+`schedule/` and `storage/` are the macOS (iMac) target: launchd, pmset and the SMB mount. The NAS and any other Docker host use [deploy/](../deploy/container/README.md) instead; see [docs/nas-migration.md](../docs/nas-migration.md).
+
 | script | what it does |
 | --- | --- |
 | `setup/bootstrap.sh` | new checkout: checks tools, `uv sync`, `npm ci`, puppeteer Chrome, creates `.env` / `settings.toml` from the examples, mounts the NAS, `storage init` |

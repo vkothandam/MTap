@@ -53,6 +53,8 @@ export class EtradeService extends Service {
 
   // Alternate page for navigation-based refresh (extends the session better than a reload).
   static POSITIONS_PAGE_URL = "https://us.etrade.com/etx/pxy/portfolios/positions?rta=true";
+  // A navigation refresh this soon after the last one that "worked" means it did not hold.
+  static NAVIGATION_RECOVERY_GAP_MS = 60_000;
 
   private requestHeaders: Record<string, string> = {};
   private responseHeaders: Record<string, string> = {};
@@ -84,6 +86,7 @@ export class EtradeService extends Service {
   private refreshCount = 0;
   private isRefreshInProgress = false;
   private isRefreshingSession = false;
+  private lastNavigationRecoveryAt = 0;
   private loginTimestamp: number | null = null;
 
   // Watchlist poll mutex — only one watchlist is polled at a time.
@@ -657,7 +660,7 @@ export class EtradeService extends Service {
 
   /**
    * Recover from a SESSION_EXPIRED event: reinitialize the browser if it crashed,
-   * try a cookie restore, then a navigation refresh, then a full re-login.
+   * try a cookie restore, then a navigation refresh, then a full re-login; exit if all fail.
    */
   private async handleSessionExpired(eventData: SessionExpiredEvent): Promise<void> {
     if (this.isRefreshingSession) {
@@ -722,22 +725,33 @@ export class EtradeService extends Service {
         this.sessionLogger.log("Proceeding to re-authentication...");
       }
 
-      // For non-crash expiry, try a navigation-based refresh before a full re-login.
+      // For non-crash expiry, try a navigation-based refresh before a full re-login, unless
+      // one "worked" within the last minute and the polls still fail: then re-login.
       const browserWasClosed = eventData.reason === "BROWSER_CLOSED";
+      const recentNavigation = Date.now() - this.lastNavigationRecoveryAt < EtradeService.NAVIGATION_RECOVERY_GAP_MS;
       let hasValidSession = false;
 
-      if (!browserWasClosed) {
+      if (!browserWasClosed && !recentNavigation) {
         this.sessionLogger.log("Step 1: Attempting navigation-based refresh...");
         this.isAutomatedNavigation = true;
         await this.browserGuard.goto(EtradeService.POSITIONS_PAGE_URL, { waitUntil: "networkidle2" });
         await this.browserGuard.goto(URLS.WATCHLIST_PAGE, { waitUntil: "networkidle2" });
         this.isAutomatedNavigation = false;
 
+        // After a log-off the session cookies are still there, so only a page that is not
+        // the login page shows the session is back.
+        const finalUrl = this.browserGuard.url();
+        const onLoginPage = finalUrl.includes("login") || finalUrl.includes("authenticate");
         this.cookies = await this.browserGuard.cookies();
-        hasValidSession = this.cookies.some((c) => c.name === "SMSESSION" || c.name === "ETSESSION");
+        hasValidSession =
+          !onLoginPage && this.cookies.some((c) => c.name === "SMSESSION" || c.name === "ETSESSION");
+        if (onLoginPage) this.sessionLogger.log(`Navigation refresh landed on ${finalUrl}`);
+      } else if (recentNavigation) {
+        this.sessionLogger.log("Step 1 skipped: a navigation refresh under a minute ago did not hold");
       }
 
       if (hasValidSession) {
+        this.lastNavigationRecoveryAt = Date.now();
         this.sessionLogger.log("Navigation refresh SUCCESSFUL — session restored");
         const extracted = CookieUtils.getCookies();
         if (this.cookies && Object.keys(extracted).length > 0) {
@@ -780,8 +794,11 @@ export class EtradeService extends Service {
       }
     } catch (error) {
       this.sessionLogger.logError("CRITICAL: Session recovery FAILED", error as Error);
-      this.sessionLogger.log("Stopping monitoring due to unrecoverable session failure");
-      this.stopMonitoring();
+      // Exit rather than stay up idle: the restart loop (run-etrade.sh in the container,
+      // mtap-schedule.sh supervise on the Mac) starts a fresh collector, with backoff.
+      this.sessionLogger.log("Exiting so the restart loop starts a fresh collector");
+      await this.stop().catch(() => {});
+      process.exit(1);
     } finally {
       this.isRefreshingSession = false;
       this.isRefreshInProgress = false;

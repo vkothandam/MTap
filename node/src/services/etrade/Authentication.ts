@@ -88,8 +88,8 @@ export class Authentication {
         await this.sleep(2000);
         await this.guard.waitForSelector("#USER", { timeout: 30000 });
 
-        await this.guard.type("#USER", username, { delay: 100 });
-        await this.guard.type("#password", password, { delay: 100 });
+        await this.typeInto("#USER", username);
+        await this.typeInto("#password", password);
 
         // Click first, then wait for navigation separately (Promise.all can detach the
         // frame headless). The step-up page may not navigate at all, so a timeout here is
@@ -128,6 +128,32 @@ export class Authentication {
       }
     }
     return false;
+  }
+
+  /**
+   * Type into an input after clearing it. Headed, Chrome fills a login it has saved (one
+   * typed by hand in the window), and typing appends to it: the ID and password doubled.
+   * A filled password reads as empty to the page until the first keystroke commits it, so
+   * the first clear can miss it; then the field is cleared and typed once more.
+   */
+  private async typeInto(selector: string, text: string): Promise<void> {
+    let length = -1;
+    for (let round = 1; round <= 2; round++) {
+      await this.guard.evaluate((sel: string) => {
+        const input = document.querySelector(sel) as HTMLInputElement | null;
+        if (!input) return;
+        input.value = "";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }, selector);
+      await this.guard.type(selector, text, { delay: 100 });
+      length = await this.guard.evaluate(
+        (sel: string) => (document.querySelector(sel) as HTMLInputElement | null)?.value.length ?? -1,
+        selector,
+      );
+      if (length === text.length) return;
+      console.log(`[Auth] ${selector} held ${length} characters after typing ${text.length} (a saved login); typing again`);
+    }
+    throw new Error(`${selector} holds ${length} characters after typing ${text.length}`);
   }
 
   /** Returns true if the caller should retry the login attempt. */

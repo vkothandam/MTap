@@ -72,7 +72,11 @@ The Mac never opens `MTap-State` over SMB, and no DuckDB is used here.
    - **Alerts by email:** on `mtap-queue`, `mtap-start`, `mtap-daily` and `mtap-evening`,
      Settings tab: tick "Send run details by email" (your address) and "Send run details
      only when the script terminates abnormally". This needs Control Panel > Notification >
-     Email set up (it is: Gmail).
+     Email set up (Gmail) **and enabled**. On 2026-10-25 it was set up but not enabled, so
+     the first alert sent nothing; "Send a test email" stays greyed out until it is enabled
+     and applied.
+   - **Task output (optional):** Task Scheduler > Settings > save output results to a
+     folder, so Action > View Result shows each run's output.
      - A failed job mails its `jobs.log` tail.
      - The queue's `watch` mails once when a heartbeat is over 10 min old in market hours,
        and once when all are fresh again. A login waiting for a code shows up this way.

@@ -13,7 +13,7 @@ from tft_vwap.config import (
 )
 
 SCHEMA4_COLUMNS = [*MARKET_REALS, *MACRO_REALS, *SESSION_SHAPE_REALS, *AFTER_HOURS_REALS,
-                   *PREMARKET_REALS]
+                   *PREMARKET_REALS, "vol_10d_mean"]
 
 
 def synthetic_panel(n_symbols=6, n_days=150, start=1000, seed=0, gap_symbol="S1", gap_day=1050):
@@ -84,6 +84,7 @@ def add_schema4(df, rng):
     df["ah_vwap_pct_rth_vwap"] = np.where(df["ah_known"] == 1, rng.normal(0, 0.005, n), np.nan)
     df["ah_vol_pct_10d"] = np.where(df["ah_known"] == 1, rng.uniform(0, 3, n), np.nan)
     df["close_pct_rth_vwap"] = np.where(df["ah_known"] == 1, rng.normal(0, 0.004, n), np.nan)
+    df["vol_10d_mean"] = rng.uniform(1e5, 1e6, n)  # not a model input (only the export uses it)
     df["pm_px_known"] = (rng.random(n) < 0.8).astype(float)
     df["pm_full_known"] = df["pm_px_known"] * (rng.random(n) < 0.8)  # full implies prices
     for c in ("pm_last_pct_prev_vwap", "open_pct_prev_vwap"):
@@ -104,7 +105,7 @@ def make_next(panel_df, export_id="exp-1"):
                         "pm_vwap_pct_prev_vwap": rng.normal(0, 0.01, len(syms)),
                         "pm_vol_pct_10d": rng.uniform(0, 4, len(syms)),
                         "pm_range_pct": rng.uniform(0, 0.05, len(syms)),
-                        "pm_full_known": 1.0, "export_id": export_id})
+                        "pm_full_known": 1.0, "vol_10d_mean": np.nan, "export_id": export_id})
     return nxt.iloc[:-1]  # the last symbol has no pre-market row: it gets a blank one
 
 

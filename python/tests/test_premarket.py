@@ -170,3 +170,18 @@ def test_xids_file(env, tmp_path):
     f.write_text("AAA,11\nBBB,22\nbad,x\n")
     assert pm.read_xids_file(f) == {"AAA": 11, "BBB": 22}
     assert pm.load_universe(["BBB", "ZZZ"], f) == {"BBB": 22}
+
+
+def test_delayed_feed_before_cutoff_is_incomplete():
+    bars = [pm.Bar(_ny(5, 0), 11, 9, 10, 100)]
+    early = [pm._record("AAA", 1, D, "09:25", bars, [], "massive", NOW)]
+    pm.mark_complete(early, D, "09:25", _ny(9, 30), 15)  # Massive at 09:30 reaches only 09:15
+    assert early[0]["complete"] is False and "_newest" not in early[0]
+    late = [pm._record("AAA", 1, D, "09:25", bars, [], "massive", NOW)]
+    pm.mark_complete(late, D, "09:25", _ny(9, 41), 15)
+    assert late[0]["complete"] is True
+    # E*TRADE: judged by the newest bar in the responses (a delayed token stops short)
+    et = [pm._record(s, 1, D, "09:25", [pm.Bar(_ny(9, 12), 1, 1, 1, 1)], [], "etrade_chartiq", NOW)
+          for s in ("A", "B", "C")]
+    until = pm.mark_complete(et, D, "09:25", _ny(9, 28), 15)
+    assert not any(r["complete"] for r in et) and until["etrade_chartiq"].startswith("2026-10-27T13:12")

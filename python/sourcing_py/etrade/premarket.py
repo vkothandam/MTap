@@ -21,6 +21,11 @@ The job only READS the bearer token the collector mirrors to state/etrade/bearer
 session.json). It never logs in. At most 4 calls run at once. The first 401/403/429 stops the
 E*TRADE part of the run (no retry); with --source auto the remaining symbols are then fetched
 from Massive minute aggregates (same definitions, 15 min delayed feed).
+
+Each record carries `data_until` and `complete` (data_until >= cutoff). A delayed feed read
+before cutoff + delay (Massive, or a delayed E*TRADE token) gives complete = false; export-next
+then leaves pm_known = 0 for it rather than passing a partial window as the full pre-market.
+Re-run with --source massive after cutoff + feed_delay_min to fill those.
 """
 
 from __future__ import annotations
@@ -254,13 +259,36 @@ def massive_symbol(client: httpx.Client, cfg: dict, symbol: str, d: date) -> tup
 def _record(symbol: str, xid: int | None, d: date, cutoff: str, minute: list[Bar], day: list[Bar],
             source: str, fetched_at: datetime) -> dict:
     st = premarket_stats(minute, d, cutoff)
+    newest = max((b.dt for b in minute), default=None)
     return {
         "symbol": symbol, "xid": xid, "date": d.isoformat(), "cutoff": cutoff,
         "pm_tpvwap": st["pm_tpvwap"], "pm_volume": st["pm_volume"],
         "vol_10d_mean_source": mean_volume_before(day, d), "n_bars": st["n_bars"],
         "last_bar_dt": st["last_bar_dt"].strftime("%Y-%m-%dT%H:%M:%SZ") if st["last_bar_dt"] else None,
         "source": source, "fetched_at": fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "_newest": newest,  # newest bar of the whole response; dropped before writing
     }
+
+
+def mark_complete(records: list[dict], d: date, cutoff: str, now: datetime, feed_delay_min: int) -> dict:
+    """Set `data_until` / `complete` on every record, per source. A delayed feed run before
+    cutoff + delay holds only part of the window, which must not pass as the full pre-market.
+    E*TRADE: data_until = the median newest bar over the symbols (live token = about now,
+    delayed token = now - 15 min). Massive: now - feed_delay_min. complete = data_until >= cutoff."""
+    _, hi = window(d, cutoff)
+    until: dict[str, datetime | None] = {}
+    for src in {r["source"] for r in records}:
+        if src == "massive":
+            until[src] = now - timedelta(minutes=feed_delay_min)
+        else:
+            newest = sorted(r["_newest"] for r in records if r["source"] == src and r["_newest"])
+            until[src] = newest[len(newest) // 2] if newest else None
+    for r in records:
+        r.pop("_newest")
+        u = until[r["source"]]
+        r["data_until"] = u.strftime("%Y-%m-%dT%H:%M:%SZ") if u else None
+        r["complete"] = bool(u and u >= hi)
+    return {s: (u.strftime("%Y-%m-%dT%H:%M:%SZ") if u else None) for s, u in until.items()}
 
 
 def output_path(d: date) -> Path:
@@ -344,6 +372,7 @@ def run_premarket(d: date, universe: dict[str, int], *, source: str = "auto", cu
                     errors[sym] = err
 
     out = list(records.values())
+    data_until = mark_complete(out, d, cutoff, now, pcfg["feed_delay_min"])
     if out:
         schema.validate_records(out, schema.load_schema(config.repo_root() / "schemas" / "etrade_premarket.schema.json"))
     path = write_records(out, d) if out else None
@@ -354,6 +383,7 @@ def run_premarket(d: date, universe: dict[str, int], *, source: str = "auto", cu
         "date": d.isoformat(), "cutoff": cutoff, "symbols": len(universe), "written": len(out),
         "by_source": {s: sum(1 for r in out if r["source"] == s) for s in {r["source"] for r in out}},
         "with_bars": sum(1 for r in out if r["n_bars"]), "errors": len(errors),
+        "data_until": data_until, "complete": sum(1 for r in out if r["complete"]),
         "auth_error": auth_error, "fallback_used": use_massive and auth_error is not None,
         "latency_s": ({"calls": len(lat), "mean": round(mean(lat), 3), "p95": round(lat[int(0.95 * (len(lat) - 1))], 3),
                        "max": round(lat[-1], 3)} if lat else None),

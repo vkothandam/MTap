@@ -140,9 +140,13 @@ workers = 4
 
 [premarket]
 # Live pre-market (sourcing-py etrade premarket, NAS job `premarket`, 06:28 PT = 09:28 ET).
-# Typical-price VWAP and volume of the bars in [04:00, cutoff) ET. The cutoff is recorded
-# in the panel meta; predict refuses a mismatch. Env PREMARKET_CUTOFF.
-cutoff = "09:25"
+# Pre-market inputs (last trade, VWAP, volume, range) come from the bars in [04:00, cutoff) ET.
+# The cutoff is recorded in the panel meta; predict refuses a mismatch. Env PREMARKET_CUTOFF.
+cutoff = "09:30"
+# The liquid universe (etrade universe, written by the night job): 20-session mean dollar
+# volume and last close minimums.
+min_dollar_volume = 5000000
+min_price = 3.0
 # The Massive fallback feed is this many minutes behind (the forecast runs at cutoff + delay).
 feed_delay_min = 15
 # The bearer token the NAS collector mirrors (Authentication.ts); a path under state/ resolves

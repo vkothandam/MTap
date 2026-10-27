@@ -84,8 +84,8 @@ def _tp(bar: dict) -> float | None:
 class DaySummary:
     """Accumulates one ticker-day from bars in time order."""
 
-    __slots__ = ("bars", "cut", "post_last", "post_v", "post_vwv", "pre_first", "pre_last",
-                 "pre_v", "reg_v", "reg_vwv")
+    __slots__ = ("bars", "cut", "extreme", "last", "post_last", "post_v", "post_vwv", "pre_first",
+                 "pre_last", "pre_v", "reg_v", "reg_vwv")
 
     def __init__(self) -> None:
         self.pre_first = self.pre_last = self.post_last = None
@@ -93,6 +93,10 @@ class DaySummary:
         self.reg_vwv = self.post_vwv = 0.0
         # per cut-off: [sum vw*v, sum typical*v, sum v]
         self.cut = {k: [0.0, 0.0, 0.0] for k in CUTOFFS}
+        # per cut-off, from the bars that traded (v > 0): the last one's close and start time
+        # (epoch ms), and the highest high / lowest low
+        self.last = {k: [None, None] for k in CUTOFFS}
+        self.extreme = {k: [None, None] for k in CUTOFFS}
         self.bars = 0
 
     def add(self, t: int, open_ms: int, close_ms: int, bar: dict) -> None:
@@ -111,6 +115,13 @@ class DaySummary:
                         acc[0] += (vw or 0.0) * v
                         acc[1] += (tp or 0.0) * v
                         acc[2] += v
+                        self.last[k][0], self.last[k][1] = bar.get("c"), t
+                        hi, lo = bar.get("h"), bar.get("l")
+                        ex = self.extreme[k]
+                        if hi is not None and (ex[0] is None or hi > ex[0]):
+                            ex[0] = hi
+                        if lo is not None and (ex[1] is None or lo < ex[1]):
+                            ex[1] = lo
         elif t < close_ms:
             self.reg_v += v
             self.reg_vwv += (_vw(bar) or 0.0) * v
@@ -134,6 +145,8 @@ class DaySummary:
             r[f"pre_market_vwap_{k}"] = vwv / v if v else None
             r[f"pre_market_tpvwap_{k}"] = tpv / v if v else None
             r[f"pre_market_volume_{k}"] = round(v, 6)
+            r[f"pm_last_{k}"], r[f"pm_last_t_{k}"] = self.last[k]
+            r[f"pm_high_{k}"], r[f"pm_low_{k}"] = self.extreme[k]
         return r
 
 
@@ -246,20 +259,24 @@ def quarters(d0: date, d1: date) -> list[tuple[date, date]]:
 
 def fetch(d0: date, d1: date, *, tickers: list[str] | None = None, workers: int | None = None,
           only_dates: set[date] | None = None, keep: bool = False, allow_failures: int = 0,
-          chunk: str | None = None, save_bars: Path | str | None = None) -> int:
+          chunk: str | None = None, save_bars: Path | str | None = None,
+          bars_universe: set[str] | None = None) -> int:
     """Fetch every ticker for [d0, d1], then write the per-date files. 0 when complete.
 
     chunk="quarter" runs each calendar quarter as its own job (so a backfill resumes at the
     quarter it stopped in). allow_failures=N finalizes even when up to N tickers failed
     (failures.jsonl and the job folder are left; rerun to retry them). save_bars=DIR also
-    keeps the raw minute bars as DIR/month=YYYY-MM/*.parquet."""
+    keeps the raw minute bars as DIR/month=YYYY-MM/*.parquet (month in New York time),
+    only for bars_universe when given (the panel's symbols; the other tickers still get their
+    summaries)."""
     if chunk not in (None, "quarter"):
         raise ValueError(f"unknown --chunk {chunk!r} (only: quarter)")
     pieces = quarters(d0, d1) if chunk == "quarter" else [(d0, d1)]
     rc = 0
     for q0, q1 in pieces:
         rc = max(rc, _fetch_one(q0, q1, tickers=tickers, workers=workers, only_dates=only_dates,
-                                keep=keep, allow_failures=allow_failures, save_bars=save_bars))
+                                keep=keep, allow_failures=allow_failures, save_bars=save_bars,
+                                bars_universe=bars_universe))
     return rc
 
 
@@ -281,7 +298,8 @@ def _write_bars_stage(path: Path, rows: list[tuple]) -> None:
 
 def _publish_bars(job: Path, dest: Path, d0: date, d1: date) -> int:
     """Combine the staged per-ticker bars into one parquet file per New York month under
-    dest/month=YYYY-MM/ (written next to the target, then moved). Returns files written."""
+    dest/month=YYYY-MM/ (written next to the target, then moved). epoch_ms is a naive UTC
+    timestamp: timezone('UTC', ..) makes it an instant, then New York local time gives the month. Returns files written."""
     import duckdb
 
     files = [str(p) for p in (job / "bars").glob("*.parquet") if p.stat().st_size]
@@ -289,7 +307,7 @@ def _publish_bars(job: Path, dest: Path, d0: date, d1: date) -> int:
         return 0
     con = duckdb.connect()
     con.execute("SET TimeZone='UTC'")
-    con.execute("CREATE TABLE m AS SELECT *, strftime(timezone('America/New_York', epoch_ms(t)), '%Y-%m') AS mo "
+    con.execute("CREATE TABLE m AS SELECT *, strftime(timezone('America/New_York', timezone('UTC', epoch_ms(t))), '%Y-%m') AS mo "
                 "FROM read_parquet(?)", [files])
     n = 0
     for (mo,) in con.execute("SELECT DISTINCT mo FROM m ORDER BY 1").fetchall():
@@ -304,7 +322,8 @@ def _publish_bars(job: Path, dest: Path, d0: date, d1: date) -> int:
     return n
 
 
-def _fetch_one(d0: date, d1: date, *, tickers, workers, only_dates, keep, allow_failures, save_bars) -> int:
+def _fetch_one(d0: date, d1: date, *, tickers, workers, only_dates, keep, allow_failures, save_bars,
+               bars_universe=None) -> int:
     cfg = config.massive_config()
     workers = workers or cfg["workers"]
     targets = tickers or universe(d0)
@@ -322,7 +341,7 @@ def _fetch_one(d0: date, d1: date, *, tickers, workers, only_dates, keep, allow_
     ok = processed = 0
 
     def work(client, t):
-        if not save_bars:
+        if not save_bars or (bars_universe is not None and t not in bars_universe):
             return fetch_ticker(client, cfg, t, d0, d1), None
         sink: list = []
         return fetch_ticker(client, cfg, t, d0, d1, sink), sink
@@ -375,6 +394,13 @@ def _fetch_one(d0: date, d1: date, *, tickers, workers, only_dates, keep, allow_
     return 0
 
 
+def panel_symbols(path: Path | str) -> set[str]:
+    """The distinct symbols of a panel.parquet (--bars-universe)."""
+    import pyarrow.parquet as pq
+
+    return set(pq.read_table(path, columns=["symbol"]).column("symbol").to_pylist())
+
+
 def _mask(s: str) -> str:
     import re
 
@@ -390,9 +416,14 @@ _COLUMNS = {
     # VWAPs (added 2026-10): minute-bar sums; see DaySummary
     "regular_vwap": "DOUBLE", "after_hours_vwap": "DOUBLE",
     **{f"pre_market_{kind}_{k}": "DOUBLE" for k in CUTOFFS for kind in ("vwap", "tpvwap", "volume")},
+    # last pre-market trade (close of the last traded bar before the cut-off; its start time in
+    # epoch ms) and the pre-market high / low (added 2026-10-27, panel inputs pm_last / pm_range)
+    **{f"{kind}_{k}": ty for k in CUTOFFS for kind, ty in
+       (("pm_last", "DOUBLE"), ("pm_last_t", "BIGINT"), ("pm_high", "DOUBLE"), ("pm_low", "DOUBLE"))},
 }
 NEW_COLUMNS = [c for c in _COLUMNS if c in ("regular_vwap", "after_hours_vwap")
-               or c.startswith(("pre_market_vwap_", "pre_market_tpvwap_", "pre_market_volume_"))]
+               or c.startswith(("pre_market_vwap_", "pre_market_tpvwap_", "pre_market_volume_", "pm_"))]
+NEW_COLUMN_TYPES = {c: _COLUMNS[c] for c in NEW_COLUMNS}
 
 
 def out_path(d: date) -> Path:

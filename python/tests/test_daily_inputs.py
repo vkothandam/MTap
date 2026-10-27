@@ -165,6 +165,63 @@ def test_save_bars_writes_monthly_parquet(roots, monkeypatch):
     assert not (roots / "state" / "massive_ext" / "jobs" / "x").exists()
 
 
+def test_pm_last_price_time_and_range_per_cutoff():
+    day = "2026-10-14"
+    bars = [
+        _bar(day, "04:00", 10, 12, 8, 10, 100),
+        _bar(day, "08:30", 10, 13, 10, 11.5, 100),
+        _bar(day, "09:10", 10, 10, 10, 10, 0),             # no volume: never the last trade
+        _bar(day, "09:29", 10, 10.2, 9.9, 10.1, 50),
+        _bar(day, "09:30", 20, 99, 1, 20, 1000),           # regular session: not pre-market
+    ]
+    (r,) = ext.summarize("ABC", [bars], "x")
+    t = lambda hhmm: _bar(day, hhmm, 0, 0, 0, 0, 0)["t"]  # noqa: E731
+    assert (r["pm_last_0800"], r["pm_last_t_0800"]) == (10, t("04:00"))
+    assert (r["pm_high_0800"], r["pm_low_0800"]) == (12, 8)
+    assert (r["pm_last_0900"], r["pm_last_t_0900"]) == (11.5, t("08:30"))
+    assert (r["pm_last_0925"], r["pm_last_0930"], r["pm_last_t_0930"]) == (11.5, 10.1, t("09:29"))
+    assert (r["pm_high_0930"], r["pm_low_0930"]) == (13, 8)
+    (e,) = ext.summarize("ABC", [[_bar(day, "10:00", 1, 1, 1, 1, 5)]], "x")
+    assert e["pm_last_0930"] is None and e["pm_high_0930"] is None
+
+
+def test_rows_without_the_pm_last_fields_still_finalize(roots):
+    d = date(2026, 10, 14)
+    (new,) = ext.summarize("OLD", [[_bar("2026-10-14", "08:00", 1, 1, 1, 1, 5)]], "f")
+    old = {k: v for k, v in new.items() if not k.startswith("pm_")}
+    job = ext.job_dir(d, d)
+    (job / "staging").mkdir(parents=True)
+    (job / "staging" / "OLD.jsonl").write_text(json.dumps(old) + "\n")
+    ext.finalize(job)
+    (row,) = map(json.loads, ext.out_path(d).read_text().splitlines())
+    assert row["pm_last_0930"] is None and row["pre_market_volume"] == 5.0
+
+
+def test_save_bars_partitions_by_eastern_month_and_filters_the_universe(roots, monkeypatch):
+    # 2026-10-01 01:30 UTC is 2026-09-30 21:30 in New York: September's folder, not October's
+    late = {"t": int(datetime.fromisoformat("2026-10-01T01:30:00+00:00").timestamp() * 1000),
+            "o": 1, "h": 1, "l": 1, "c": 1, "v": 5, "n": 1}
+    bars = {"AAA": [late, _bar("2026-10-01", "10:00", 2, 3, 2, 3, 20)], "BBB": [_bar("2026-10-01", "11:00", 5, 5, 5, 5, 7)]}
+    monkeypatch.setattr(ext, "_pages", lambda client, cfg, ticker, d0, d1: iter([bars[ticker]]))
+    dest = roots / "bars_1m"
+    assert ext.fetch(date(2026, 9, 30), date(2026, 10, 1), tickers=["AAA", "BBB"], workers=1,
+                     save_bars=dest, bars_universe={"AAA"}) == 0
+    sep = pq.read_table(next(dest.glob("month=2026-09/*.parquet"))).to_pylist()
+    octo = pq.read_table(next(dest.glob("month=2026-10/*.parquet"))).to_pylist()
+    assert [(r["ticker"], r["v"]) for r in sep] == [("AAA", 5.0)]
+    assert [(r["ticker"], r["v"]) for r in octo] == [("AAA", 20.0)]  # BBB's bars are not saved
+    # BBB still gets its extended-hours summary
+    assert {json.loads(x)["ticker"] for x in ext.out_path(date(2026, 10, 1)).read_text().splitlines()} == {"AAA", "BBB"}
+
+
+def test_panel_symbols_reads_the_distinct_symbols(roots):
+    import pyarrow as pa
+
+    p = roots / "panel.parquet"
+    pq.write_table(pa.table({"symbol": ["A", "A", "B"], "x": [1, 2, 3]}), p)
+    assert ext.panel_symbols(p) == {"A", "B"}
+
+
 def test_universe_takes_cs_and_adrc_and_1s_stays_cs(roots):
     d = roots / "out" / "tickers_cs"
     d.mkdir(parents=True)
@@ -447,18 +504,22 @@ def test_derive_features_writes_macro_daily_from_tables(roots):
 
 
 def _pm_db(path):
-    """AAA: five sessions with pre-market data at 09:25. A split executes on sessions[3];
-    sessions[4] has no previous bar problem; BBB is missing sessions[1] (gap before [2])."""
+    """AAA: pre-market data at the 09:30 cutoff every session. A split executes on sessions[3];
+    BBB is missing sessions[1] (gap before [2]).
+    the last pre-market trade is 10.2 on a 10.0 VWAP, the range 10.5 - 9.9."""
     sess = tc.sessions(date(2024, 1, 16), date(2024, 1, 26))
     with db.connect(path) as con:
         for s in ("AAA", "BBB"):
             _symbol(con, s)
         _bars(con, "AAA", sess, [10.0] * len(sess), volume=100.0)
         _bars(con, "BBB", [d for i, d in enumerate(sess) if i != 1], [20.0] * (len(sess) - 1), volume=100.0)
-        con.execute("UPDATE daily_bars SET pre_market_tpvwap_0925 = close * 1.02, "
-                    "pre_market_volume_0925 = 10.0, regular_vwap = close, after_hours_vwap = close * 1.01, "
+        con.execute("UPDATE daily_bars SET pre_market_vwap_0930 = close * 1.02, "
+                    "pre_market_volume_0930 = 10.0, pm_last_0930 = close * 1.02, pm_last_t_0930 = 1, "
+                    "pm_high_0930 = close * 1.05, pm_low_0930 = close * 0.99, "
+                    "regular_vwap = close, after_hours_vwap = close * 1.01, "
                     "after_hours_volume = 5.0, ext_fetched_at = TIMESTAMP '2024-03-01 00:00:00'")
-        con.execute("UPDATE daily_bars SET pre_market_tpvwap_0925 = NULL, pre_market_volume_0925 = NULL "
+        con.execute("UPDATE daily_bars SET pre_market_vwap_0930 = NULL, pre_market_volume_0930 = NULL, "
+                    "pm_last_0930 = NULL, pm_high_0930 = NULL, pm_low_0930 = NULL "
                     "WHERE symbol = 'AAA' AND date = ?", [sess[5]])
         con.execute("INSERT INTO stock_splits VALUES ('s1', 'AAA', ?, 1, 1, now())", [sess[3]])
     return sess
@@ -471,6 +532,23 @@ def _export(tmp_path, dbp, **kw):
     return summary, pq.read_table(out).to_pylist(), out
 
 
+def test_vol_10d_mean_is_past_only(roots):
+    dbp = roots / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 16), date(2024, 2, 9))
+    with db.connect(dbp) as con:
+        _symbol(con, "AAA")
+        _bars(con, "AAA", sess, [10.0] * len(sess), volume=100.0)
+        con.execute("UPDATE daily_bars b SET volume = 100.0 * x.n FROM "
+                    "(SELECT date, row_number() OVER (ORDER BY date) AS n FROM daily_bars) x WHERE b.date = x.date")
+    features.derive_features(db_path=dbp)
+    with db.connect(dbp) as con:
+        got = dict(con.execute("SELECT date, vol_10d_mean FROM daily_bars WHERE symbol = 'AAA'").fetchall())
+        vol = dict(con.execute("SELECT date, volume FROM daily_bars WHERE symbol = 'AAA'").fetchall())
+    assert got[sess[0]] is None
+    assert got[sess[1]] == pytest.approx(vol[sess[0]])
+    assert got[sess[12]] == pytest.approx(sum(vol[d] for d in sess[2:12]) / 10)  # d's own volume excluded
+
+
 def test_premarket_after_hours_and_shape_columns(roots):
     dbp = roots / "f.duckdb"
     sess = _pm_db(dbp)
@@ -478,27 +556,49 @@ def test_premarket_after_hours_and_shape_columns(roots):
     summary, rows, out = _export(roots, dbp)
     by = {(r["symbol"], r["date"]): r for r in rows}
     r = by[("AAA", sess[2])]
-    assert r["pm_known"] == 1
+    assert r["pm_full_known"] == 1 and r["pm_px_known"] == 1
     assert r["pm_vwap_pct_prev_vwap"] == pytest.approx(0.02)
     assert r["pm_vol_pct_10d"] == pytest.approx(math.log(1 + 100 * 10 / 100))
+    assert r["pm_range_pct"] == pytest.approx((10.5 - 9.9) / 10.0)
+    assert r["pm_last_pct_prev_vwap"] == pytest.approx(0.02)
+    assert r["open_pct_prev_vwap"] == pytest.approx(0.0)  # the fixture opens at the VWAP
     assert r["ah_known"] == 1 and r["ah_vwap_pct_rth_vwap"] == pytest.approx(0.01)
     assert r["close_pct_rth_vwap"] == pytest.approx(0.0)
     assert r["high_position_pct"] == pytest.approx(0.05) and r["low_position_pct"] == pytest.approx(-0.05)
     assert r["gap_open_pct"] == pytest.approx(0.0) and r["gap_open_vs_prev_vwap_pct"] == pytest.approx(0.0)
-    # a split executes on sessions[3]: pm_known = 0 and the values are masked
+    # a split executes on sessions[3]: both groups off and masked
     s = by[("AAA", sess[3])]
-    assert (s["pm_known"], s["pm_vwap_pct_prev_vwap"], s["pm_vol_pct_10d"]) == (0, 0.0, 0.0)
-    # no pre-market data that day
+    assert (s["pm_full_known"], s["pm_px_known"], s["pm_vwap_pct_prev_vwap"], s["pm_vol_pct_10d"],
+            s["pm_range_pct"], s["pm_last_pct_prev_vwap"], s["open_pct_prev_vwap"]) == (0, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    # no pre-market data that day (the open exists, the last does not)
     n = by[("AAA", sess[5])]
-    assert n["pm_known"] == 0 and n["pm_vwap_pct_prev_vwap"] == 0.0
+    assert n["pm_full_known"] == 0 and n["pm_px_known"] == 0
+    assert n["pm_vwap_pct_prev_vwap"] == 0.0 and n["open_pct_prev_vwap"] == 0.0
     # BBB lacks sessions[1], so sessions[2] has no previous session exactly one back
     g = by[("BBB", sess[2])]
-    assert g["pm_known"] == 0 and g["gap_open_pct"] == 0.0
-    assert by[("BBB", sess[3])]["pm_known"] == 1
+    assert g["pm_full_known"] == 0 and g["pm_px_known"] == 0 and g["gap_open_pct"] == 0.0
+    assert by[("BBB", sess[3])]["pm_full_known"] == 1
     # the first bar has no previous session
-    assert by[("AAA", sess[0])]["pm_known"] == 0
+    assert by[("AAA", sess[0])]["pm_full_known"] == 0
+    # the 10-session mean volume is carried into the panel
+    assert r["vol_10d_mean"] == pytest.approx(100.0)
     # market/macro without data: zeros, not NULL
     assert r["mkt_cap_ret"] is not None and r["ust_10y_chg_bp"] == 0.0
+
+
+def test_pm_clips_and_full_without_prices(roots):
+    dbp = roots / "f.duckdb"
+    sess = _pm_db(dbp)
+    with db.connect(dbp) as con:  # +50% last, no last on sessions[4] but full data present
+        con.execute("UPDATE daily_bars SET pm_last_0930 = close * 1.5 WHERE symbol = 'AAA' AND date = ?", [sess[2]])
+        con.execute("UPDATE daily_bars SET pm_last_0930 = NULL WHERE symbol = 'AAA' AND date = ?", [sess[4]])
+    features.derive_features(db_path=dbp)
+    _, rows, _ = _export(roots, dbp)
+    by = {(r["symbol"], r["date"]): r for r in rows}
+    assert by[("AAA", sess[2])]["pm_last_pct_prev_vwap"] == pytest.approx(features.PM_CLIP)
+    # each flag reflects its own data only: the full group is on while prices are off
+    p = by[("AAA", sess[4])]
+    assert p["pm_px_known"] == 0 and p["pm_full_known"] == 1 and p["open_pct_prev_vwap"] == 0.0
 
 
 def test_pm_split_factor_uses_the_ext_fetch_time(roots):
@@ -512,13 +612,14 @@ def test_pm_split_factor_uses_the_ext_fetch_time(roots):
         con.execute("UPDATE daily_bars SET close = CASE WHEN date >= ? THEN 10 ELSE 1 END, "
                     "vwap = CASE WHEN date >= ? THEN 10 ELSE 1 END, "
                     "ingested_at = TIMESTAMP '2024-01-10 00:00:00'", [sess[4], sess[4]])
-        con.execute("UPDATE daily_bars SET pre_market_tpvwap_0925 = 10.2, pre_market_volume_0925 = 1.0, "
+        con.execute("UPDATE daily_bars SET pre_market_vwap_0930 = 10.2, pre_market_volume_0930 = 1.0, "
+                    "pm_high_0930 = 10.5, pm_low_0930 = 10.0, "
                     "ext_fetched_at = TIMESTAMP '2024-02-01 00:00:00'")
         con.execute("INSERT INTO stock_splits VALUES ('s', 'AAA', ?, 10, 1, now())", [sess[4]])
     features.derive_features(db_path=dbp)
     _, rows, _ = _export(roots, dbp)
     by = {r["date"]: r for r in rows}
-    assert by[sess[2]]["pm_known"] == 1
+    assert by[sess[2]]["pm_full_known"] == 1
     assert by[sess[2]]["pm_vwap_pct_prev_vwap"] == pytest.approx(0.02)  # 10.2 vs adjusted 10
 
 
@@ -529,17 +630,20 @@ def test_schema4_meta_export_id_and_panel_next(roots):
     summary, rows, out = _export(roots, dbp)
     meta = json.loads(Path(summary["meta_path"]).read_text())
     assert meta["schema_version"] == 4 == export.SCHEMA_VERSION
-    assert meta["premarket_cutoff"] == "09:25"
+    assert meta["premarket_cutoff"] == "09:30"
     cols = set(rows[0])
     for c in ("mkt_cap_ret", "own_sector_cap_ret", "sec_50_cap_ret", "sec_63_cap_ret", "ust_10y_z252",
-              "core_cpi_mom", "ah_known", "pm_known"):
+              "core_cpi_mom", "ah_known", "pm_px_known", "pm_full_known", "pm_range_pct", "vol_10d_mean"):
         assert c in cols
     nxt = pq.read_table(export.next_panel_path(out)).to_pylist()
     assert {r["symbol"] for r in nxt} == {"AAA", "BBB"}
     assert {r["export_id"] for r in nxt} == {meta["export_id"]}
     assert {r["day_idx"] for r in nxt} == {meta["next_session"]["day_idx"]}
-    assert all(r["pm_known"] == 0 and r["pm_vwap_pct_prev_vwap"] == 0.0 and r["pm_vol_pct_10d"] == 0.0
-               for r in nxt)
+    assert all(r["pm_px_known"] == 0 and r["pm_full_known"] == 0 and r["pm_range_pct"] == 0.0
+               and r["pm_vwap_pct_prev_vwap"] == 0.0 and r["pm_vol_pct_10d"] == 0.0
+               and r["pm_last_pct_prev_vwap"] == 0.0 and r["open_pct_prev_vwap"] == 0.0 for r in nxt)
+    # the next session's vol_10d_mean: the last 10 bars' mean volume
+    assert {r["symbol"]: r["vol_10d_mean"] for r in nxt} == {"AAA": pytest.approx(100.0), "BBB": pytest.approx(100.0)}
     # a second export gets a new id
     again, _, _ = _export(roots, dbp)
     assert again["export_id"] != meta["export_id"]
@@ -560,53 +664,105 @@ def test_market_columns_fall_back_to_the_market_for_own_sector(roots):
     assert a["sec_50_cap_ret"] == pytest.approx(a["mkt_cap_ret"])  # sector with no stocks: market
 
 
-def _live_file(root, d, recs):
-    p = root / "out" / "premarket_live" / f"premarket-{d}.jsonl"
-    p.parent.mkdir(parents=True)
+def _live_file(root, kind, d, recs):
+    p = root / "out" / "premarket_live" / f"{kind}-{d}.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("".join(json.dumps(r) + "\n" for r in recs))
     return p
 
 
-def test_export_next_fills_pm_columns_from_the_live_file(roots):
-    dbp = roots / "f.duckdb"
-    sess = _pm_db(dbp)
-    features.derive_features(db_path=dbp)
-    summary, _, out = _export(roots, dbp)
-    meta = json.loads(Path(summary["meta_path"]).read_text())
-    d = meta["next_session"]["date"]
-    base = {"date": d, "cutoff": "09:25", "source": "etrade", "fetched_at": "x"}
-    _live_file(roots, d, [
-        {**base, "symbol": "AAA", "pm_tpvwap": 10.3, "pm_volume": 5.0, "vol_10d_mean_source": 50.0},
-        {**base, "symbol": "BBB", "pm_tpvwap": None, "pm_volume": None, "vol_10d_mean_source": 50.0},
-    ])
-    with config_db(dbp):
-        res = export.export_next(panel=out, db_path=dbp)
-    assert res["pm_known"] == 1 and res["export_id"] == meta["export_id"]
-    nxt = {r["symbol"]: r for r in pq.read_table(export.next_panel_path(out)).to_pylist()}
-    # vwap(d-1) is the last session's 10.0; volume ratio uses the file's own 10-day mean
-    assert nxt["AAA"]["pm_vwap_pct_prev_vwap"] == pytest.approx(10.3 / 10.0 - 1)
-    assert nxt["AAA"]["pm_vol_pct_10d"] == pytest.approx(math.log(1 + 100 * 5 / 50))
-    assert nxt["AAA"]["pm_known"] == 1 and nxt["AAA"]["export_id"] == meta["export_id"]
-    assert nxt["BBB"]["pm_known"] == 0 and nxt["BBB"]["pm_vwap_pct_prev_vwap"] == 0.0
-
-
-def test_export_next_refuses_a_cutoff_mismatch_and_masks_a_split_day(roots):
+def _next_setup(roots):
     dbp = roots / "f.duckdb"
     _pm_db(dbp)
     features.derive_features(db_path=dbp)
     summary, _, out = _export(roots, dbp)
-    d = json.loads(Path(summary["meta_path"]).read_text())["next_session"]["date"]
-    rec = {"symbol": "AAA", "date": d, "cutoff": "09:00", "pm_tpvwap": 10.3, "pm_volume": 5.0,
-           "vol_10d_mean_source": 50.0, "source": "etrade", "fetched_at": "x"}
-    p = _live_file(roots, d, [rec])
+    meta = json.loads(Path(summary["meta_path"]).read_text())
+    return dbp, out, meta, meta["next_session"]["date"]
+
+
+def _px(d, symbol, last, open_, **kw):
+    return {"symbol": symbol, "date": d, "last": last, "last_at": "x" if last else None, "open": open_,
+            "open_at": "x" if open_ else None, "source": "watchlist", "as_of": "x", **kw}
+
+
+def _full(d, symbol, **kw):
+    return {"symbol": symbol, "date": d, "cutoff": "09:30", "pm_vwap": 10.3, "pm_volume": 5.0, "pm_last": 10.4,
+            "pm_high": 10.6, "pm_low": 10.0, "complete": True, **kw}
+
+
+def test_export_next_fills_both_groups_from_the_morning_files(roots):
+    dbp, out, meta, d = _next_setup(roots)
+    _live_file(roots, "prices", d, [_px(d, "AAA", 10.4, 10.2), _px(d, "BBB", None, 20.1)])
+    _live_file(roots, "premarket", d, [_full(d, "AAA"), _full(d, "BBB", complete=False)])
+    res = export.export_next(panel=out, db_path=dbp)  # default paths by date
+    assert res["pm_px_known"] == 1 and res["pm_full_known"] == 1 and res["export_id"] == meta["export_id"]
+    nxt = {r["symbol"]: r for r in pq.read_table(export.next_panel_path(out)).to_pylist()}
+    a = nxt["AAA"]
+    # previous session's VWAP is 10.0; the volume ratio uses vol_10d_mean from the panel (100)
+    assert a["pm_last_pct_prev_vwap"] == pytest.approx(0.04) and a["open_pct_prev_vwap"] == pytest.approx(0.02)
+    assert a["pm_vwap_pct_prev_vwap"] == pytest.approx(0.03)
+    assert a["pm_vol_pct_10d"] == pytest.approx(math.log(1 + 100 * 5 / 100))
+    assert a["pm_range_pct"] == pytest.approx(0.06)
+    assert a["pm_px_known"] == 1 and a["pm_full_known"] == 1 and a["export_id"] == meta["export_id"]
+    b = nxt["BBB"]  # open without a last: prices off; incomplete full record: full off
+    assert b["pm_px_known"] == 0 and b["open_pct_prev_vwap"] == 0.0 and b["pm_last_pct_prev_vwap"] == 0.0
+    assert b["pm_full_known"] == 0 and b["pm_vwap_pct_prev_vwap"] == 0.0 and b["pm_range_pct"] == 0.0
+
+
+def test_export_next_prices_only_and_explicit_paths(roots):
+    dbp, out, meta, d = _next_setup(roots)
+    p = _live_file(roots, "prices", d, [_px(d, "AAA", 10.4, 10.2)])
+    res = export.export_next(panel=out, db_path=dbp, prices_path=p)
+    assert (res["pm_px_known"], res["pm_full_known"]) == (1, 0)
+    with pytest.raises(RuntimeError, match="no pre-market file"):
+        export.export_next(panel=out, db_path=dbp, premarket_path=roots / "nope.jsonl")
+    p.unlink()
+    with pytest.raises(RuntimeError, match="no morning files"):
+        export.export_next(panel=out, db_path=dbp)
+
+
+def test_export_next_refuses_a_cutoff_mismatch_and_masks_a_split_day(roots):
+    dbp, out, meta, d = _next_setup(roots)
+    p = _live_file(roots, "premarket", d, [_full(d, "AAA", cutoff="09:00")])
     with pytest.raises(RuntimeError, match="cutoff"):
         export.export_next(panel=out, db_path=dbp)
-    p.write_text(json.dumps({**rec, "cutoff": "09:25"}) + "\n")
+    p.write_text(json.dumps(_full(d, "AAA")) + "\n")
+    _live_file(roots, "prices", d, [_px(d, "AAA", 10.4, 10.2)])
     with db.connect(dbp) as con:  # a split executes on the forecast day
         con.execute("INSERT INTO stock_splits VALUES ('s2', 'AAA', ?, 1, 2, now())", [date.fromisoformat(d)])
     export.export_next(panel=out, db_path=dbp)
     nxt = {r["symbol"]: r for r in pq.read_table(export.next_panel_path(out)).to_pylist()}
-    assert nxt["AAA"]["pm_known"] == 0 and nxt["AAA"]["pm_vwap_pct_prev_vwap"] == 0.0
+    assert nxt["AAA"]["pm_full_known"] == 0 and nxt["AAA"]["pm_px_known"] == 0
+    assert nxt["AAA"]["pm_vwap_pct_prev_vwap"] == 0.0 and nxt["AAA"]["pm_last_pct_prev_vwap"] == 0.0
+
+
+def test_prices_records_match_the_schema():
+    from sourcing_py.common import schema
+
+    spec = schema.load_schema(config.repo_root() / "schemas" / "premarket_prices.schema.json")
+    schema.validate_records([_px("2026-10-28", "AAA", 10.4, None)], spec)
+    with pytest.raises(Exception):  # noqa: B017 - any validation error type
+        schema.validate_records([{"symbol": "AAA"}], spec)
+
+
+def test_liquid_universe_thresholds(roots):
+    dbp = roots / "f.duckdb"
+    sess = tc.sessions(date(2024, 1, 2), date(2024, 2, 15))
+    d = sess[-1]
+    with db.connect(dbp) as con:
+        for s in ("RICH", "CHEAP", "THIN", "NEW"):
+            _symbol(con, s)
+        _bars(con, "RICH", sess, [10.0] * len(sess), volume=1_000_000.0)    # 1e7/day
+        _bars(con, "CHEAP", sess, [2.5] * len(sess), volume=10_000_000.0)   # 2.5e7/day but < $3
+        _bars(con, "THIN", sess, [10.0] * len(sess), volume=100_000.0)      # 1e6/day
+        _bars(con, "NEW", sess[-10:], [10.0] * 10, volume=1_000_000.0)      # under 20 sessions
+        # today's (d) volume must not count: a giant bar on d would otherwise lift THIN
+        con.execute("UPDATE daily_bars SET volume = 1e9 WHERE symbol = 'THIN' AND date = ?", [d])
+    res = export.liquid_universe(date_=d, db_path=dbp)
+    assert res["symbols"] == 1
+    path = Path(res["path"])
+    assert path == roots / "out" / "premarket_live" / f"universe-{d}.csv"
+    assert path.read_text().splitlines() == ["symbol", "RICH"]
 
 
 class config_db:  # noqa: N801 - tiny context manager; keeps the settings cache untouched

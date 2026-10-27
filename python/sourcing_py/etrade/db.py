@@ -113,6 +113,14 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     pre_market_vwap_0915 DOUBLE, pre_market_tpvwap_0915 DOUBLE, pre_market_volume_0915 DOUBLE,
     pre_market_vwap_0925 DOUBLE, pre_market_tpvwap_0925 DOUBLE, pre_market_volume_0925 DOUBLE,
     pre_market_vwap_0930 DOUBLE, pre_market_tpvwap_0930 DOUBLE, pre_market_volume_0930 DOUBLE,
+    -- last pre-market trade per cut-off (close of the last traded bar; its start, epoch ms) and
+    -- the pre-market high / low (massive_ext 2026-10-27)
+    pm_last_0800 DOUBLE, pm_last_t_0800 BIGINT, pm_high_0800 DOUBLE, pm_low_0800 DOUBLE,
+    pm_last_0900 DOUBLE, pm_last_t_0900 BIGINT, pm_high_0900 DOUBLE, pm_low_0900 DOUBLE,
+    pm_last_0915 DOUBLE, pm_last_t_0915 BIGINT, pm_high_0915 DOUBLE, pm_low_0915 DOUBLE,
+    pm_last_0925 DOUBLE, pm_last_t_0925 BIGINT, pm_high_0925 DOUBLE, pm_low_0925 DOUBLE,
+    pm_last_0930 DOUBLE, pm_last_t_0930 BIGINT, pm_high_0930 DOUBLE, pm_low_0930 DOUBLE,
+    vol_10d_mean         DOUBLE,    -- mean split-adjusted daily volume of the 10 sessions before this one (derive-features)
     -- Phase 1c derived features (features.py; rewritten in full on every derive-features run)
     day_idx              BIGINT,    -- global trading-day index (-> trading_calendar.date)
     is_10k               SMALLINT,  -- 1 on the (snapped) trading day of a 10-K filing, else 0
@@ -284,6 +292,9 @@ _MIGRATIONS = (
         "regular_vwap", "after_hours_vwap",
         *(f"pre_market_{k}_{c}" for c in ("0800", "0900", "0915", "0925", "0930")
           for k in ("vwap", "tpvwap", "volume")))),
+    *(f"ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS {k}_{c} {ty}" for c in ("0800", "0900", "0915", "0925", "0930")
+      for k, ty in (("pm_last", "DOUBLE"), ("pm_last_t", "BIGINT"), ("pm_high", "DOUBLE"), ("pm_low", "DOUBLE"))),
+    "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS vol_10d_mean DOUBLE",
 )
 
 

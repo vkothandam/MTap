@@ -909,7 +909,8 @@ SCHEMA4_COLUMNS = [
     "ust_10y_z252", "cpi_yoy", "core_cpi_yoy", "cpi_yoy_chg", "core_cpi_mom",
     "high_position_pct", "low_position_pct", "gap_open_pct", "gap_open_vs_prev_vwap_pct",
     "ah_vwap_pct_rth_vwap", "ah_vol_pct_10d", "close_pct_rth_vwap", "ah_known",
-    "pm_vwap_pct_prev_vwap", "pm_vol_pct_10d", "pm_known",
+    "vol_10d_mean", "pm_last_pct_prev_vwap", "open_pct_prev_vwap", "pm_px_known",
+    "pm_vwap_pct_prev_vwap", "pm_vol_pct_10d", "pm_range_pct", "pm_full_known",
 ]
 
 

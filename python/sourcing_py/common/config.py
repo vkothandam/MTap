@@ -265,13 +265,15 @@ def etrade_config() -> dict:
 def premarket_config() -> dict:
     """[premarket]: the live pre-market job (sourcing_py/etrade/premarket.py)."""
     section = settings().get("premarket", {})
-    cutoff = os.environ.get("PREMARKET_CUTOFF") or section.get("cutoff") or "09:25"
+    cutoff = os.environ.get("PREMARKET_CUTOFF") or section.get("cutoff") or "09:30"
     token = os.environ.get("PREMARKET_TOKEN_PATH") or section.get("token_path") or "state/etrade/bearer.json"
     return {
         "cutoff": str(cutoff),
         "feed_delay_min": int(section.get("feed_delay_min") or 15),
         "token_path": state_path(token),
         "max_concurrency": max(1, min(4, int(section.get("max_concurrency") or 4))),
+        "min_dollar_volume": float(section.get("min_dollar_volume") or 5e6),
+        "min_price": float(section.get("min_price") or 3.0),
     }
 
 

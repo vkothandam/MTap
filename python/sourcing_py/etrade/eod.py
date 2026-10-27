@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from ..massive_ext.extended import NEW_COLUMNS
+from ..massive_ext.extended import NEW_COLUMN_TYPES, NEW_COLUMNS
 from . import db
 from .symbols import _file_date, daily_summary_dir, select_files
 
@@ -61,7 +61,7 @@ FROM read_json(?, format = 'newline_delimited', columns = {{
     'ticker': 'VARCHAR', 'date': 'DATE', 'pre_market_price': 'DOUBLE',
     'pre_market_last': 'DOUBLE', 'pre_market_volume': 'DOUBLE', 'regular_volume': 'DOUBLE',
     'after_hours_price': 'DOUBLE', 'after_hours_volume': 'DOUBLE', 'fetched_at': 'VARCHAR',
-    {", ".join(f"'{c}': 'DOUBLE'" for c in NEW_COLUMNS)}}}) e
+    {", ".join(f"'{c}': '{t}'" for c, t in NEW_COLUMN_TYPES.items())}}}) e
 WHERE b.symbol = e.ticker AND b.date = e.date
 """
 

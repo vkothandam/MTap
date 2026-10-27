@@ -25,10 +25,15 @@ after the "known" flags are computed from the raw columns):
   macro         ust_* and cpi_* inputs (macro_daily; yields as of the previous session)
   session shape high_position_pct, low_position_pct, gap_open_pct, gap_open_vs_prev_vwap_pct
   after-hours   ah_vwap_pct_rth_vwap, ah_vol_pct_10d, close_pct_rth_vwap, ah_known
-  pre-market    pm_vwap_pct_prev_vwap, pm_vol_pct_10d, pm_known: KNOWN-FUTURE, row d holds
-                day d's pre-market up to the meta's premarket_cutoff (features.pm_expr)
+  pre-market    KNOWN-FUTURE, row d holds day d's pre-market up to the meta's premarket_cutoff
+                (09:30), in two groups with their own flags (each reflects its own data only):
+                prices  pm_last_pct_prev_vwap, open_pct_prev_vwap, pm_px_known
+                full    pm_vwap_pct_prev_vwap, pm_vol_pct_10d, pm_range_pct, pm_full_known
+                (features.pm_px_expr / pm_full_expr); vol_10d_mean (mean Massive daily volume
+                of the 10 sessions before d) is carried for the live pm_vol_pct_10d.
 panel.next.parquet beside the panel holds the inference rows (day_idx of the next session,
-pm_* = 0, pm_known = 0, export_id); `etrade export-next` fills them from the live feed.
+pm_* = 0, both flags 0, vol_10d_mean, export_id); `etrade export-next` fills them from the
+morning files (premarket_live/prices-D.jsonl, premarket-D.jsonl).
 
 Schema 2 added results_window_pit and the filing-based day counts. Schema 3 dates the
 windows from the 8-K results releases instead of the 10-K/10-Q filings, renames the day
@@ -123,7 +128,9 @@ WITH adj AS (
         vwap * f AS vwap, volume / f AS volume,
         regular_vwap * ef AS rth_vwap, after_hours_vwap * ef AS ah_vwap,
         after_hours_volume / ef AS ah_vol,
-        pre_market_tpvwap_{ck} * ef AS pm_tp, pre_market_volume_{ck} / ef AS pm_vol,
+        pre_market_vwap_{ck} * ef AS pm_vwap, pre_market_volume_{ck} / ef AS pm_vol,
+        pm_last_{ck} * ef AS pm_last, pm_high_{ck} * ef AS pm_high, pm_low_{ck} * ef AS pm_low,
+        vol_10d_mean,
         EXISTS (SELECT 1 FROM stock_splits sp WHERE sp.ticker = symbol AND sp.execution_date = date) AS split_today
     FROM (SELECT *, COALESCE(split_factor, 1.0) AS f, COALESCE(ext_split_factor, 1.0) AS ef
           FROM daily_bars WHERE day_idx IS NOT NULL)
@@ -187,6 +194,7 @@ SELECT
     COALESCE(ln(1 + 100 * b.ah_vol / NULLIF(b.vol_mean10, 0)), 0.0)         AS ah_vol_pct_10d,
     COALESCE(b.close / NULLIF(b.rth_vwap, 0) - 1, 0.0)                      AS close_pct_rth_vwap,
     (b.ah_vwap IS NOT NULL AND b.rth_vwap IS NOT NULL)::SMALLINT            AS ah_known,
+    COALESCE(b.vol_10d_mean, 0.0)                                           AS vol_10d_mean,
     {pm_sel}
 FROM bars b
 JOIN universe u ON u.symbol = b.symbol
@@ -206,7 +214,9 @@ ORDER BY b.symbol, b.day_idx
 
 _MACRO = ("ust_3m_chg_bp", "ust_2y_chg_bp", "ust_10y_chg_bp", "ust_10y_2y_slope", "ust_10y_3m_slope",
           "ust_10y_z252", "cpi_yoy", "core_cpi_yoy", "cpi_yoy_chg", "core_cpi_mom")
-_PM_COLS = ("pm_vwap_pct_prev_vwap", "pm_vol_pct_10d", "pm_known")
+_PM_PX_COLS = ("pm_last_pct_prev_vwap", "open_pct_prev_vwap", "pm_px_known")
+_PM_FULL_COLS = ("pm_vwap_pct_prev_vwap", "pm_vol_pct_10d", "pm_range_pct", "pm_full_known")
+_PM_OK = "pv.day_idx IS NOT NULL AND NOT b.split_today"
 
 
 def _panel_sql(sentiment: str, cutoff: str) -> str:
@@ -222,9 +232,10 @@ def _panel_sql(sentiment: str, cutoff: str) -> str:
          f"COALESCE(CASE left(i.industry_code, 2) {own} END, mk.mkt, 0.0) AS own_sector_cap_ret"]
         + [f"COALESCE(mk.s{c}, mk.mkt, 0.0) AS sec_{c}_cap_ret" for c in sectors])
     macro_sel = ",\n    ".join(f"COALESCE(md.{c}, 0.0) AS {c}" for c in _MACRO)
-    pm = features.pm_expr("b.pm_tp", "b.pm_vol", "b.vol_mean10", "pv.vwap",
-                          "pv.day_idx IS NOT NULL AND NOT b.split_today")
-    pm_sel = ",\n    ".join(f"{pm[c]} AS {c}" for c in _PM_COLS)
+    pm = {**features.pm_px_expr("b.pm_last", "b.open", "pv.vwap", _PM_OK),
+          **features.pm_full_expr("b.pm_vwap", "b.pm_vol", "b.vol_10d_mean", "b.pm_high", "b.pm_low",
+                                  "pv.vwap", _PM_OK)}
+    pm_sel = ",\n    ".join(f"{pm[c]} AS {c}" for c in (*_PM_PX_COLS, *_PM_FULL_COLS))
     return _PANEL_SQL.format(sentiment=sentiment, ck=features.cutoff_key(cutoff), mk_cols=mk_cols,
                              market_sel=market_sel, macro_sel=macro_sel, pm_sel=pm_sel)
 
@@ -282,6 +293,11 @@ def export_tft(
                 "min(day_idx), max(day_idx), min(date), max(date) FROM _panel"
             ).fetchone()
             panel_symbols = [r[0] for r in con.execute("SELECT DISTINCT symbol FROM _panel ORDER BY 1").fetchall()]
+            # the next session's vol_10d_mean: the 10 sessions up to the last bar, split-adjusted
+            mean10 = dict(con.execute(
+                "SELECT symbol, avg(volume / COALESCE(split_factor, 1.0)) FROM daily_bars "
+                "WHERE day_idx > (SELECT max(day_idx) FROM daily_bars WHERE day_idx IS NOT NULL) - 10 "
+                "GROUP BY symbol").fetchall())
             # DuckDB locks the file it writes, and SMB shares (the NAS data root) refuse the
             # lock; so write locally, copy beside the target, then rename it into place.
             config.state_root().mkdir(parents=True, exist_ok=True)
@@ -319,7 +335,8 @@ def export_tft(
     next_path = None
     if meta["next_session"]:
         next_path = next_panel_path(out)
-        _write_parquet_atomic(_next_table(panel_symbols, meta["next_session"]["day_idx"], export_id), next_path)
+        _write_parquet_atomic(_next_table(panel_symbols, meta["next_session"]["day_idx"], export_id,
+                                          [mean10.get(sym) for sym in panel_symbols]), next_path)
     meta_path = out.with_name(out.stem + ".meta.json")
     meta_path.write_text(json.dumps(meta, indent=2) + "\n")
     return {**meta, "out_path": str(out), "meta_path": str(meta_path),
@@ -331,16 +348,23 @@ def next_panel_path(panel: Path) -> Path:
     return panel.with_name(panel.stem + ".next.parquet")
 
 
-def _next_table(symbols: list[str], day_idx: int, export_id: str, **cols) -> pa.Table:
+_NEXT_FLOAT = ("pm_last_pct_prev_vwap", "open_pct_prev_vwap", "pm_vwap_pct_prev_vwap", "pm_vol_pct_10d",
+               "pm_range_pct")
+
+
+def _next_table(symbols: list[str], day_idx: int, export_id: str, vol_10d_mean: list | None = None,
+                **cols) -> pa.Table:
     """The inference rows: one per symbol at the next session, pre-market columns masked
-    (0, pm_known = 0) unless `cols` supplies them."""
+    (0, both flags 0) unless `cols` supplies them. vol_10d_mean is the mean daily volume of the
+    10 sessions up to the panel's last (None where unknown)."""
     n = len(symbols)
     return pa.table({
         "symbol": pa.array(symbols, pa.string()),
         "day_idx": pa.array([day_idx] * n, pa.int64()),
-        "pm_vwap_pct_prev_vwap": pa.array(cols.get("pm_vwap_pct_prev_vwap", [0.0] * n), pa.float64()),
-        "pm_vol_pct_10d": pa.array(cols.get("pm_vol_pct_10d", [0.0] * n), pa.float64()),
-        "pm_known": pa.array(cols.get("pm_known", [0] * n), pa.int16()),
+        **{c: pa.array(cols.get(c, [0.0] * n), pa.float64()) for c in _NEXT_FLOAT},
+        "pm_px_known": pa.array(cols.get("pm_px_known", [0] * n), pa.int16()),
+        "pm_full_known": pa.array(cols.get("pm_full_known", [0] * n), pa.int16()),
+        "vol_10d_mean": pa.array(vol_10d_mean or [None] * n, pa.float64()),
         "export_id": pa.array([export_id] * n, pa.string()),
     })
 
@@ -352,21 +376,40 @@ def _write_parquet_atomic(table: pa.Table, path: Path) -> None:
     os.replace(tmp, path)
 
 
+def _read_jsonl(path: Path) -> dict[str, dict]:
+    recs: dict[str, dict] = {}
+    for line in path.read_text().splitlines():
+        if line.strip():
+            r = json.loads(line)
+            recs[r["symbol"]] = r
+    return recs
+
+
+def _morning_path(kind: str, d: date) -> Path:
+    return config.out_root() / "premarket_live" / f"{kind}-{d}.jsonl"
+
+
 def export_next(
     *,
     date_: date | None = None,
     panel: Path | None = None,
     db_path: Path | None = None,
-    live_path: Path | None = None,
+    prices_path: Path | None = None,
+    premarket_path: Path | None = None,
 ) -> dict:
-    """Fill panel.next.parquet's pre-market columns from out/premarket_live/premarket-D.jsonl.
+    """Fill panel.next.parquet's pre-market columns from the morning files.
 
-    Each live record carries the typical-price VWAP and volume up to the cutoff plus the
-    source's own 10-day mean daily volume (`vol_10d_mean_source`): ChartIQ volumes are not
-    Massive's, so the ratio is taken within the source. The previous session's VWAP and the
-    split check come from DuckDB; the values use the same expressions as the history
-    (features.pm_expr). Refuses a file whose cutoff differs from the panel's. Symbols with no
-    record stay masked. Returns a summary dict."""
+    prices_path    out/premarket_live/prices-D.jsonl: {symbol, date, last, last_at, open, open_at,
+                   source, as_of} (schemas/premarket_prices.schema.json) -> pm_last_pct_prev_vwap,
+                   open_pct_prev_vwap, pm_px_known. An open without a last leaves the group at 0.
+    premarket_path out/premarket_live/premarket-D.jsonl: {symbol, date, cutoff, pm_vwap, pm_volume,
+                   pm_last, pm_high, pm_low, complete} (Massive definitions) -> pm_vwap_pct_prev_vwap,
+                   pm_vol_pct_10d, pm_range_pct, pm_full_known. complete = false or a missing value
+                   leaves the group at 0; a cutoff other than the panel's is refused.
+    A path left None defaults to the file for the date when it exists (at least one must). The
+    previous session's VWAP, the split check and vol_10d_mean come from DuckDB / panel.next, and
+    the values use the same expressions as the history (features.pm_px_expr / pm_full_expr).
+    Each flag reflects its own group's data only. Returns a summary dict."""
     out = Path(panel) if panel is not None else default_out_path()
     meta_path = out.with_name(out.stem + ".meta.json")
     nxt_path = next_panel_path(out)
@@ -380,18 +423,24 @@ def export_next(
     d = date_ or date.fromisoformat(ns["date"])
     if d.isoformat() != ns["date"]:
         raise RuntimeError(f"the panel is for the session {ns['date']}, not {d}: re-run export-tft")
-    src = Path(live_path) if live_path is not None else config.out_root() / "premarket_live" / f"premarket-{d}.jsonl"
-    if not src.exists():
-        raise RuntimeError(f"no live pre-market file {src}")
-    recs: dict[str, dict] = {}
-    for line in src.read_text().splitlines():
-        if line.strip():
-            r = json.loads(line)
-            recs[r["symbol"]] = r
+    px_src = Path(prices_path) if prices_path is not None else _morning_path("prices", d)
+    full_src = Path(premarket_path) if premarket_path is not None else _morning_path("premarket", d)
+    if prices_path is not None and not px_src.exists():
+        raise RuntimeError(f"no prices file {px_src}")
+    if premarket_path is not None and not full_src.exists():
+        raise RuntimeError(f"no pre-market file {full_src}")
+    if not px_src.exists() and not full_src.exists():
+        raise RuntimeError(f"no morning files for {d}: {px_src.name} / {full_src.name} in {px_src.parent}")
+    px = _read_jsonl(px_src) if px_src.exists() else {}
+    full = _read_jsonl(full_src) if full_src.exists() else {}
     cutoff = meta.get("premarket_cutoff") or features.DEFAULT_CUTOFF
-    bad = {r.get("cutoff") for r in recs.values() if r.get("cutoff") != cutoff}
+    bad = {r.get("cutoff") for r in full.values() if r.get("cutoff") != cutoff}
     if bad:
-        raise RuntimeError(f"{src.name} has cutoff {sorted(map(str, bad))}; the panel was exported with {cutoff}")
+        raise RuntimeError(f"{full_src.name} has cutoff {sorted(map(str, bad))}; the panel was exported with {cutoff}")
+    for name, recs in ((px_src.name, px), (full_src.name, full)):
+        wrong = {r.get("date") for r in recs.values() if r.get("date") not in (None, d.isoformat())}
+        if wrong:
+            raise RuntimeError(f"{name} has date {sorted(map(str, wrong))}; the forecast day is {d}")
 
     nxt = pq.read_table(nxt_path)
     symbols = nxt.column("symbol").to_pylist()
@@ -399,37 +448,83 @@ def export_next(
     if export_id != meta["export_id"]:
         raise RuntimeError("panel.next.parquet and panel.meta.json come from different exports")
     day_idx = ns["day_idx"]
-    live = pa.table({
-        "symbol": list(recs),
-        "tp": pa.array([recs[s].get("pm_tpvwap") for s in recs], pa.float64()),
-        "vol": pa.array([recs[s].get("pm_volume") for s in recs], pa.float64()),
-        "mean": pa.array([recs[s].get("vol_10d_mean_source") for s in recs], pa.float64()),
+    mean10 = nxt.column("vol_10d_mean").to_pylist() if "vol_10d_mean" in nxt.column_names else [None] * len(symbols)
+
+    def num(rec, key):
+        return rec.get(key) if rec and isinstance(rec.get(key), (int, float)) else None
+
+    def okfull(rec):  # an incomplete record is as good as none
+        return rec if rec and rec.get("complete") is not False else None
+
+    fr = {s: okfull(full.get(s)) for s in symbols}
+    tbl = pa.table({
+        "symbol": pa.array(symbols, pa.string()),
+        "mean": pa.array(mean10, pa.float64()),
+        "last": pa.array([num(px.get(s), "last") for s in symbols], pa.float64()),
+        "open": pa.array([num(px.get(s), "open") for s in symbols], pa.float64()),
+        "vwap": pa.array([num(fr[s], "pm_vwap") for s in symbols], pa.float64()),
+        "vol": pa.array([num(fr[s], "pm_volume") for s in symbols], pa.float64()),
+        "high": pa.array([num(fr[s], "pm_high") for s in symbols], pa.float64()),
+        "low": pa.array([num(fr[s], "pm_low") for s in symbols], pa.float64()),
     })
-    pm = features.pm_expr("l.tp", "l.vol", "l.mean", "pv.vwap",
-                          "pv.day_idx IS NOT NULL AND NOT EXISTS (SELECT 1 FROM stock_splits sp "
-                          f"WHERE sp.ticker = l.symbol AND sp.execution_date = DATE '{d.isoformat()}')")
+    ok = ("pv.day_idx IS NOT NULL AND NOT EXISTS (SELECT 1 FROM stock_splits sp "
+          f"WHERE sp.ticker = l.symbol AND sp.execution_date = DATE '{d.isoformat()}')")
+    pm = {**features.pm_px_expr("l.last", "l.open", "pv.vwap", ok),
+          **features.pm_full_expr("l.vwap", "l.vol", "l.mean", "l.high", "l.low", "pv.vwap", ok)}
+    names = (*_PM_PX_COLS, *_PM_FULL_COLS)
     with db.connect(db_path) as con:
-        con.register("_live", live)
-        con.register("_nsyms", pa.table({"symbol": symbols}))
+        con.register("_live", tbl)
         try:
             rows = con.execute(
-                f"SELECT n.symbol, {pm['pm_vwap_pct_prev_vwap']}, {pm['pm_vol_pct_10d']}, {pm['pm_known']} "
-                "FROM _nsyms n LEFT JOIN _live l ON l.symbol = n.symbol "
+                f"SELECT l.symbol, {', '.join(pm[c] for c in names)} FROM _live l "
                 "LEFT JOIN (SELECT symbol, day_idx, vwap * COALESCE(split_factor, 1.0) AS vwap FROM daily_bars) pv "
-                f"  ON pv.symbol = n.symbol AND pv.day_idx = {int(day_idx)} - 1").fetchall()
+                f"  ON pv.symbol = l.symbol AND pv.day_idx = {int(day_idx)} - 1").fetchall()
         finally:
             con.unregister("_live")
-            con.unregister("_nsyms")
-    by = {r[0]: r for r in rows}
+    by = {r[0]: dict(zip(names, r[1:])) for r in rows}
     ordered = [by[s] for s in symbols]
-    table = _next_table(
-        symbols, day_idx, export_id,
-        pm_vwap_pct_prev_vwap=[r[1] for r in ordered], pm_vol_pct_10d=[r[2] for r in ordered],
-        pm_known=[r[3] for r in ordered])
+    table = _next_table(symbols, day_idx, export_id, mean10,
+                        **{c: [r[c] for r in ordered] for c in names})
     _write_parquet_atomic(table, nxt_path)
-    known = sum(r[3] for r in ordered)
-    return {"date": d.isoformat(), "cutoff": cutoff, "symbols": len(symbols), "live_records": len(recs),
-            "pm_known": known, "export_id": export_id, "next_path": str(nxt_path)}
+    return {"date": d.isoformat(), "cutoff": cutoff, "symbols": len(symbols),
+            "prices_records": len(px), "premarket_records": len(full),
+            "pm_px_known": sum(r["pm_px_known"] for r in ordered),
+            "pm_full_known": sum(r["pm_full_known"] for r in ordered),
+            "export_id": export_id, "next_path": str(nxt_path)}
+
+
+def liquid_universe(*, date_: date | None = None, db_path: Path | None = None,
+                    out_path: Path | None = None) -> dict:
+    """Write premarket_live/universe-D.csv: the symbols (symbol column, sorted) whose mean dollar
+    volume (vwap x volume) over their last 20 sessions before D is >= [premarket]
+    min_dollar_volume and whose last close before D is >= min_price. D defaults to the session
+    after the newest bar. Only the sessions before D count, so the night job can run it for D."""
+    pcfg = config.premarket_config()
+    min_dv, min_px = pcfg["min_dollar_volume"], pcfg["min_price"]
+    with db.connect(db_path) as con:
+        if date_ is None:
+            last = con.execute("SELECT max(date) FROM daily_bars").fetchone()[0]
+            if last is None:
+                raise RuntimeError("daily_bars is empty")
+            date_ = tc.sessions(last + timedelta(days=1), last + timedelta(days=10))[0]
+        rows = con.execute(
+            "WITH r AS (SELECT symbol, date, close * COALESCE(split_factor, 1.0) AS close, vwap * volume AS dv, "
+            "    row_number() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn "
+            "  FROM daily_bars WHERE date < ? AND vwap IS NOT NULL AND volume IS NOT NULL) "
+            "SELECT symbol FROM r WHERE rn <= 20 GROUP BY symbol "
+            "HAVING count(*) = 20 AND avg(dv) >= ? AND max(close) FILTER (WHERE rn = 1) >= ? ORDER BY symbol",
+            [date_, min_dv, min_px]).fetchall()
+    path = Path(out_path) if out_path is not None else _morning_path("universe", date_).with_suffix(".csv")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_text_atomic(path, "symbol\n" + "".join(f"{r[0]}\n" for r in rows))
+    return {"date": date_.isoformat(), "symbols": len(rows), "min_dollar_volume": min_dv,
+            "min_price": min_px, "path": str(path)}
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
 
 
 def _sql_str(p: Path) -> str:

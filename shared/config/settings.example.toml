@@ -159,3 +159,17 @@ max_concurrency = 4
 # Economy sources (massive_treasury_yields, massive_inflation): the daily job fetches the
 # last `yields_window_days` days of yields, and inflation only when a month is due.
 yields_window_days = 10
+
+[screener]
+# Opening-range screener rule filters (ml/screener; dashboard Watchlist sliders start here).
+min_price = 5.0
+# 20-day mean of volume x VWAP
+min_dollar_volume = 5000000.0
+# pre-market volume ratio (pm_vol_pct_10d); only the 09:45 "full" state has it
+min_pm_vol_pct = 0.0
+# |open vs previous close| as a fraction (0.01 = 1%)
+min_abs_gap_pct = 0.0
+exclude_split_day = true
+# any | only | exclude  (days around a results release)
+earnings = "any"
+top_n = 20

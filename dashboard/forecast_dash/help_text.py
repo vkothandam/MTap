@@ -905,3 +905,60 @@ momentum* is an easier bar. *Direction* is how often the median called which sid
 price the VWAP ahead landed on (50% = coin flip).
 """)
 COLUMNS["horizon"] = "how far ahead the forecast VWAP runs: the next 1, 5, 15 or 60 minutes"
+
+HELP.update({
+    "wl_today": ("Today's list", """
+The stocks most likely to travel far from today's open, ranked by the screener's score (the
+80th-percentile range). The list is made at 09:30 (pre-market price known) or 09:45 (pre-market
+volume known too). **Sidebar sliders** re-apply the rule filters and re-rank; they start at the
+`[screener]` settings. `lean` is the daily model's median direction. It is shown, not used to
+rank.
+"""),
+    "wl_outcome": ("Screener: picks vs outcome", """
+Past lists graded against what happened. For each day the top picks' realised range from the open
+(max of high - open and open - low, over the open) is compared with the median of every stock
+in that list. **Hit rate** is the share of picks above that median; 50% is chance. Needs
+`outcomes.parquet` (`screener-outcomes`).
+"""),
+})
+PANELS.update({
+    "wl_table": ("Top picks", """
+One row per passing stock, best score first. `score` and `pred_range` are fractions of the open
+price: how far the stock may travel from the open on the day. Read it as a shortlist to look at,
+not a direction call.
+"""),
+    "wl_chart": ("Score of the top picks", """
+The screener score of each pick, best first. A steep drop means only the first few are clearly
+ahead of the rest.
+"""),
+    "wl_outcome_chart": ("Picks vs universe", """
+Bars: the mean realised range from the open of that day's top picks. Line: the median over every
+stock in the same list. Bars above the line on most days mean the screener finds the movers.
+"""),
+    "wl_outcome_table": ("Graded lists", """
+One row per graded list: how many picks and stocks, the picks' mean realised range, the universe
+median, the ratio between them, the hit rate and the mean predicted range.
+"""),
+})
+COLUMNS.update({
+    "state": "px = list made at 09:30 (pre-market price known), full = at 09:45 (pre-market volume too)",
+    "rank": "position among the stocks that pass the rules (1 = highest score)",
+    "score": "the screener's 80th-percentile range from the open, as a fraction of the open",
+    "pred_range": "the screener's typical (mean-model) range from the open, as a fraction",
+    "lean": "up or down: the daily model's median move direction. Not used for ranking",
+    "open": "today's opening price",
+    "gap_prev_close": "the open vs the previous close, as a fraction",
+    "tft_width90": "the daily model's P5-P95 width vs the previous VWAP: how unsure it is",
+    "prev_range": "yesterday's (high - low) / VWAP",
+    "atr14_pct": "14-day average true range as a fraction of the close",
+    "dollar_volume_20d": "mean of volume x VWAP over 20 sessions, in $",
+    "pm_vol_pct_10d": "pre-market volume ratio: log1p(100 x pre-market volume / 10-day mean)",
+    "earn_near": "1 if a results release is within a session of today",
+    "picks": "stocks in the top list that day",
+    "universe": "stocks in that day's list that have an outcome",
+    "top_range": "mean realised range from the open of the picks",
+    "universe_median": "median realised range from the open of every stock in the list",
+    "ratio": "top_range divided by universe_median; above 1 = the picks moved more",
+    "hit_rate": "share of picks whose range beat the universe median",
+    "predicted": "mean predicted range of the picks",
+})

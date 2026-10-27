@@ -88,7 +88,8 @@ def _load_live(path: str, stamp: tuple) -> Live | None:
 
 # ---- sections ------------------------------------------------------------------------------
 
-SECTIONS = {"home": "Home", "cross-day": "Cross-day", "intraday": "Intraday"}
+SECTIONS = {"home": "Home", "cross-day": "Cross-day", "intraday": "Intraday",
+            "watchlist": "Watchlist"}
 
 
 def section_radio() -> str:
@@ -99,7 +100,7 @@ def section_radio() -> str:
         st.session_state["section"] = SECTIONS.get(slug, SECTIONS["home"])
     label = st.sidebar.radio("Section", list(SECTIONS.values()), key="section",
                              help="Home: the newest runs at a glance. Cross-day: next-day VWAP "
-                                  "forecasts. Intraday: VWAP forecasts through the session")
+                                  "forecasts. Intraday: VWAP forecasts through the session. Watchlist: the day's screener picks")
     slug = next(k for k, v in SECTIONS.items() if v == label)
     if st.query_params.get("section") != slug:
         st.query_params["section"] = slug

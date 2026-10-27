@@ -22,7 +22,7 @@ from .config import (
     EARNINGS_WINDOWS,
     KNOWN_REALS,
     OBSERVED_REALS,
-    PREMARKET_REALS,
+    PM_GROUPS,
     SENTIMENT_REALS,
     STATIC_CATEGORICALS,
     SUPPORTED_SCHEMA_VERSIONS,
@@ -197,30 +197,59 @@ def longest_encoder(ds: TimeSeriesDataSet, copy: bool = True) -> TimeSeriesDataS
     return ds.filter(lambda d: (d["time_idx_first"] == first).to_numpy(), copy=copy)
 
 
+STATE_RATES = {"night": {"px": 1.0, "full": 1.0}, "px": {"px": 0.0, "full": 1.0},
+               "full": {"px": 0.0, "full": 0.0}}
+
+
 class PmMaskCollate:
-    """Collate function that blanks the pre-market inputs of the decoder step (value 0 and
-    pm_known 0) for a `rate` share of the samples, so one model learns to forecast with and
-    without them. The encoder history keeps its real values (live, history is always known).
+    """Collate function that blanks the pre-market inputs of the decoder step (values 0 and
+    the group's flag 0) for a share of the samples, so one model learns to forecast with and
+    without them. `rates` maps a group ("px", "full") to its share; a sample whose px group is
+    blanked has its full group blanked too (full is never on without prices). The encoder
+    history keeps its real values (live, history is always known).
     deterministic=True picks the samples by a hash of (symbol, forecast day) instead of at
     random: the same samples every epoch, for a comparable early-stop loss."""
 
-    def __init__(self, rate: float, cols_idx: list[int], deterministic: bool = False):
-        self.rate, self.cols_idx, self.deterministic = rate, list(cols_idx), deterministic
+    def __init__(self, rates: dict[str, float], cols_idx: dict[str, list[int]],
+                 deterministic: bool = False):
+        self.rates = dict(rates)
+        self.cols_idx = {g: list(c) for g, c in cols_idx.items()}
+        self.deterministic = deterministic
 
     @classmethod
-    def for_dataset(cls, ds: TimeSeriesDataSet, rate: float, deterministic: bool = False):
-        return cls(rate, [ds.reals.index(c) for c in PREMARKET_REALS], deterministic)
+    def for_dataset(cls, ds: TimeSeriesDataSet, rates: dict[str, float],
+                    deterministic: bool = False):
+        idx = {g: [ds.reals.index(c) for c in cols if c in ds.reals]
+               for g, cols in PM_GROUPS.items()}
+        idx = {g: c for g, c in idx.items() if c}
+        return cls({g: r for g, r in rates.items() if g in idx}, idx, deterministic)
+
+    @classmethod
+    def for_state(cls, ds: TimeSeriesDataSet, state: str):
+        """Forces a scoring state: night blanks both groups, px blanks full, full blanks none."""
+        return cls.for_dataset(ds, STATE_RATES[state])
+
+    def _u(self, x) -> torch.Tensor:
+        """One uniform [0, 1) draw per sample, shared by the groups so px blank is a subset of
+        full blank (full never on without prices)."""
+        n = len(x["decoder_cont"])
+        if self.deterministic:
+            g = x["groups"][:, 0].long()
+            t = x["decoder_time_idx"][:, 0].long()
+            return (((g * 73856093) ^ (t * 19349663)).abs() % 1000).float() / 1000
+        return torch.rand(n)
 
     def __call__(self, batch):
         x, y = TimeSeriesDataSet._collate_fn(batch)
         dc = x["decoder_cont"]
-        if self.deterministic:
-            g = x["groups"][:, 0].long()
-            t = x["decoder_time_idx"][:, 0].long()
-            hit = ((g * 73856093) ^ (t * 19349663)).abs() % 1000 < round(self.rate * 1000)
-        else:
-            hit = torch.rand(len(dc)) < self.rate
-        cols = torch.zeros(dc.shape[-1], dtype=torch.bool)
-        cols[self.cols_idx] = True
-        x["decoder_cont"] = dc.masked_fill(hit[:, None, None] & cols[None, None, :], 0.0)
+        u = self._u(x)
+        px = self.rates.get("px", 0.0)
+        # full is blank for its own share, which includes every px-blank sample
+        rate = {"px": px, "full": max(self.rates.get("full", 0.0), px)}
+        for g, cols_idx in self.cols_idx.items():
+            hit = u < rate[g] if rate[g] < 1 else torch.ones_like(u, dtype=torch.bool)
+            cols = torch.zeros(dc.shape[-1], dtype=torch.bool)
+            cols[cols_idx] = True
+            dc = dc.masked_fill(hit[:, None, None] & cols[None, None, :], 0.0)
+        x["decoder_cont"] = dc
         return x, y

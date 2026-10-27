@@ -31,9 +31,17 @@ from lightning.pytorch.loggers import CSVLogger
 from pytorch_forecasting import TemporalFusionTransformer
 from pytorch_forecasting.metrics import QuantileLoss
 
-from .config import EARNINGS_MODES, NOPM, PREMARKET_MODES, TrainConfig, from_run
+from .config import (
+    EARNINGS_MODES,
+    PM_GROUP_CHOICES,
+    PREMARKET_MODES,
+    STATE_SUFFIX,
+    TrainConfig,
+    from_run,
+)
 from .dataset import Fold, PmMaskCollate, build_datasets, load_panel, make_folds
 from .evaluate import calibration, forecast_frame, metrics
+from .importance import by_group, pool, variable_importance
 from .progress import Progress
 from .report import build_report
 
@@ -103,11 +111,13 @@ def train_fold(df: pd.DataFrame, cfg: TrainConfig, fold: Fold, fold_dir: Path,
     masked = cfg.premarket == "optional"
     train_dl = train_ds.to_dataloader(
         train=True, batch_size=cfg.batch_size, num_workers=cfg.num_workers,
-        **({"collate_fn": PmMaskCollate.for_dataset(train_ds, cfg.pm_mask)} if masked else {}))
+        **({"collate_fn": PmMaskCollate.for_dataset(
+            train_ds, {"px": cfg.pm_mask_px, "full": cfg.pm_mask_full})} if masked else {}))
     es_dl = es_ds.to_dataloader(
         train=False, batch_size=cfg.batch_size * 2, num_workers=cfg.num_workers,
-        # a fixed half of the early-stop samples blank, the same ones every epoch
-        **({"collate_fn": PmMaskCollate.for_dataset(es_ds, 0.5, deterministic=True)}
+        # the same samples blank every epoch (the training rates, by a hash of symbol and day)
+        **({"collate_fn": PmMaskCollate.for_dataset(
+            es_ds, {"px": cfg.pm_mask_px, "full": cfg.pm_mask_full}, deterministic=True)}
            if masked else {}))
     model = TemporalFusionTransformer.from_dataset(
         train_ds,
@@ -163,13 +173,19 @@ def train_fold(df: pd.DataFrame, cfg: TrainConfig, fold: Fold, fold_dir: Path,
     es_frame = forecast_frame(best, es_ds, df, cfg, pk)
     test_frame = forecast_frame(best, test_ds, df, cfg, pk)
     save(test_frame, fold_dir)
-    if masked:  # the same checkpoint with every pre-market input blanked: a sibling run
-        blank = forecast_frame(best, test_ds, df, cfg, pk,
-                               collate_fn=PmMaskCollate.for_dataset(test_ds, 1.0))
-        nopm = fold_dir.parent.with_name(fold_dir.parent.name + NOPM) / fold_dir.name
-        save(blank, nopm)
-        (nopm / "metrics.json").write_text(json.dumps(
-            {"fold": asdict(fold), "test": metrics(blank, cfg.quantiles)}, indent=2))
+    if masked:  # the same checkpoint per scoring state; the main run is the last (data's own)
+        for state in cfg.scoring_states[:-1]:
+            blank = forecast_frame(best, test_ds, df, cfg, pk,
+                                   collate_fn=PmMaskCollate.for_state(test_ds, state))
+            sib = fold_dir.parent.with_name(fold_dir.parent.name + STATE_SUFFIX[state]) / fold_dir.name
+            save(blank, sib)
+            (sib / "metrics.json").write_text(json.dumps(
+                {"fold": asdict(fold), "state": state, "test": metrics(blank, cfg.quantiles)},
+                indent=2))
+    imp = variable_importance(best, test_ds.to_dataloader(
+        train=False, batch_size=cfg.batch_size * 2, num_workers=cfg.num_workers))
+    (fold_dir / "importance.json").write_text(json.dumps(
+        {"variables": imp, "groups": by_group(imp)}, indent=2))
 
     result = {
         "fold": asdict(fold),
@@ -238,10 +254,11 @@ def run(cfg: TrainConfig, *, max_hours: float | None = None, resume: Path | None
         info = {"config": cfg.to_dict(), "panel_meta": meta, "folds": [asdict(f) for f in folds]}
         (run_dir / "config.json").write_text(json.dumps(info, indent=2, default=str))
         if cfg.premarket == "optional":
-            nopm = run_dir.with_name(run_dir.name + NOPM)
-            nopm.mkdir(exist_ok=True)
-            (nopm / "config.json").write_text(json.dumps(
-                {"view_of": run_dir.name, **info}, indent=2, default=str))
+            for state in cfg.scoring_states[:-1]:
+                sib = run_dir.with_name(run_dir.name + STATE_SUFFIX[state])
+                sib.mkdir(exist_ok=True)
+                (sib / "config.json").write_text(json.dumps(
+                    {"view_of": run_dir.name, "state": state, **info}, indent=2, default=str))
     print(f"run {run_dir.name}: {len(df):,} rows, {df['symbol'].nunique():,} symbols, "
           f"day_idx {df['day_idx'].min()}-{df['day_idx'].max()}")
 
@@ -288,7 +305,8 @@ def run(cfg: TrainConfig, *, max_hours: float | None = None, resume: Path | None
         pd.DataFrame(rows).to_csv(run_dir / f"calibration_{name}.csv", index=False)
     (run_dir / "summary.json").write_text(json.dumps(
         {"folds": {k: r for k, r in results}, "test_table": table.reset_index().to_dict("records"),
-         "pooled_test": metrics(pooled, cfg.quantiles), "pooled_calibration": pooled_cal},
+         "pooled_test": metrics(pooled, cfg.quantiles), "pooled_calibration": pooled_cal,
+         "importance_by_group": _pooled_importance(run_dir, results)},
         indent=2, default=str))
     with pd.option_context("display.width", 200, "display.max_columns", 30,
                            "display.max_rows", 200, "display.float_format", "{:.4f}".format):
@@ -301,6 +319,16 @@ def run(cfg: TrainConfig, *, max_hours: float | None = None, resume: Path | None
     _set_state(run_dir, "done")
     print(f"results: {run_dir} (calibration report: {run_dir / 'report'})")
     return run_dir
+
+
+def _pooled_importance(run_dir: Path, results: list) -> dict:
+    """Variable-selection weight per input group, per fold and averaged over folds."""
+    per_fold = {}
+    for k, _ in results:
+        f = run_dir / f"fold_{k}" / "importance.json"
+        if f.exists():
+            per_fold[k] = json.loads(f.read_text())["groups"]
+    return {"per_fold": per_fold, "mean": pool(list(per_fold.values())) if per_fold else {}}
 
 
 def _quantile_report(rows: list[dict]) -> str:
@@ -360,9 +388,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--after-hours", action="store_true", help="after-hours of day t (schema 4)")
     p.add_argument("--premarket", choices=PREMARKET_MODES, default=d.premarket,
                    help="today's pre-market as a known-future input; optional = also trained "
-                        "and scored without it")
-    p.add_argument("--pm-mask", type=float, default=d.pm_mask,
-                   help="share of training samples with pre-market blanked (optional mode)")
+                        "with groups masked and scored per state into <run>~night / <run>~px")
+    p.add_argument("--pm-groups", choices=PM_GROUP_CHOICES, default=d.pm_groups,
+                   help="pre-market groups that are inputs: px (prices, 09:30) or px,full "
+                        "(+ VWAP/volume/range, 09:45)")
+    p.add_argument("--pm-mask-full", type=float, default=d.pm_mask_full,
+                   help="share of training samples with the full group blank (optional mode)")
+    p.add_argument("--pm-mask-px", type=float, default=d.pm_mask_px,
+                   help="share with the prices group blank; full is blank too (optional mode)")
     p.add_argument("--dedupe-train", action=argparse.BooleanOptionalAction,
                    default=d.dedupe_train,
                    help="one training sample per (symbol, day) instead of per encoder length")
@@ -391,7 +424,8 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=a.batch_size, hidden_size=a.hidden_size, learning_rate=a.learning_rate,
         accelerator=a.accelerator, num_workers=a.num_workers, use_sentiment=a.use_sentiment,
         earnings=a.earnings, market=a.market, macro=a.macro, session_shape=a.session_shape,
-        after_hours=a.after_hours, premarket=a.premarket, pm_mask=a.pm_mask,
+        after_hours=a.after_hours, premarket=a.premarket, pm_groups=a.pm_groups,
+        pm_mask_full=a.pm_mask_full, pm_mask_px=a.pm_mask_px,
         dedupe_train=a.dedupe_train, seed=a.seed,
     ), max_hours=a.max_hours)
     return 0

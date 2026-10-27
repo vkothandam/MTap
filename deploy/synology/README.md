@@ -83,8 +83,11 @@ The Mac never opens `MTap-State` over SMB, and no DuckDB is used here.
          NAS needs no DuckDB for ChartIQ ids.
        - The ML project and the trained model must be reachable from the job container. Set
          `MTAP_PREDICT_CMD` (default `uv run --project ml tft-vwap-predict`) and
-         `MTAP_FORECAST_RUN_DIR` (the run directory) in the env file. The image does not yet
-         carry ml/.
+         `MTAP_FORECAST_RUN_DIR` (the run directory) in the env file, and for the screener
+         `MTAP_SCREENER_CMD` (default `uv run --project ml screener-score`) and
+         `MTAP_SCREENER_MODEL` (`runs/screener/<id>`). The 09:30 pass reads
+         `<run>~px/forecast_D_subset.parquet`, the 09:45 pass `<run>/forecast_D.parquet`.
+         The image does not yet carry ml/; S7 decides whether these run on the NAS or the Mac.
    - On the **Schedule** tab, set "Run on the following days" to Mon–Fri and "First run
      time" to the time above. DSM's defaults are every day at 00:00, when the NAS is off. On
      2026-10-24 the first three tasks kept those defaults. To check, read

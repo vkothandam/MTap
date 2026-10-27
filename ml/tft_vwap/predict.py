@@ -308,6 +308,14 @@ def _counts(mt: pd.DataFrame, confidences: list[float]) -> pd.DataFrame:
     return t
 
 
+def read_symbols(path: Path) -> list[str]:
+    """One symbol per line, or a CSV with a `symbol` column (the morning's shortlist-D.csv)."""
+    lines = [x.strip() for x in Path(path).read_text().splitlines() if x.strip()]
+    if lines and lines[0].split(",")[0].strip().lower() == "symbol":
+        return [x.split(",")[0].strip() for x in lines[1:]]
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="tft-vwap-predict", description=__doc__.split("\n")[0])
     p.add_argument("run_dir", type=Path)
@@ -332,8 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     warnings.filterwarnings("ignore", module=r"lightning\..*")
     run_dir = a.run_dir
     cfg = from_run(run_dir, panel=a.panel)
-    symbols = ([x.strip() for x in a.symbols_file.read_text().splitlines() if x.strip()]
-               if a.symbols_file else None)
+    symbols = read_symbols(a.symbols_file) if a.symbols_file else None
     main_state = "full" if "full" in cfg.pm_group_names else "px"
     if a.state:
         states = [a.state]

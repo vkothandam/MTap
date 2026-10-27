@@ -156,6 +156,20 @@ predict() {  # predict STATE [symbols-file]
     local extra=""; [ -n "${2:-}" ] && extra="--symbols-file $2"
     compose run --rm -T job sh -c "${MTAP_PREDICT_CMD:-uv run --project ml tft-vwap-predict} \"\${MTAP_FORECAST_RUN_DIR:?set MTAP_FORECAST_RUN_DIR}\" --state $1 $extra"
 }
+# The screener reads that state's forecast: the main run dir is full, `<run>~px` is px (see
+# ml/README.md). MTAP_SCREENER_CMD (default "uv run --project ml screener-score") and
+# MTAP_SCREENER_MODEL (runs/screener/<id>) come from the env file; a px pass sees the
+# shortlist subset, the full pass the whole forecast.
+screener() {  # screener STATE DATE [symbols-file]
+    local st="$1" d="$2" sf="${3:-}" fdir suffix="" extra=""
+    fdir='${MTAP_FORECAST_RUN_DIR}'; [ "$st" = px ] && fdir='${MTAP_FORECAST_RUN_DIR}~px'
+    [ -n "$sf" ] && { suffix="_subset"; extra="--symbols-file $sf"; }
+    compose run --rm -T job sh -c "${MTAP_SCREENER_CMD:-uv run --project ml screener-score} --date $d --state $st \
+        --model \"\${MTAP_SCREENER_MODEL:?set MTAP_SCREENER_MODEL}\" \
+        --prices /data/out/premarket_live/prices-$d.jsonl \
+        $([ "$st" = full ] && echo "--pm /data/out/premarket_live/premarket-$d.jsonl") \
+        --forecast \"$fdir/forecast_$d$suffix.parquet\" $extra"
+}
 
 # Night forecast for the NEXT session (DSM mtap-night, 17:25 PT = 20:25 ET). The claim file in
 # STATE/forecast makes it run once across hosts; forecast-night refuses before 20:20 ET.
@@ -194,13 +208,13 @@ morning() {
     done
     step_box 600 "export-next (prices)" py etrade export-next --date "$d" --prices "$ocr/premarket_live/prices-$d.jsonl" || true
     step_box 900 "predict px" predict px "$ocr/$short" || true
-    step_box 300 "screener-score" py screener-score --date "$d" || true
+    step_box 300 "screener-score" screener px "$d" "$ocr/$short" || true
     # 4. the full pre-market at 09:45
     wait_et 09:45:00
     step_box 1200 "premarket full" py etrade premarket full --date "$d" || return 1
     step_box 600 "export-next (full)" py etrade export-next --date "$d" --premarket "$ocr/premarket_live/premarket-$d.jsonl" || true
     step_box 900 "predict full" predict full || true
-    step_box 300 "screener-score (full)" py screener-score --date "$d" || true
+    step_box 300 "screener-score (full)" screener full "$d" || true
     log "morning: done"
 }
 

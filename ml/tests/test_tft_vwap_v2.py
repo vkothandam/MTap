@@ -198,6 +198,10 @@ def test_optional_run_pm_in_decoder_scores_per_state(panel4_path, tmp_path):
     ref = live["px"].set_index("symbol").loc[["S1", "S3"]]
     assert np.allclose(sub.set_index("symbol")["q50"], ref["q50"], atol=1e-6)
     assert not (sib["px"] / f"forecast_{day}_subset_moves.parquet").exists()
+    # the morning's shortlist CSV (symbol, score, reasons) works as a symbols file too
+    sl = tmp_path / "shortlist.csv"
+    sl.write_text("symbol,score,reasons\nS1,2.0,top\nS3,1.0,move\n")
+    assert predict.read_symbols(sl) == ["S1", "S3"]
     # a next file from another export is refused
     make_next(pd.read_parquet(panel4_path), "other").to_parquet(
         panel4_path.with_name("panel.next.parquet"), index=False)

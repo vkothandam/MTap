@@ -170,6 +170,79 @@ its calendar comes from `panel.meta.json["next_session"]`, so export with
   actual tab reads it. To grade yesterday's forecast, refresh and re-export the panel, then run
   `tft-vwap-grade runs/<run_id>`.
 
+## 5-year series: input groups, pre-market states, baselines, screener (2026-10-27)
+
+The design and reasons: [MODEL-STRATEGY.md](MODEL-STRATEGY.md) Q11–Q16; the inputs:
+[FEATURES.md](FEATURES.md) sections 11 and 16; results: [docs/LEARNINGS.md](../docs/LEARNINGS.md)
+`tag-ml-daily`. Train with `PYTHONWARNINGS="ignore::UserWarning:sklearn.utils.validation"`
+(FEATURES.md section 12).
+
+```bash
+P=../out/tft/exp5y/panel.parquet          # schema 4, export-tft --include-inference, frozen
+C="--panel $P --n-folds 0 --min-train-sessions 252 --fold-len 63 --early-stop-len 21"  # 16 folds
+G="--market --macro --after-hours --session-shape"                                    # R1 groups
+ODD="--folds 1,3,5,7,9,11,13,15"
+
+uv run tft-vwap $C                                    # R0  baseline
+uv run tft-vwap $C $G                                 # R1  all always-available groups
+uv run tft-vwap $C $G $ODD --premarket optional       # R4  A: masks, full off 50%, prices off 25%
+uv run tft-vwap $C $G $ODD --premarket on --pm-groups px        # R4p B: prices always on
+uv run tft-vwap $C $G $ODD --premarket on --pm-groups px,full   # R4f B: everything on
+uv run tft-vwap-overlay runs/<R1> --panel $P --inputs px   $ODD   # R6p C -> runs/<R1>-overlay-px
+uv run tft-vwap-overlay runs/<R1> --panel $P --inputs full $ODD   # R6f C -> runs/<R1>-overlay-full
+uv run tft-vwap-gbm $C $G                             # R7  plain HGB per quantile
+```
+
+- **Pause and resume.** `touch runs/<id>/STOP` stops at the next epoch end (or `--max-hours H`);
+  `uv run tft-vwap --resume runs/<id>` continues. A resume refuses if the panel changed.
+- **Time left.** A `[progress]` line per epoch, `runs/<id>/progress.json` every 30 s, and
+  `uv run tft-vwap-status [runs/<id> | runs]`: fold and run time left as earliest–latest
+  (estimate) and an ETA. Earliest assumes early stopping as soon as possible; latest, every
+  fold to `max_epochs`; the estimate uses the folds already finished.
+- **States of a pre-market run.** An `optional` run writes `runs/<id>/` (full: the data's own
+  flags), `runs/<id>~px/` (prices on, full off) and `runs/<id>~night/` (both off). Each has
+  `config.json` (`view_of`, `state`) and `fold_k/test_predictions.parquet` + `metrics.json`, so the
+  dashboard and compare treat it as a run. A px-only run's main dir is the px state.
+- **Live forecasts per state:** `uv run tft-vwap-predict runs/<id> --state night|px|full` writes
+  `forecast_<date>.*` into that state's dir (no name clashes; `tft-vwap-grade` grades each dir).
+  `--symbols-file F` forecasts only those symbols into `forecast_<date>_subset.*`, not graded.
+- **Compare:** `uv run tft-vwap-compare runs/A runs/B [--state night|px|full] [--state-b …]
+  [--only-pm px|full]`. Rows match on (symbol, date) when both runs have dates, else (symbol,
+  day_idx); the report says which. Per-fold table, earnings split, bootstrap CI. The bake-off:
+  - night: `runs/R4 runs/R1 --state night --only-pm full`
+  - 09:30: `runs/R4 runs/R4p --state px --only-pm px`, and R4 vs `runs/R1-overlay-px`
+  - 09:45: `runs/R4 runs/R4f --state full --only-pm full`, and R4 vs `runs/R1-overlay-full`
+- **Overlays** train for test fold k on the base run's out-of-fold forecasts of earlier folds
+  only; folds with fewer than 2 earlier folds are marked `thin` (metrics.json, summary.json).
+- **GBM (R7):** one sample per (symbol, day), last-session inputs plus `vwap_pct_prev_day` lags
+  0, 1, 2, 5, 20; one `HistGradientBoostingRegressor(loss="quantile")` per quantile, sorted; fixed
+  `--max-iter` (no early stop); pre-market only as `on`.
+- **Variable importance:** each fold writes `fold_k/importance.json` (variable-selection weights
+  over ≤ 20 test batches); `summary.json` has `importance_by_group` (base, earnings, market,
+  macro, session_shape, after_hours, premarket_px, premarket_full).
+
+### Screener (`ml/screener/`, R8)
+
+Ranks the liquid stocks by expected range from the open, `max(high − open, open − low)/open`
+(MODEL-STRATEGY.md Q15). Separate package; reads the panel and run files only.
+
+```bash
+uv run screener-train --panel $P --base-run runs/<R5> [--folds …] [--settings settings.toml]
+uv run screener-score --date D --model runs/screener/<id> --prices prices-D.jsonl \
+    [--pm premarket-D.jsonl] --forecast runs/<R5>~px/forecast_D.parquet --state px|full \
+    [--symbols-file shortlist-D.csv]          # -> out/screener/screener-D.parquet + -top20.csv
+uv run screener-outcomes --panel $P --days 60  # -> out/screener/outcomes.parquet (dashboard)
+```
+
+- `screener-train` fits a px and a full model and writes the R8 evaluation to `summary.json`:
+  top-20 realised range vs the universe median, a random 20, naive ATR, TFT P5–P95 width alone
+  and pre-market volume alone, with paired bootstrap CIs. The model for fold k is fit only on
+  days before fold k (fold 0 is not evaluated).
+- `screener-D.parquet`: `symbol, date, state, score, pred_range, rule_pass, rank, lean, open,
+  last, prev_close, prev_vwap, dollar_volume_20d, split_day` + features. `lean` (TFT median
+  up/down) is not used for ranking. Rule filters come from `[screener]` in settings.
+- Live scoring assumes no split today; `exclude_split_day` bites only in training/evaluation.
+
 ## Outputs
 
 ```

@@ -22,6 +22,8 @@ tft-vwap = "tft_vwap.train:main"
 tft-vwap-report = "tft_vwap.report:main"
 tft-vwap-predict = "tft_vwap.predict:main"
 tft-vwap-grade = "tft_vwap.grade:main"
+tft-vwap-compare = "tft_vwap.compare:main"
+tft-vwap-overlay = "tft_vwap.overlay:main"
 tft-intraday = "tft_intraday.train:main"
 tft-intraday-report = "tft_intraday.report:main"
 

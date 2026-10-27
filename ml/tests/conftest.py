@@ -4,6 +4,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tft_vwap.config import (
+    AFTER_HOURS_REALS,
+    MACRO_REALS,
+    MARKET_REALS,
+    PREMARKET_REALS,
+    SESSION_SHAPE_REALS,
+)
+
+SCHEMA4_COLUMNS = [*MARKET_REALS, *MACRO_REALS, *SESSION_SHAPE_REALS, *AFTER_HOURS_REALS,
+                   *PREMARKET_REALS]
+
 
 def synthetic_panel(n_symbols=6, n_days=150, start=1000, seed=0, gap_symbol="S1", gap_day=1050):
     """Panel shaped like export-tft output: target = next session's vwap, rows whose next bar is
@@ -59,7 +70,52 @@ def synthetic_panel(n_symbols=6, n_days=150, start=1000, seed=0, gap_symbol="S1"
     df["results_window"] = window(df["days_to_results"])
     df["results_window_pit"] = window(df["days_to_results_est"])
     df["is_10q"] = (first & (since == 0)).astype(int)
+    add_schema4(df, rng)
     return df
+
+
+def add_schema4(df, rng):
+    """The schema-4 columns, with NULL gaps like the export (flags are never NULL)."""
+    n = len(df)
+    for c in (*MARKET_REALS, *MACRO_REALS, *SESSION_SHAPE_REALS):
+        df[c] = rng.normal(0, 0.01, n)
+        df.loc[rng.random(n) < 0.05, c] = np.nan
+    df["ah_known"] = (rng.random(n) < 0.8).astype(float)
+    df["ah_vwap_pct_rth_vwap"] = np.where(df["ah_known"] == 1, rng.normal(0, 0.005, n), np.nan)
+    df["ah_vol_pct_10d"] = np.where(df["ah_known"] == 1, rng.uniform(0, 3, n), np.nan)
+    df["close_pct_rth_vwap"] = np.where(df["ah_known"] == 1, rng.normal(0, 0.004, n), np.nan)
+    df["pm_known"] = (rng.random(n) < 0.7).astype(float)
+    df["pm_vwap_pct_prev_vwap"] = np.where(df["pm_known"] == 1, rng.normal(0, 0.01, n), np.nan)
+    df["pm_vol_pct_10d"] = np.where(df["pm_known"] == 1, rng.uniform(0, 4, n), np.nan)
+
+
+def make_next(panel_df, export_id="exp-1"):
+    """panel.next.parquet: the per-symbol known inputs of the session after the panel."""
+    last = int(panel_df["day_idx"].max())
+    syms = sorted(panel_df.loc[panel_df["day_idx"] == last, "symbol"].unique())
+    rng = np.random.default_rng(5)
+    nxt = pd.DataFrame({"symbol": syms, "day_idx": last + 1,
+                        "pm_vwap_pct_prev_vwap": rng.normal(0, 0.01, len(syms)),
+                        "pm_vol_pct_10d": rng.uniform(0, 4, len(syms)),
+                        "pm_known": 1.0, "export_id": export_id})
+    return nxt.iloc[:-1]  # the last symbol has no pre-market row: it gets a blank one
+
+
+def write_panel(tmp_path, panel_df, schema, export_id="exp-1"):
+    df = panel_df if schema == 4 else panel_df.drop(columns=SCHEMA4_COLUMNS)
+    path = tmp_path / "panel.parquet"
+    df.to_parquet(path, index=False)
+    last = int(panel_df["day_idx"].max())
+    nxt = {"date": (panel_df["date"].max() + pd.Timedelta(days=1)).date().isoformat(),
+           "day_idx": last + 1, "day_of_week": (last + 1) % 5 + 1,
+           "month": ((last + 1) // 21) % 12 + 1, "is_month_end": 0, "is_quarter_end": 0,
+           "sessions_gap_next": 1}
+    meta = {"schema_version": schema, "next_session": nxt}
+    if schema == 4:
+        meta.update(export_id=export_id, premarket_cutoff="09:25")
+        make_next(panel_df, export_id).to_parquet(tmp_path / "panel.next.parquet", index=False)
+    (tmp_path / "panel.meta.json").write_text(json.dumps(meta))
+    return path
 
 
 @pytest.fixture
@@ -69,13 +125,13 @@ def panel_df():
 
 @pytest.fixture
 def panel_path(tmp_path, panel_df):
-    path = tmp_path / "panel.parquet"
-    panel_df.to_parquet(path, index=False)
-    last = int(panel_df["day_idx"].max())
-    nxt = {"date": (panel_df["date"].max() + pd.Timedelta(days=1)).date().isoformat(),
-           "day_idx": last + 1, "day_of_week": (last + 1) % 5 + 1,
-           "month": ((last + 1) // 21) % 12 + 1, "is_month_end": 0, "is_quarter_end": 0,
-           "sessions_gap_next": 1}
-    (tmp_path / "panel.meta.json").write_text(
-        json.dumps({"schema_version": 3, "next_session": nxt}))
-    return path
+    """A schema-3 panel (none of the schema-4 columns), as production runs read."""
+    return write_panel(tmp_path, panel_df, 3)
+
+
+@pytest.fixture
+def panel4_path(tmp_path, panel_df):
+    """A schema-4 panel with panel.next.parquet and an export_id in the meta."""
+    d = tmp_path / "p4"
+    d.mkdir()
+    return write_panel(d, panel_df, 4)

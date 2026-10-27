@@ -139,7 +139,7 @@ requests_per_sec = 8
 workers = 4
 
 [premarket]
-# Live pre-market (sourcing-py etrade premarket, NAS job `premarket`, 06:28 PT = 09:28 ET).
+# Morning steps (sourcing-py etrade premarket precheck|prices|full; NAS job `morning`).
 # Pre-market inputs (last trade, VWAP, volume, range) come from the bars in [04:00, cutoff) ET.
 # The cutoff is recorded in the panel meta; predict refuses a mismatch. Env PREMARKET_CUTOFF.
 cutoff = "09:30"
@@ -147,13 +147,34 @@ cutoff = "09:30"
 # volume and last close minimums.
 min_dollar_volume = 5000000
 min_price = 3.0
-# The Massive fallback feed is this many minutes behind (the forecast runs at cutoff + delay).
+# Massive is this many minutes behind: `premarket full` refuses to run before cutoff +
+# feed_delay_min (09:45) unless --force, and marks earlier records complete = false.
 feed_delay_min = 15
+# The one live-price adapter for `premarket prices` (E*TRADE watchlist from Redis, then ChartIQ
+# prices only, never volume). Live Massive replaces it later; nothing else changes.
+live_source = "etrade"
+# The 09:29:30 pre-check is a ranking only (never a model input): the top shortlist_size plus
+# every stock with a move over move_pct % or volume over vol_ratio x its 10-day mean.
+shortlist_size = 200
+move_pct = 2.0
+vol_ratio = 5.0
+# Concurrent Massive minute-bar calls for `premarket full` (overrides [massive] workers).
+full_workers = 64
 # The bearer token the NAS collector mirrors (Authentication.ts); a path under state/ resolves
 # under the state root. The job only reads it: it never logs in. Env PREMARKET_TOKEN_PATH.
 token_path = "state/etrade/bearer.json"
 # Concurrent getChartiqFeed calls (hard cap 4).
 max_concurrency = 4
+
+[forecast]
+# Night job (sourcing-py forecast-night --date D; claim file MTap-State/forecast/claim-D.json).
+earliest = "20:20"          # ET on the previous session; --force overrides
+stale_min = 30              # a running claim whose heartbeat is older is taken over
+heartbeat_s = 60
+# The ML project is separate (no imports either way): its predict command and the run to use.
+# Env MTAP_PREDICT_CMD, MTAP_FORECAST_RUN_DIR.
+predict_cmd = "uv run --project ml tft-vwap-predict"
+run_dir = ""
 
 [macro]
 # Economy sources (massive_treasury_yields, massive_inflation): the daily job fetches the

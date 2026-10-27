@@ -263,7 +263,7 @@ def etrade_config() -> dict:
 
 
 def premarket_config() -> dict:
-    """[premarket]: the live pre-market job (sourcing_py/etrade/premarket.py)."""
+    """[premarket]: the morning steps (sourcing_py/etrade/premarket.py, precheck.py, premarket_full.py)."""
     section = settings().get("premarket", {})
     cutoff = os.environ.get("PREMARKET_CUTOFF") or section.get("cutoff") or "09:30"
     token = os.environ.get("PREMARKET_TOKEN_PATH") or section.get("token_path") or "state/etrade/bearer.json"
@@ -274,6 +274,29 @@ def premarket_config() -> dict:
         "max_concurrency": max(1, min(4, int(section.get("max_concurrency") or 4))),
         "min_dollar_volume": float(section.get("min_dollar_volume") or 5e6),
         "min_price": float(section.get("min_price") or 3.0),
+        # the one live-price adapter (premarket.LIVE_SOURCES); live Massive replaces "etrade" later
+        "live_source": str(section.get("live_source") or "etrade"),
+        # the 09:29:30 ranking (precheck.py): top shortlist_size plus every stock over a threshold
+        "shortlist_size": int(section.get("shortlist_size") or 200),
+        "move_pct": float(section.get("move_pct") or 2.0),
+        "vol_ratio": float(section.get("vol_ratio") or 5.0),
+        # concurrent Massive minute-bar calls for `premarket full` (overrides [massive] workers)
+        "full_workers": max(1, int(section.get("full_workers") or 64)),
+    }
+
+
+def forecast_config() -> dict:
+    """[forecast]: the night forecast job (sourcing_py/forecast_night.py)."""
+    section = settings().get("forecast", {})
+    return {
+        "claim_dir": state_root() / "forecast",
+        "stale_min": int(section.get("stale_min") or 30),
+        "heartbeat_s": int(section.get("heartbeat_s") or 60),
+        "earliest": str(section.get("earliest") or "20:20"),
+        # the ML package is a separate project (no imports either way): a command line
+        "predict_cmd": str(os.environ.get("MTAP_PREDICT_CMD") or section.get("predict_cmd")
+                           or "uv run --project ml tft-vwap-predict"),
+        "run_dir": str(os.environ.get("MTAP_FORECAST_RUN_DIR") or section.get("run_dir") or ""),
     }
 
 

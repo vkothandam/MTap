@@ -195,6 +195,7 @@ SELECT
     COALESCE(b.close / NULLIF(b.rth_vwap, 0) - 1, 0.0)                      AS close_pct_rth_vwap,
     (b.ah_vwap IS NOT NULL AND b.rth_vwap IS NOT NULL)::SMALLINT            AS ah_known,
     COALESCE(b.vol_10d_mean, 0.0)                                           AS vol_10d_mean,
+    b.volume                                                                AS volume,  -- split-adjusted; for the screener, not a TFT input
     {pm_sel}
 FROM bars b
 JOIN universe u ON u.symbol = b.symbol

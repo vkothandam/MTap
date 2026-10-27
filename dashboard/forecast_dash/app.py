@@ -20,7 +20,7 @@ import streamlit as st
 for _name in [m for m in sys.modules if m == "forecast_dash" or m.startswith("forecast_dash.")]:
     del sys.modules[_name]
 
-from forecast_dash import calib, charts, home, insights, intraday_page
+from forecast_dash import calib, charts, home, insights, intraday_page, watchlist_page
 from forecast_dash.contract import Run, discover, load_forecast
 from forecast_dash.help_text import HELP
 from forecast_dash.ui import (
@@ -52,6 +52,13 @@ def _default_intraday_root() -> str:
     p.add_argument("--intraday-runs", default=os.environ.get("FORECAST_DASH_INTRADAY_RUNS"))
     given = p.parse_known_args(sys.argv[1:])[0].intraday_runs
     return given or str(Path(_default_root()) / "intraday")
+
+
+def _default_screener_root() -> str:
+    """--screener-dir, else $FORECAST_DASH_SCREENER, else ../out/screener."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--screener-dir", default=os.environ.get("FORECAST_DASH_SCREENER"))
+    return p.parse_known_args(sys.argv[1:])[0].screener_dir or "../out/screener"
 
 
 # ---- cached data (cache_resource: shared, never copied; treat as read-only) -----------------
@@ -766,6 +773,8 @@ def main():
         return home.render(_default_root(), _default_intraday_root())
     if section == "intraday":
         return intraday_page.render(_default_intraday_root())
+    if section == "watchlist":
+        return watchlist_page.render(_default_screener_root())
     title, body = HELP["overview"]
     a, b = st.columns([6, 1], vertical_alignment="bottom")
     a.title(title)

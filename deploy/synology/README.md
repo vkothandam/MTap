@@ -57,20 +57,34 @@ The Mac never opens `MTap-State` over SMB, and no DuckDB is used here.
        ```bash
        ssh vijayan.synology@192.168.1.100 'echo start > /volume2/Backups/MTap-State/run-next'
        ```
-     - Only build, start, daily, evening, stop, status, ws-test, selftest, premarket and
+     - Only build, start, daily, evening, stop, status, ws-test, selftest, morning, night and
        inputs-backfill are accepted, with no arguments.
    - **The weekday schedule:** Scheduled Task, Mon–Fri. Create these now with **Enabled
      unticked**, and tick Enabled at cutover:
      - `mtap-start` 06:10: `start`
      - `mtap-daily` 06:40: `daily`
      - `mtap-evening` 13:15: `evening`
-     - `mtap-premarket` 06:28: `premarket` (09:28 ET; the DSM times are PT). Alerts by email
-       like the others. It runs `etrade premarket --date today`, which only reads
-       `MTap-State/etrade/bearer.json` (the collector keeps it current), never logs in, and
-       stops on the first 401/403/429. It then fetches the rest from Massive minute bars
-       (15 min delayed). It takes a few minutes and runs inside the shared job lock, so
-       it waits if another job holds it. Output: `MTap-Data/out/premarket_live/` and
-       `MTap-State/logs/premarket-<date>.log`.
+     - `mtap-morning` 06:14: `morning` (09:14 ET; the DSM times are PT). Runs
+       forecast-night if no host has a done claim, waits for 09:29:30 ET and runs the
+       pre-check, then prices at 09:30 and the open until 09:32, export-next, `predict --state px`
+       and `screener-score`; at 09:45 the Massive full pre-market, export-next, `predict
+       --state full`, `screener-score`. Every step is time-boxed. It takes NO jobs lock (it
+       waits on the clock) and `MTap-State/morning.pid` keeps a second run out. The E*TRADE
+       part only reads `MTap-State/etrade/bearer.json`, never logs in and stops on the first
+       401/403/429. Output: `MTap-Data/out/premarket_live/` and `MTap-State/logs/morning-<date>.log`.
+     - `mtap-night` 17:25: `night` (20:25 ET): `forecast-night` for the next session. The claim
+       file `MTap-State/forecast/claim-<date>.json` makes it run once across hosts (a claim
+       with a heartbeat under 30 min old is respected; a stale one is taken over).
+     - **Setup the morning and night jobs need (S1):**
+       - A container-local DuckDB copy (never on SMB): the jobs read/write the DuckDB from a
+         local folder in the job container, refreshed from the NAS Parquet by the daily job
+         (not automated yet; copy it in as a setup step).
+       - `premarket xids` (run by the night job) writes `out/premarket_live/xids.csv` so the
+         NAS needs no DuckDB for ChartIQ ids.
+       - The ML project and the trained model must be reachable from the job container. Set
+         `MTAP_PREDICT_CMD` (default `uv run --project ml tft-vwap-predict`) and
+         `MTAP_FORECAST_RUN_DIR` (the run directory) in the env file. The image does not yet
+         carry ml/.
    - On the **Schedule** tab, set "Run on the following days" to Mon–Fri and "First run
      time" to the time above. DSM's defaults are every day at 00:00, when the NAS is off. On
      2026-10-24 the first three tasks kept those defaults. To check, read
@@ -115,10 +129,10 @@ idempotent, so after a failure or a stop, queue it again.
 ## Collector restart for the token file
 
 The collector now also writes the E*TRADE bearer token to `MTap-State/etrade/bearer.json`
-(mode 600, atomic) whenever it changes; the `premarket` job reads it. After `push.sh` and
+(mode 600, atomic) whenever it changes; the `morning` job reads it. After `push.sh` and
 `build`, the collector needs **one restart outside market hours** (queue `stop`, then `start`,
-before 06:10 PT or after 13:45 PT) to pick the change up. Until then `premarket` finds no
-token file and uses the Massive fallback. The token is a secret: it stays in `MTap-State`,
+before 06:10 PT or after 13:45 PT) to pick the change up. Until then `morning` finds no
+token file and prices come from the watchlist only. The token is a secret: it stays in `MTap-State`,
 never in the repo or the data share.
 
 ## Trial (the weekend before cutover)

@@ -16,15 +16,19 @@
 #   ws-test   a 2-minute massive-ws connection, outside its window (a trial; refused
 #             while the massive-ws service runs: one connection per key)
 #   selftest  what a py container sees: its user, Python's path, the package and its CLI
-#   premarket today's live pre-market from E*TRADE ChartIQ (etrade premarket), in a one-off py
-#             container: it only reads STATE/etrade/bearer.json, never touches the collector
-#             or logs in, and stops on the first 401/403/429 (then Massive minute bars)
+#   morning   forecast-night if no host has finished it, 09:29:30 ET precheck, 09:30 prices
+#             (watchlist, else ChartIQ price-only; token file only, never logs in, stops on the
+#             first 401/403/429), the open until 09:32, export-next + predict px + screener-score,
+#             09:45 Massive full pre-market, export-next + predict full + screener-score. Every
+#             step is time-boxed. Takes NO jobs lock; a pid file in STATE keeps a second out
+#   night     forecast-night for the next session (claim file in STATE/forecast: once per day
+#             across hosts; refused before 20:20 ET)
 #   inputs-backfill  the 5-year inputs, resumable and idempotent: back up out/extended_hours
 #             once, massive-ext refetch from MTAP_BACKFILL_FROM with minute bars, tickers_cs
 #             refresh, quarter-end shares, the economy series. Queue it after the evening job
 #   run ARGS  sourcing-py ARGS in a one-off py container
 #   queue     run the job named in STATE/run-next (one of build start daily evening stop
-#             status ws-test selftest premarket inputs-backfill; no arguments), then delete the file; nothing if it
+#             status ws-test selftest morning night inputs-backfill; no arguments), then delete the file; nothing if it
 #             is absent. Every queue run also runs `watch` first.
 #   watch     in market hours (Mon-Fri ET), a role's heartbeats older than
 #             MTAP_WATCH_STALE_MIN (10) minutes are a problem; exit 1, with the reason in
@@ -126,18 +130,78 @@ daily() {
     fi
 }
 
-# Today's live pre-market (DSM task mtap-premarket, Mon-Fri 06:28 PT = 09:28 ET). Quick; the
-# E*TRADE part only reads the token file the collector keeps, so the collector is untouched.
-premarket() {
+# ---- the morning and the night forecast -------------------------------------------------------
+# ET clock helpers: seconds since midnight ET, and a bounded wait until an ET time.
+et_now() { TZ=America/New_York date +%H:%M:%S; }
+et_secs() { local t; t="$(et_now)"; echo $((10#${t:0:2} * 3600 + 10#${t:3:2} * 60 + 10#${t:6:2})); }
+wait_et() {  # wait_et HH:MM:SS: sleep until then; returns 1 at once if it is more than 2 h away
+    local h m s want now
+    IFS=: read -r h m s <<< "$1"
+    want=$((10#$h * 3600 + 10#$m * 60 + 10#${s:-0})); now="$(et_secs)"
+    [ "$now" -ge "$want" ] && return 0
+    [ $((want - now)) -le 7200 ] || return 1
+    sleep $((want - now))
+}
+# A step that may not run longer than $1 seconds: step_box SECS NAME cmd...
+step_box() {
+    local secs="$1" name="$2"; shift 2
+    log "morning: $name"
+    if timeout "$secs" "$@" >> "$MLOG" 2>&1; then log "morning: $name ok"; return 0; fi
+    log "morning: $name FAILED or timed out after ${secs}s (see $MLOG)"; return 1
+}
+# ML predict and the screener run in the job container (MTAP_PREDICT_CMD in the env file names
+# the command, default "uv run --project ml tft-vwap-predict"); the image must carry ml/ and
+# the model, see deploy/synology/README.md.
+predict() {  # predict STATE [symbols-file]
+    local extra=""; [ -n "${2:-}" ] && extra="--symbols-file $2"
+    compose run --rm -T job sh -c "${MTAP_PREDICT_CMD:-uv run --project ml tft-vwap-predict} \"\${MTAP_FORECAST_RUN_DIR:?set MTAP_FORECAST_RUN_DIR}\" --state $1 $extra"
+}
+
+# Night forecast for the NEXT session (DSM mtap-night, 17:25 PT = 20:25 ET). The claim file in
+# STATE/forecast makes it run once across hosts; forecast-night refuses before 20:20 ET.
+night() {
     data_ready || { log "ERROR: $MTAP_DATA_DIR has no .mtap-data-root; not running"; return 1; }
-    local plog; plog="$LOGS/premarket-$(date +%F).log"
-    log "premarket: etrade premarket --date today (log $plog)"
-    if py etrade premarket --date today --source auto >> "$plog" 2>&1; then
-        log "premarket: $(tail -1 "$plog")"
-    else
-        log "premarket: FAILED (see $plog)"
-        return 1
+    local nlog d; nlog="$LOGS/night-$(date +%F).log"
+    d="$(py python -c "from sourcing_py import forecast_night as f; from datetime import date; print(f.next_session(date.today()))" 2>>"$nlog" | tail -1)"
+    [ -n "$d" ] || { log "night: no next session found"; return 1; }
+    log "night: forecast-night --date $d (log $nlog)"
+    py forecast-night --date "$d" >> "$nlog" 2>&1 || { log "night: FAILED (see $nlog)"; return 1; }
+    log "night: $(tail -1 "$nlog")"
+}
+
+# The morning (DSM mtap-morning, Mon-Fri 06:14 PT = 09:14 ET). It holds no jobs lock (it waits
+# for the clock and must not block the 09:30 start) and a pid file keeps a second one out.
+morning() {
+    data_ready || { log "ERROR: $MTAP_DATA_DIR has no .mtap-data-root; not running"; return 1; }
+    local pidf="$MTAP_STATE_DIR/morning.pid" d; d="$(TZ=America/New_York date +%F)"
+    if [ -f "$pidf" ] && kill -0 "$(cat "$pidf" 2>/dev/null)" 2>/dev/null; then
+        log "morning: already running (pid $(cat "$pidf")); exiting"; return 0
     fi
+    echo $$ > "$pidf"; trap 'rm -f "$pidf"' EXIT
+    MLOG="$LOGS/morning-$d.log"
+    local short="premarket_live/shortlist-$d.csv" ocr=/data/out
+    # 1. the night forecast, if no host has finished it
+    step_box 5400 "forecast-night (skipped when a done claim exists)" py forecast-night --date "$d" || true
+    # 2. the pre-check at 09:29:30
+    wait_et 09:29:30 || { log "morning: more than 2 h before 09:29:30 ET; exiting"; return 1; }
+    step_box 120 "precheck" py etrade premarket precheck --date "$d" || log "morning: no shortlist"
+    # 3. prices at 09:30:00, then the open until 09:32
+    wait_et 09:30:00
+    step_box 120 "prices" py etrade premarket prices --date "$d" --symbols-file "$ocr/$short" || true
+    while [ "$(et_secs)" -lt $((9 * 3600 + 32 * 60)) ]; do
+        sleep 20
+        step_box 60 "prices --open" py etrade premarket prices --date "$d" --symbols-file "$ocr/$short" --open || break
+    done
+    step_box 600 "export-next (prices)" py etrade export-next --date "$d" --prices "$ocr/premarket_live/prices-$d.jsonl" || true
+    step_box 900 "predict px" predict px "$ocr/$short" || true
+    step_box 300 "screener-score" py screener-score --date "$d" || true
+    # 4. the full pre-market at 09:45
+    wait_et 09:45:00
+    step_box 1200 "premarket full" py etrade premarket full --date "$d" || return 1
+    step_box 600 "export-next (full)" py etrade export-next --date "$d" --premarket "$ocr/premarket_live/premarket-$d.jsonl" || true
+    step_box 900 "predict full" predict full || true
+    step_box 300 "screener-score (full)" py screener-score --date "$d" || true
+    log "morning: done"
 }
 
 # The one-off 5-year inputs load. Every step is resumable and idempotent; a failed step is
@@ -359,8 +423,8 @@ queue() {
     next="$(head -n 1 "$f" | tr -d '[:space:]')"
     rm -f "$f"
     case "$next" in
-        build|start|daily|evening|stop|status|ws-test|selftest|premarket|inputs-backfill) JOB="$next"; log "queued job"; dispatch "$next" ;;
-        *) log "ignoring queued job '$next' (not one of build start daily evening stop status ws-test selftest premarket inputs-backfill)" ;;
+        build|start|daily|evening|stop|status|ws-test|selftest|morning|night|inputs-backfill) JOB="$next"; log "queued job"; dispatch "$next" ;;
+        *) log "ignoring queued job '$next' (not one of build start daily evening stop status ws-test selftest morning night inputs-backfill)" ;;
     esac
 }
 
@@ -374,7 +438,8 @@ dispatch() {
         status) status ;;
         ws-test) ws_test ;;
         selftest) selftest ;;
-        premarket) premarket ;;
+        morning) morning ;;
+        night) night ;;
         inputs-backfill) inputs_backfill ;;
         watch) watch ;;
         *) return 2 ;;
@@ -382,8 +447,8 @@ dispatch() {
 }
 
 case "$JOB" in
-    build|start|daily|evening|stop|status|ws-test|selftest|premarket|inputs-backfill|watch|queue|run) ;;
-    *) die "usage: $0 {build|start|daily|evening|stop|status|ws-test|selftest|premarket|inputs-backfill|watch|queue|run ARGS}" ;;
+    build|start|daily|evening|stop|status|ws-test|selftest|morning|night|inputs-backfill|watch|queue|run) ;;
+    *) die "usage: $0 {build|start|daily|evening|stop|status|ws-test|selftest|morning|night|inputs-backfill|watch|queue|run ARGS}" ;;
 esac
 check_secrets
 prepare_state

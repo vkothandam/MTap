@@ -903,6 +903,16 @@ def _symbol(con, symbol, issue_type="CS", exchange="NASDAQ"):
     )
 
 
+SCHEMA4_COLUMNS = [
+    "mkt_cap_ret", "own_sector_cap_ret", *(f"sec_{c}_cap_ret" for c in features.SECTORS),
+    "ust_3m_chg_bp", "ust_2y_chg_bp", "ust_10y_chg_bp", "ust_10y_2y_slope", "ust_10y_3m_slope",
+    "ust_10y_z252", "cpi_yoy", "core_cpi_yoy", "cpi_yoy_chg", "core_cpi_mom",
+    "high_position_pct", "low_position_pct", "gap_open_pct", "gap_open_vs_prev_vwap_pct",
+    "ah_vwap_pct_rth_vwap", "ah_vol_pct_10d", "close_pct_rth_vwap", "ah_known",
+    "pm_vwap_pct_prev_vwap", "pm_vol_pct_10d", "pm_known",
+]
+
+
 def _export(tmp_path, dbp, **kw):
     out = tmp_path / "out" / "panel.parquet"
     kw = {**_LOOSE, "news_db_path": tmp_path / "absent.duckdb", **kw}
@@ -923,7 +933,7 @@ def test_export_tft_columns_formulas_and_fills(tmp_path):
     features.derive_features(db_path=dbp)
     summary, rows = _export(tmp_path, dbp)
 
-    assert list(rows[0]) == [
+    assert list(rows[0])[:31] == [
         "target_tomorrow_vwap", "target_return", "symbol", "industry_code", "exchange",
         "issue_type", "day_idx", "date", "day_of_week", "month", "is_month_end",
         "is_quarter_end", "sessions_gap_next", "today_vwap", "vwap_pct_prev_day",
@@ -931,7 +941,8 @@ def test_export_tft_columns_formulas_and_fills(tmp_path):
         "transactions_per_volume", "daily_sentiment", "sentiment_volume", "has_news",
         "is_10k", "is_10q", "results_window", "days_since_results", "days_to_results",
         "days_to_results_is_est", "results_window_pit", "days_to_results_est",
-    ]  # exact set: no leaky forward VWAPs
+    ]  # the schema-3 set, unchanged and in order: no leaky forward VWAPs
+    assert list(rows[0])[31:] == SCHEMA4_COLUMNS
     by = {(r["symbol"], r["date"].isoformat()): r for r in rows}
     r = by[("AAA", "2024-01-16")]  # vwap 10, next session 11
     assert r["target_tomorrow_vwap"] == 11.0

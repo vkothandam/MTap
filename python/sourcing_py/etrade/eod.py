@@ -24,6 +24,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from ..massive_ext.extended import NEW_COLUMNS
 from . import db
 from .symbols import _file_date, daily_summary_dir, select_files
 
@@ -47,16 +48,20 @@ ON CONFLICT (symbol, date) DO UPDATE SET
 
 # One extended_hours file onto the bars it matches. fetched_at is an ISO string with an
 # offset; stored as naive UTC like ingested_at.
-_UPDATE_EXTENDED = """
+# The VWAP columns are COALESCEd: a file written before they existed reads them as NULL and
+# must not wipe values a newer file loaded.
+_UPDATE_EXTENDED = f"""
 UPDATE daily_bars b SET
     pre_market_price = e.pre_market_price, pre_market_last = e.pre_market_last,
     pre_market_volume = e.pre_market_volume, regular_volume = e.regular_volume,
     after_hours_price = e.after_hours_price, after_hours_volume = e.after_hours_volume,
+    {", ".join(f"{c} = coalesce(e.{c}, b.{c})" for c in NEW_COLUMNS)},
     ext_fetched_at = timezone('UTC', TRY_CAST(e.fetched_at AS TIMESTAMPTZ))
-FROM read_json(?, format = 'newline_delimited', columns = {
+FROM read_json(?, format = 'newline_delimited', columns = {{
     'ticker': 'VARCHAR', 'date': 'DATE', 'pre_market_price': 'DOUBLE',
     'pre_market_last': 'DOUBLE', 'pre_market_volume': 'DOUBLE', 'regular_volume': 'DOUBLE',
-    'after_hours_price': 'DOUBLE', 'after_hours_volume': 'DOUBLE', 'fetched_at': 'VARCHAR'}) e
+    'after_hours_price': 'DOUBLE', 'after_hours_volume': 'DOUBLE', 'fetched_at': 'VARCHAR',
+    {", ".join(f"'{c}': 'DOUBLE'" for c in NEW_COLUMNS)}}}) e
 WHERE b.symbol = e.ticker AND b.date = e.date
 """
 
@@ -96,6 +101,51 @@ def extended_files(daily_dir: Path, lo: date, hi: date) -> list[Path]:
     return out
 
 
+_ISSUE_TYPE = {"CS": "CS", "ADRC": "DR"}
+
+
+def listing_by_ticker(rows: list[dict]) -> dict[str, dict]:
+    """One tickers_cs row per ticker: the active listing if there is one, else the most
+    recently delisted (a ticker can be listed twice when a symbol was recycled)."""
+    best: dict[str, dict] = {}
+    for r in rows:
+        t = r.get("ticker")
+        if not t:
+            continue
+        key = (bool(r.get("active")), r.get("delisted_utc") or "", r.get("last_updated_utc") or "")
+        if t not in best or key > best[t][0]:
+            best[t] = (key, r)
+    return {t: v[1] for t, v in best.items()}
+
+
+def recycled_tickers(rows: list[dict]) -> list[str]:
+    """Tickers listed under more than one CIK in the tickers_cs file (symbol reuse)."""
+    ciks: dict[str, set] = {}
+    for r in rows:
+        if r.get("ticker") and r.get("cik"):
+            ciks.setdefault(r["ticker"], set()).add(r["cik"])
+    return sorted(t for t, c in ciks.items() if len(c) > 1)
+
+
+def fill_issue_types(con, rows: list[dict]) -> int:
+    """Set symbols.issue_type where NULL from the tickers_cs type (CS -> CS, ADRC -> DR);
+    delisted names never got one from E*TRADE. Returns the symbols filled."""
+    import pyarrow as pa
+
+    pairs = [(t, _ISSUE_TYPE[r.get("type") or "CS"]) for t, r in listing_by_ticker(rows).items()
+             if (r.get("type") or "CS") in _ISSUE_TYPE]
+    if not pairs:
+        return 0
+    con.register("_types", pa.table({"symbol": [p[0] for p in pairs], "issue_type": [p[1] for p in pairs]}))
+    try:
+        before = con.execute("SELECT count(*) FROM symbols WHERE issue_type IS NULL").fetchone()[0]
+        con.execute("UPDATE symbols s SET issue_type = t.issue_type FROM _types t "
+                    "WHERE s.symbol = t.symbol AND s.issue_type IS NULL")
+        return before - con.execute("SELECT count(*) FROM symbols WHERE issue_type IS NULL").fetchone()[0]
+    finally:
+        con.unregister("_types")
+
+
 def ingest_eod(
     *,
     days: int | None = None,
@@ -104,12 +154,15 @@ def ingest_eod(
     directory: Path | None = None,
     db_path: Path | None = None,
     log_every: int = 25,
+    extended_only: bool = False,
 ) -> dict:
     """Run Phase 1a. Loads all daily_summary files by default (days=None).
 
     Returns a summary dict. Files that fail to parse are collected and reported
     rather than aborting the whole run.
     """
+    if extended_only:
+        return _ingest_extended_only(fromdate, todate, directory, db_path)
     files = select_files(days=days, fromdate=fromdate, todate=todate, directory=directory)
     if not files:
         raise FileNotFoundError(
@@ -138,6 +191,7 @@ def ingest_eod(
                 failed.append({"file": path.name, "error": f"{type(exc).__name__}: {exc}"})
                 print(f"{path.name}: FAILED — {type(exc).__name__}: {exc}")
         con.execute(_REFRESH_SYMBOLS, [now])
+        issue_filled, recycled = _tickers_pass(con)
         bars_total = con.execute("SELECT count(*) FROM daily_bars").fetchone()[0]
         symbols_total = con.execute("SELECT count(*) FROM symbols").fetchone()[0]
 
@@ -150,4 +204,44 @@ def ingest_eod(
         "bars_extended": ext_rows,
         "bars_total": bars_total,
         "symbols_total": symbols_total,
+        "issue_types_filled": issue_filled,
+        "recycled_tickers": recycled,
+    }
+
+
+def _tickers_pass(con) -> tuple[int, list[str]]:
+    """Fill NULL issue_type from the newest tickers_cs file; (filled, recycled tickers).
+    No file (or an unreadable one) is not an error: the pass is skipped."""
+    from ..massive_ext.extended import latest_tickers
+
+    try:
+        rows = latest_tickers()
+    except FileNotFoundError:
+        return 0, []
+    return fill_issue_types(con, rows), recycled_tickers(rows)
+
+
+def _ingest_extended_only(fromdate, todate, directory, db_path) -> dict:
+    """Only the extended-hours UPDATE pass, over every extended_hours file in range (a
+    VWAP backfill must not reload the daily bars)."""
+    lo = date.fromisoformat(fromdate) if fromdate else date.min
+    hi = date.fromisoformat(todate) if todate else date.max
+    ext_files = extended_files(directory or daily_summary_dir(), lo, hi)
+    failed: list[dict] = []
+    ext_rows = 0
+    with db.connect(db_path) as con:
+        for path in ext_files:
+            try:
+                ext_rows += con.execute(_UPDATE_EXTENDED, [str(path)]).fetchone()[0]
+            except Exception as exc:  # noqa: BLE001 — per-file: log and keep going
+                failed.append({"file": path.name, "error": f"{type(exc).__name__}: {exc}"})
+                print(f"{path.name}: FAILED — {type(exc).__name__}: {exc}")
+        bars_total = con.execute("SELECT count(*) FROM daily_bars").fetchone()[0]
+        symbols_total = con.execute("SELECT count(*) FROM symbols").fetchone()[0]
+    return {
+        "files": 0, "failed_files": failed,
+        "window": (lo.isoformat() if fromdate else "-", hi.isoformat() if todate else "-"),
+        "bars_loaded": 0, "extended_files": len(ext_files), "bars_extended": ext_rows,
+        "bars_total": bars_total, "symbols_total": symbols_total,
+        "issue_types_filled": 0, "recycled_tickers": [],
     }

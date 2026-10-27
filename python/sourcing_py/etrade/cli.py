@@ -11,6 +11,7 @@ Dispatched from `sourcing_py.__main__` when the first arg is `etrade`:
     sourcing-py etrade fetch-edgar [--symbols A,B] [--since D]
     sourcing-py etrade derive-features [--symbols A,B]
     sourcing-py etrade export-tft [--out PATH] [--include-inference] [--min-bars N] ...
+    sourcing-py etrade export-next [--date D] [--panel PATH]
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from . import login as login_mod
 _USAGE = (
     "usage:\n"
     "  sourcing-py etrade build-symbols [--days N | --fromdate D1 [--todate D2]]\n"
-    "  sourcing-py etrade ingest-eod [--days N | --fromdate D1 [--todate D2]]  (default: all files)\n"
+    "  sourcing-py etrade ingest-eod [--days N | --fromdate D1 [--todate D2]] [--extended-only]  (default: all files)\n"
     "  sourcing-py etrade login [--once]   (puppeteer login -> state/etrade/session.json)\n"
     "  sourcing-py etrade map-industries [--trading-db PATH]  (sector/industry from MBin)\n"
     "  sourcing-py etrade fetch [--symbols A,B | --all] [--resume] [--retry-failed]\n"
@@ -32,7 +33,8 @@ _USAGE = (
     "  sourcing-py etrade fetch-edgar [--symbols A,B] [--since D]  (SEC 8-K results releases; before derive-features)\n"
     "  sourcing-py etrade derive-features [--symbols A,B]  (day_idx, filing flags, VWAP; re-run after ingest-eod)\n"
     "  sourcing-py etrade export-tft [--out PATH] [--include-inference] [--issue-types CS,DR]\n"
-    "      [--min-bars 120] [--min-median-vwap 1] [--min-median-volume 50000]  (TFT panel.parquet)"
+    "      [--min-bars 120] [--min-median-vwap 1] [--min-median-volume 50000]  (TFT panel.parquet)\n"
+    "  sourcing-py etrade export-next [--date D] [--panel PATH]  (fill panel.next.parquet from premarket_live)"
 )
 
 
@@ -69,7 +71,8 @@ def _cmd_build_symbols(p: dict) -> int:
 def _cmd_ingest_eod(p: dict) -> int:
     # default: all files (days=None); an explicit --days or --fromdate/--todate narrows it
     days = int(p["days"]) if p.get("days") else None
-    summary = eod.ingest_eod(days=days, fromdate=p.get("fromdate"), todate=p.get("todate"))
+    summary = eod.ingest_eod(days=days, fromdate=p.get("fromdate"), todate=p.get("todate"),
+                             extended_only=bool(p.get("extended-only")))
     lo, hi = summary["window"]
     print(
         f"ingested EOD bars from {summary['files']} file(s) [{lo} .. {hi}]: "
@@ -77,6 +80,12 @@ def _cmd_ingest_eod(p: dict) -> int:
         f"{summary['symbols_total']:,} symbols in DB; extended hours on "
         f"{summary['bars_extended']:,} bars from {summary['extended_files']} file(s)"
     )
+    if summary.get("issue_types_filled"):
+        print(f"  filled issue_type on {summary['issue_types_filled']:,} symbol(s) from tickers_cs")
+    if summary.get("recycled_tickers"):
+        r = summary["recycled_tickers"]
+        print(f"  {len(r)} recycled ticker(s) (same symbol, different CIK): {', '.join(r[:10])}"
+              f"{' ...' if len(r) > 10 else ''}")
     if summary["failed_files"]:
         print(f"  {len(summary['failed_files'])} file(s) failed to parse", file=sys.stderr)
         return 1
@@ -179,6 +188,21 @@ def _cmd_derive_features(p: dict) -> int:
     return 0
 
 
+def _cmd_export_next(p: dict) -> int:
+    from datetime import date
+
+    try:
+        summary = export.export_next(date_=date.fromisoformat(p["date"]) if p.get("date") else None,
+                                     panel=p["panel"] if p.get("panel") else None)
+    except (RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"export-next {summary['date']} (cutoff {summary['cutoff']}): pm_known for "
+          f"{summary['pm_known']:,}/{summary['symbols']:,} symbols from {summary['live_records']:,} "
+          f"live record(s) -> {summary['next_path']}")
+    return 0
+
+
 def _cmd_export_tft(p: dict) -> int:
     kwargs: dict = {"include_inference": bool(p.get("include-inference"))}
     if p.get("out"):
@@ -241,5 +265,7 @@ def main(argv: list[str]) -> int:
         return _cmd_derive_features(params)
     if sub == "export-tft":
         return _cmd_export_tft(params)
+    if sub == "export-next":
+        return _cmd_export_next(params)
     print(f"unknown etrade subcommand {sub!r}\n{_USAGE}", file=sys.stderr)
     return 2

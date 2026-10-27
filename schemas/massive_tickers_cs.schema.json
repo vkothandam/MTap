@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "massive_tickers_cs",
   "title": "massive_tickers_cs record",
-  "description": "One common stock (type CS) from Massive.com /v3/reference/tickers, listed or delisted.",
+  "description": "One common stock or ADR (type CS or ADRC) from Massive.com /v3/reference/tickers, listed or delisted.",
   "type": "object",
   "additionalProperties": false,
   "required": ["ticker", "active"],
@@ -15,6 +15,7 @@
     "composite_figi": { "type": ["string", "null"], "description": "Composite FIGI." },
     "share_class_figi": { "type": ["string", "null"], "description": "Share-class FIGI." },
     "delisted_utc": { "type": ["string", "null"], "description": "When it was delisted (inactive names)." },
+    "type": { "type": ["string", "null"], "description": "Massive ticker type: CS (common stock) or ADRC (ADR common). Absent in files before 2026-10 (all CS)." },
     "last_updated_utc": { "type": ["string", "null"], "description": "When Massive last updated the entry." }
   }
 }

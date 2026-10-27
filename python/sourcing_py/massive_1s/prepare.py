@@ -50,7 +50,7 @@ def stock_list(rows: list[dict]) -> list[dict]:
     """Listed common stocks, sorted by ticker, each marked kept or with its exclusion."""
     out: dict[str, dict] = {}
     for r in rows:
-        if not r.get("active"):
+        if not r.get("active") or r.get("type") not in (None, "CS"):  # ADRC is not in the 1s universe
             continue
         reason = exclusion(r.get("name"))
         out.setdefault(r["ticker"], {

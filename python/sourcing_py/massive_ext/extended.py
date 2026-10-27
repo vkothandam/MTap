@@ -56,14 +56,43 @@ def regular_close(d: date) -> time:
         return time(16)
 
 
+# Pre-market cut-offs, minutes before the 09:30 open. A cut-off C counts the bars that
+# START before C (a bar stamped 09:24 is in the 09:25 sums). They are fixed offsets from the
+# open, so they are right on every day, DST included.
+CUTOFFS = {"0800": 90, "0900": 30, "0915": 15, "0925": 5, "0930": 0}
+_CUT_MS = {k: m * 60_000 for k, m in CUTOFFS.items()}
+
+
+def _vw(bar: dict) -> float | None:
+    """The bar's own VWAP, else its typical price (h+l+c)/3, else its close."""
+    vw = bar.get("vw")
+    if vw:
+        return vw
+    h, lo, c = bar.get("h"), bar.get("l"), bar.get("c")
+    if h is not None and lo is not None and c is not None:
+        return (h + lo + c) / 3
+    return c
+
+
+def _tp(bar: dict) -> float | None:
+    h, lo, c = bar.get("h"), bar.get("l"), bar.get("c")
+    if h is not None and lo is not None and c is not None:
+        return (h + lo + c) / 3
+    return c
+
+
 class DaySummary:
     """Accumulates one ticker-day from bars in time order."""
 
-    __slots__ = ("bars", "post_last", "post_v", "pre_first", "pre_last", "pre_v", "reg_v")
+    __slots__ = ("bars", "cut", "post_last", "post_v", "post_vwv", "pre_first", "pre_last",
+                 "pre_v", "reg_v", "reg_vwv")
 
     def __init__(self) -> None:
         self.pre_first = self.pre_last = self.post_last = None
         self.pre_v = self.reg_v = self.post_v = 0.0
+        self.reg_vwv = self.post_vwv = 0.0
+        # per cut-off: [sum vw*v, sum typical*v, sum v]
+        self.cut = {k: [0.0, 0.0, 0.0] for k in CUTOFFS}
         self.bars = 0
 
     def add(self, t: int, open_ms: int, close_ms: int, bar: dict) -> None:
@@ -74,28 +103,45 @@ class DaySummary:
                 self.pre_first = bar.get("o")
             self.pre_last = bar.get("c")
             self.pre_v += v
+            if v:
+                vw, tp = _vw(bar), _tp(bar)
+                for k, off in _CUT_MS.items():
+                    if t < open_ms - off:
+                        acc = self.cut[k]
+                        acc[0] += (vw or 0.0) * v
+                        acc[1] += (tp or 0.0) * v
+                        acc[2] += v
         elif t < close_ms:
             self.reg_v += v
+            self.reg_vwv += (_vw(bar) or 0.0) * v
         else:
             self.post_last = bar.get("c")
             self.post_v += v
+            self.post_vwv += (_vw(bar) or 0.0) * v
 
     def record(self, ticker: str, d: date, fetched_at: str) -> dict:
-        return {
+        r = {
             "ticker": ticker, "date": d.isoformat(),
             "pre_market_price": self.pre_first, "pre_market_last": self.pre_last,
             # volumes carry fractional shares; round off the float-sum noise
             "pre_market_volume": round(self.pre_v, 6), "regular_volume": round(self.reg_v, 6),
             "after_hours_price": self.post_last, "after_hours_volume": round(self.post_v, 6),
             "minute_bars": self.bars, "fetched_at": fetched_at,
+            "regular_vwap": self.reg_vwv / self.reg_v if self.reg_v else None,
+            "after_hours_vwap": self.post_vwv / self.post_v if self.post_v else None,
         }
+        for k, (vwv, tpv, v) in self.cut.items():
+            r[f"pre_market_vwap_{k}"] = vwv / v if v else None
+            r[f"pre_market_tpvwap_{k}"] = tpv / v if v else None
+            r[f"pre_market_volume_{k}"] = round(v, 6)
+        return r
 
 
 def _ms(d: date, t: time) -> int:
     return int(datetime.combine(d, t, NY).timestamp() * 1000)
 
 
-def summarize(ticker: str, pages, fetched_at: str) -> list[dict]:
+def summarize(ticker: str, pages, fetched_at: str, sink: list | None = None) -> list[dict]:
     """Per-day records from an iterable of bar pages (each a list of Massive 1-min bars).
 
     The New York day and its open/close cut-offs are worked out once per day, not per bar
@@ -104,6 +150,9 @@ def summarize(ticker: str, pages, fetched_at: str) -> list[dict]:
     acc = None
     start = end = open_ms = close_ms = 0
     for bars in pages:
+        if sink is not None:
+            sink.extend((ticker, b["t"], b.get("o"), b.get("h"), b.get("l"), b.get("c"),
+                         b.get("v"), b.get("vw"), b.get("n")) for b in bars)
         for bar in bars:
             t = bar["t"]
             if not start <= t < end:
@@ -134,9 +183,10 @@ def _pages(client: httpx.Client, cfg: dict, ticker: str, d0: date, d1: date):
         url, params = (str(httpx.URL(nxt).copy_merge_params({"apiKey": cfg["api_key"]})), None) if nxt else (None, None)
 
 
-def fetch_ticker(client: httpx.Client, cfg: dict, ticker: str, d0: date, d1: date) -> list[dict]:
+def fetch_ticker(client: httpx.Client, cfg: dict, ticker: str, d0: date, d1: date,
+                 sink: list | None = None) -> list[dict]:
     fetched_at = datetime.now(UTC).isoformat()
-    return summarize(ticker, _pages(client, cfg, ticker, d0, d1), fetched_at)
+    return summarize(ticker, _pages(client, cfg, ticker, d0, d1), fetched_at, sink)
 
 
 def latest_tickers() -> list[dict]:
@@ -148,7 +198,7 @@ def latest_tickers() -> list[dict]:
 
 
 def universe(d0: date) -> list[str]:
-    """Common stocks listed now or delisted on/after d0, from the newest tickers_cs file."""
+    """Common stocks and ADRs (types CS and ADRC) listed now or delisted on/after d0, from the newest tickers_cs file."""
     keep: dict[str, None] = {}
     for r in latest_tickers():
         gone = r.get("delisted_utc")
@@ -182,15 +232,87 @@ def _write_atomic(path: Path, lines: list[str]) -> None:
     os.replace(tmp, path)
 
 
+def quarters(d0: date, d1: date) -> list[tuple[date, date]]:
+    """[d0, d1] cut at calendar-quarter boundaries (each piece is its own resumable job)."""
+    out = []
+    cur = d0
+    while cur <= d1:
+        qm = (cur.month - 1) // 3 * 3 + 3  # last month of cur's quarter
+        end = date(cur.year + (qm == 12), qm % 12 + 1, 1) - timedelta(days=1)
+        out.append((cur, min(end, d1)))
+        cur = end + timedelta(days=1)
+    return out
+
+
 def fetch(d0: date, d1: date, *, tickers: list[str] | None = None, workers: int | None = None,
-          only_dates: set[date] | None = None, keep: bool = False) -> int:
-    """Fetch every ticker for [d0, d1], then write the per-date files. 0 when complete."""
+          only_dates: set[date] | None = None, keep: bool = False, allow_failures: int = 0,
+          chunk: str | None = None, save_bars: Path | str | None = None) -> int:
+    """Fetch every ticker for [d0, d1], then write the per-date files. 0 when complete.
+
+    chunk="quarter" runs each calendar quarter as its own job (so a backfill resumes at the
+    quarter it stopped in). allow_failures=N finalizes even when up to N tickers failed
+    (failures.jsonl and the job folder are left; rerun to retry them). save_bars=DIR also
+    keeps the raw minute bars as DIR/month=YYYY-MM/*.parquet."""
+    if chunk not in (None, "quarter"):
+        raise ValueError(f"unknown --chunk {chunk!r} (only: quarter)")
+    pieces = quarters(d0, d1) if chunk == "quarter" else [(d0, d1)]
+    rc = 0
+    for q0, q1 in pieces:
+        rc = max(rc, _fetch_one(q0, q1, tickers=tickers, workers=workers, only_dates=only_dates,
+                                keep=keep, allow_failures=allow_failures, save_bars=save_bars))
+    return rc
+
+
+_BAR_COLS = ("ticker", "t", "o", "h", "l", "c", "v", "vw", "n")
+
+
+def _write_bars_stage(path: Path, rows: list[tuple]) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    cols = list(zip(*rows)) if rows else [[] for _ in _BAR_COLS]
+    types = [pa.string(), pa.int64(), pa.float64(), pa.float64(), pa.float64(), pa.float64(),
+             pa.float64(), pa.float64(), pa.int64()]
+    table = pa.table({n: pa.array(list(c), type=ty) for n, c, ty in zip(_BAR_COLS, cols, types)})
+    tmp = path.with_name(f".{path.name}.tmp")
+    pq.write_table(table, tmp, compression="zstd")
+    os.replace(tmp, path)
+
+
+def _publish_bars(job: Path, dest: Path, d0: date, d1: date) -> int:
+    """Combine the staged per-ticker bars into one parquet file per New York month under
+    dest/month=YYYY-MM/ (written next to the target, then moved). Returns files written."""
+    import duckdb
+
+    files = [str(p) for p in (job / "bars").glob("*.parquet") if p.stat().st_size]
+    if not files:
+        return 0
+    con = duckdb.connect()
+    con.execute("SET TimeZone='UTC'")
+    con.execute("CREATE TABLE m AS SELECT *, strftime(timezone('America/New_York', epoch_ms(t)), '%Y-%m') AS mo "
+                "FROM read_parquet(?)", [files])
+    n = 0
+    for (mo,) in con.execute("SELECT DISTINCT mo FROM m ORDER BY 1").fetchall():
+        d = dest / f"month={mo}"
+        d.mkdir(parents=True, exist_ok=True)
+        final = d / f"bars-{d0}_{d1}.parquet"
+        tmp = d / f".{final.name}.tmp"
+        con.execute(f"COPY (SELECT {', '.join(_BAR_COLS)} FROM m WHERE mo = ? ORDER BY ticker, t) "
+                    f"TO '{tmp}' (FORMAT parquet, COMPRESSION zstd)", [mo])
+        os.replace(tmp, final)
+        n += 1
+    return n
+
+
+def _fetch_one(d0: date, d1: date, *, tickers, workers, only_dates, keep, allow_failures, save_bars) -> int:
     cfg = config.massive_config()
     workers = workers or cfg["workers"]
     targets = tickers or universe(d0)
     job = job_dir(d0, d1)
     staging = job / "staging"
     staging.mkdir(parents=True, exist_ok=True)
+    if save_bars:
+        (job / "bars").mkdir(exist_ok=True)
     done = {_staged(p) for p in staging.glob("*.jsonl")}
     todo = [t for t in targets if t not in done]
     print(f"massive-ext {d0}..{d1}: {len(targets)} tickers, {len(done)} already staged, "
@@ -198,13 +320,20 @@ def fetch(d0: date, d1: date, *, tickers: list[str] | None = None, workers: int 
 
     failed: dict[str, str] = {}
     ok = processed = 0
+
+    def work(client, t):
+        if not save_bars:
+            return fetch_ticker(client, cfg, t, d0, d1), None
+        sink: list = []
+        return fetch_ticker(client, cfg, t, d0, d1, sink), sink
+
     with http.get_client(timeout=120) as client, ThreadPoolExecutor(max_workers=workers) as pool:
         pending = iter(todo)
         inflight = {}
 
         def submit_next() -> None:
             for t in pending:
-                inflight[pool.submit(fetch_ticker, client, cfg, t, d0, d1)] = t
+                inflight[pool.submit(work, client, t)] = t
                 return
 
         for _ in range(workers):
@@ -215,12 +344,14 @@ def fetch(d0: date, d1: date, *, tickers: list[str] | None = None, workers: int 
                 t = inflight.pop(fut)
                 processed += 1
                 try:
-                    rows = fut.result()
+                    rows, sink = fut.result()
                 except Exception as exc:  # noqa: BLE001 — per-ticker failure: log, keep going
                     failed[t] = f"{type(exc).__name__}: {exc}"
                 else:
-                    _write_atomic(staging / f"{t.replace('/', '%2F')}.jsonl",
-                                  [json.dumps(r) + "\n" for r in rows])
+                    name = t.replace("/", "%2F")
+                    if sink is not None:  # bars first: the .jsonl marks the ticker as staged
+                        _write_bars_stage(job / "bars" / f"{name}.parquet", sink)
+                    _write_atomic(staging / f"{name}.jsonl", [json.dumps(r) + "\n" for r in rows])
                     ok += 1
                 if processed % 250 == 0:
                     print(f"  {processed}/{len(todo)} fetched ({len(failed)} failed)", flush=True)
@@ -230,12 +361,16 @@ def fetch(d0: date, d1: date, *, tickers: list[str] | None = None, workers: int 
     if failed:
         for t, e in list(failed.items())[:5]:
             print(f"  {t}: {_mask(e)[:200]}", file=sys.stderr)
-        print(f"{len(failed)} ticker(s) failed (state: {job}); rerun the same command to retry them",
-              file=sys.stderr)
-        return 1
+        if len(failed) > allow_failures:
+            print(f"{len(failed)} ticker(s) failed (state: {job}); rerun the same command to retry them",
+                  file=sys.stderr)
+            return 1
+        print(f"{len(failed)} ticker(s) failed, within --allow-failures {allow_failures}: finalizing "
+              f"anyway (see {job / 'failures.jsonl'})", file=sys.stderr)
     written = finalize(job, only_dates=only_dates)
-    print(f"done: {ok} fetched now, {written} date file(s) written")
-    if not keep:
+    bars = _publish_bars(job, Path(save_bars), d0, d1) if save_bars else 0
+    print(f"done: {ok} fetched now, {written} date file(s) written" + (f", {bars} bars file(s)" if save_bars else ""))
+    if not keep and not failed:
         shutil.rmtree(job)
     return 0
 
@@ -252,7 +387,12 @@ _COLUMNS = {
     "ticker": "VARCHAR", "date": "DATE", "pre_market_price": "DOUBLE", "pre_market_last": "DOUBLE",
     "pre_market_volume": "DOUBLE", "regular_volume": "DOUBLE", "after_hours_price": "DOUBLE",
     "after_hours_volume": "DOUBLE", "minute_bars": "BIGINT", "fetched_at": "VARCHAR",
+    # VWAPs (added 2026-10): minute-bar sums; see DaySummary
+    "regular_vwap": "DOUBLE", "after_hours_vwap": "DOUBLE",
+    **{f"pre_market_{kind}_{k}": "DOUBLE" for k in CUTOFFS for kind in ("vwap", "tpvwap", "volume")},
 }
+NEW_COLUMNS = [c for c in _COLUMNS if c in ("regular_vwap", "after_hours_vwap")
+               or c.startswith(("pre_market_vwap_", "pre_market_tpvwap_", "pre_market_volume_"))]
 
 
 def out_path(d: date) -> Path:

@@ -60,6 +60,27 @@ def sec_ticker(symbol: str) -> str:
     return symbol.upper().replace(".", "-")
 
 
+def massive_ciks(symbols: list[str]) -> dict[str, dict]:
+    """CIK fallback for symbols SEC no longer lists (delisted): the newest tickers_cs file's
+    `cik`, from the most recent listing of each ticker. Shaped like a company_tickers.json
+    entry. No tickers_cs file means no fallback."""
+    from ..massive_ext.extended import latest_tickers
+    from .eod import listing_by_ticker
+
+    if not symbols:
+        return {}
+    try:
+        listing = listing_by_ticker(latest_tickers())
+    except FileNotFoundError:
+        return {}
+    out = {}
+    for s in symbols:
+        r = listing.get(s)
+        if r and r.get("cik"):
+            out[s] = {"cik_str": int(r["cik"]), "ticker": sec_ticker(s), "title": r.get("name")}
+    return out
+
+
 def _headers(cfg: dict) -> dict:
     # sent on every request, so an injected client gets them too
     return {"user-agent": cfg["user_agent"], "accept-encoding": "gzip, deflate"}
@@ -203,6 +224,7 @@ def fetch_edgar(
         tickers = _get(c, cfg, cfg["tickers_url"])
         by_ticker = {t["ticker"].upper(): t for t in tickers.values()}
         mapped = {s: by_ticker[sec_ticker(s)] for s in universe if sec_ticker(s) in by_ticker}
+        mapped.update(massive_ciks([s for s in universe if s not in mapped]))
         ciks = sorted({int(t["cik_str"]) for t in mapped.values()})
 
         def one(cik: int):
@@ -273,7 +295,8 @@ def _store(con, universe: list[str], mapped: dict, ok: list[int], rows: list[dic
     try:
         for name, tbl in tables.items():
             con.register(name, tbl)
-        con.execute("DELETE FROM sec_edgar_tickers WHERE symbol IN (SELECT symbol FROM _universe)")
+        # only the symbols in the new list: a delisted symbol SEC no longer lists keeps its CIK
+        con.execute("DELETE FROM sec_edgar_tickers WHERE symbol IN (SELECT symbol FROM _tickers)")
         con.execute("INSERT INTO sec_edgar_tickers SELECT * FROM _tickers")
         con.execute(
             "DELETE FROM sec_edgar_filings f WHERE f.cik IN (SELECT cik FROM _ok) "

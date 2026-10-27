@@ -104,6 +104,15 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     after_hours_price    DOUBLE,    -- last after-hours trade (close minute .. 19:59 ET)
     after_hours_volume   DOUBLE,    -- sum of close-minute .. 19:59 bars (the 16:00 minute counts here)
     ext_fetched_at       TIMESTAMP, -- when the extended-hours bars were fetched (naive UTC)
+    -- VWAPs from the same minute bars (massive_ext, 2026-10); NULL on rows fetched before.
+    -- Raw as fetched: prices x ext_split_factor and volumes / ext_split_factor to adjust.
+    regular_vwap         DOUBLE,    -- sum(bar vw*v)/sum(v) over 09:30-close bars (NOT the daily vwap: that has auction prints)
+    after_hours_vwap     DOUBLE,
+    pre_market_vwap_0800 DOUBLE, pre_market_tpvwap_0800 DOUBLE, pre_market_volume_0800 DOUBLE,
+    pre_market_vwap_0900 DOUBLE, pre_market_tpvwap_0900 DOUBLE, pre_market_volume_0900 DOUBLE,
+    pre_market_vwap_0915 DOUBLE, pre_market_tpvwap_0915 DOUBLE, pre_market_volume_0915 DOUBLE,
+    pre_market_vwap_0925 DOUBLE, pre_market_tpvwap_0925 DOUBLE, pre_market_volume_0925 DOUBLE,
+    pre_market_vwap_0930 DOUBLE, pre_market_tpvwap_0930 DOUBLE, pre_market_volume_0930 DOUBLE,
     -- Phase 1c derived features (features.py; rewritten in full on every derive-features run)
     day_idx              BIGINT,    -- global trading-day index (-> trading_calendar.date)
     is_10k               SMALLINT,  -- 1 on the (snapped) trading day of a 10-K filing, else 0
@@ -126,6 +135,32 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     after_hours_pct_close     DOUBLE, -- after_hours_price vs the same day's close (fraction, adjusted)
     features_computed_at TIMESTAMP, -- when derive-features last wrote this row
     PRIMARY KEY (symbol, date)
+);
+
+-- Derived by derive-features: cap-weighted close-to-close return of the market
+-- (sector_code '00') and of each TRBC sector, one row per (date, sector).
+CREATE TABLE IF NOT EXISTS market_daily (
+    date        DATE,
+    sector_code TEXT,
+    cap_ret     DOUBLE,
+    n           INTEGER,
+    PRIMARY KEY (date, sector_code)
+);
+
+-- Derived by derive-features: macro inputs per session date (yields as of the previous
+-- session, CPI from the first session of month M+2).
+CREATE TABLE IF NOT EXISTS macro_daily (
+    date              DATE PRIMARY KEY,
+    ust_3m_chg_bp     DOUBLE,
+    ust_2y_chg_bp     DOUBLE,
+    ust_10y_chg_bp    DOUBLE,
+    ust_10y_2y_slope  DOUBLE,
+    ust_10y_3m_slope  DOUBLE,
+    ust_10y_z252      DOUBLE,
+    cpi_yoy           DOUBLE,
+    core_cpi_yoy      DOUBLE,
+    cpi_yoy_chg       DOUBLE,
+    core_cpi_mom      DOUBLE
 );
 
 CREATE TABLE IF NOT EXISTS trading_calendar (
@@ -243,6 +278,12 @@ _MIGRATIONS = (
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS ext_split_factor DOUBLE",
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS pre_market_pct_prev_close DOUBLE",
     "ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS after_hours_pct_close DOUBLE",
+    # Extended-hours VWAPs and cut-off sums (massive_ext 2026-10), then the per-bar features
+    # derived from them (features.py).
+    *(f"ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS {c} DOUBLE" for c in (
+        "regular_vwap", "after_hours_vwap",
+        *(f"pre_market_{k}_{c}" for c in ("0800", "0900", "0915", "0925", "0930")
+          for k in ("vwap", "tpvwap", "volume")))),
 )
 
 

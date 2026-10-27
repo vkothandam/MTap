@@ -1,7 +1,7 @@
 """Massive.com common-stock tickers, listed and delisted (the massive-ext universe).
 
 Endpoint (paged by `next_url`, 1000 per page):
-    GET {base_url}/v3/reference/tickers?market=stocks&type=CS&active=true|false&apiKey=...
+    GET {base_url}/v3/reference/tickers?market=stocks&type=CS|ADRC&active=true|false&apiKey=...
 
 Delisted names are included so a multi-year backfill covers stocks that have since gone.
 One file per NY date (re-running the same day overwrites it).
@@ -22,8 +22,10 @@ from sourcing_py.common import config, http, ratelimit
 from sourcing_py.common.source import Source
 
 _PROVIDER = "massive"
+# CS = common stock, ADRC = ADR common; older files have no `type` and are all CS.
+_TYPES = ("CS", "ADRC")
 _FIELDS = ("ticker", "name", "primary_exchange", "active", "cik", "composite_figi",
-           "share_class_figi", "delisted_utc", "last_updated_utc")
+           "share_class_figi", "delisted_utc", "last_updated_utc", "type")
 
 
 def pages(client: httpx.Client, cfg: dict, url: str, params: dict):
@@ -46,11 +48,12 @@ class MassiveTickersCsSource(Source):
         url = f"{cfg['base_url']}/v3/reference/tickers"
         out: list[dict] = []
         with http.get_client() as client:
-            for active in ("true", "false"):
-                query = {"market": "stocks", "type": "CS", "active": active, "limit": 1000,
-                         "apiKey": cfg["api_key"]}
-                for results in pages(client, cfg, url, query):
-                    out += results
+            for typ in _TYPES:
+                for active in ("true", "false"):
+                    query = {"market": "stocks", "type": typ, "active": active, "limit": 1000,
+                             "apiKey": cfg["api_key"]}
+                    for results in pages(client, cfg, url, query):
+                        out += [{**r, "type": r.get("type") or typ} for r in results]
         return out
 
     def partition_date(self, params: dict[str, Any]) -> date | None:

@@ -94,7 +94,7 @@ def future_rows(df: pd.DataFrame, next_session: dict, known_reals: list[str] | N
     """One row per symbol trading on the panel's last session, moved to the next session.
     Every known-future input of the model is filled: calendar ones from `next_session`, the
     per-symbol ones (pre-market) from `next_df` (symbol + those columns). A symbol missing from
-    `next_df` gets blank pre-market (pm_known 0, values 0). Anything else unfilled raises; the
+    `next_df` gets blank pre-market (flags pm_px_known / pm_full_known 0, values 0). Anything else unfilled raises; the
     remaining columns are copies the decoder never reads."""
     known_reals = list(KNOWN_REALS if known_reals is None else known_reals)
     last = int(df["day_idx"].max())

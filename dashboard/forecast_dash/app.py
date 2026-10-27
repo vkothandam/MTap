@@ -706,8 +706,17 @@ def tab_compare(v: View, min_n: int):
     if not chosen or not v.moves:
         st.info("Pick runs and at least one move size.")
         return
-    common = st.checkbox("Only (stock, day) rows present in every chosen run", value=True,
-                         help="Fair comparison when runs cover different stocks or days")
+    paths = {n: str(root / n) if n != v.run.name else v.path for n in chosen}
+    runs = {n: get_run(p) for n, p in paths.items()}
+    # real dates line runs up across panels (a 2-year and a 5-year panel number days differently)
+    by_date = all(r.has_dates for r in runs.values())
+    dkey = "date" if by_date else "day_idx"
+    common = st.checkbox(
+        "Only rows present in every chosen run", value=True,
+        help="Fair comparison when runs cover different stocks or days. Rows match on "
+             + ("(stock, date): every chosen run has real dates." if by_date else
+                "(stock, day_idx): some chosen run has no dates, so the panels must number "
+                "days the same way."))
     a, b = st.columns(2)
     move = a.selectbox("Event for the reliability overlay", v.moves,
                        format_func=calib.event_label, key="cmp_move",
@@ -715,11 +724,9 @@ def tab_compare(v: View, min_n: int):
     conf = b.selectbox("Call level to compare", CALL_LEVELS, index=CALL_LEVELS.index(0.7),
                        format_func=_fmt_pct, key="cmp_conf",
                        help="the call level the In short box compares the runs' calls at")
-    paths = {n: str(root / n) if n != v.run.name else v.path for n in chosen}
-    runs = {n: get_run(p) for n, p in paths.items()}
     sets = None
     if common and len(runs) > 1:
-        sets = set.intersection(*(set(zip(r.frame["symbol"], r.frame["day_idx"], strict=True))
+        sets = set.intersection(*(set(zip(r.frame["symbol"], r.frame[dkey], strict=True))
                                   for r in runs.values()))
         if not sets:
             st.info("These runs share no (stock, day) test rows, e.g. they tested different "
@@ -728,7 +735,7 @@ def tab_compare(v: View, min_n: int):
     grids, rows, calls = [], {}, {}
     for n, r in runs.items():
         if sets is not None:
-            k = pd.Series(list(zip(r.frame["symbol"], r.frame["day_idx"], strict=True)))
+            k = pd.Series(list(zip(r.frame["symbol"], r.frame[dkey], strict=True)))
             idx = np.flatnonzero(k.isin(sets).to_numpy())
         else:
             idx = np.arange(len(r.frame))

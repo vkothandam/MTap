@@ -16,6 +16,8 @@ from tft_vwap.config import (
     AFTER_HOURS_REALS,
     MACRO_REALS,
     MARKET_REALS,
+    PM_FULL_REALS,
+    PM_PX_REALS,
     PREMARKET_REALS,
     SESSION_SHAPE_REALS,
     TrainConfig,
@@ -57,8 +59,8 @@ def test_old_config_loads_with_every_new_input_off(tmp_path):
     run = tmp_path / "old"
     run.mkdir()
     saved = TrainConfig().to_dict()
-    for k in ("market", "macro", "session_shape", "after_hours", "premarket", "pm_mask",
-              "premarket_cutoff", "dedupe_train", "min_train_sessions"):
+    for k in ("market", "macro", "session_shape", "after_hours", "premarket", "pm_groups",
+              "pm_mask_full", "pm_mask_px", "premarket_cutoff", "dedupe_train", "min_train_sessions"):
         saved.pop(k)
     (run / "config.json").write_text(json.dumps({"config": saved}))
     cfg = from_run(run)
@@ -74,7 +76,7 @@ def test_prepare_reads_only_enabled_columns(panel_df):
         dataset.prepare(panel_df.drop(columns=SCHEMA4_COLUMNS), extra=MARKET_REALS)
     full = dataset.prepare(panel_df, extra=[*MARKET_REALS, *PREMARKET_REALS])
     assert full[[*MARKET_REALS, *PREMARKET_REALS]].notna().all().all()  # NULL gaps filled with 0
-    assert (full.loc[panel_df.loc[full.index, "pm_known"] == 0, "pm_vwap_pct_prev_vwap"] == 0).all()
+    assert (full.loc[panel_df.loc[full.index, "pm_full_known"] == 0, "pm_vwap_pct_prev_vwap"] == 0).all()
 
 
 def test_train_dedupe_keeps_one_sample_per_symbol_day(panel_df, tmp_path):
@@ -97,33 +99,54 @@ def _batch(panel_df, tmp_path, **kw):
     return cfg, ds, [ds[i] for i in range(200)]
 
 
-def test_pm_mask_collate_blanks_the_decoder_only(panel_df, tmp_path):
+def test_pm_mask_collate_blanks_groups_decoder_only(panel_df, tmp_path):
     _, ds, items = _batch(panel_df, tmp_path)
-    idx = [ds.reals.index(c) for c in PREMARKET_REALS]
-    others = [i for i in range(len(ds.reals)) if i not in idx]
+    px = [ds.reals.index(c) for c in PM_PX_REALS]
+    full = [ds.reals.index(c) for c in PM_FULL_REALS]
+    others = [i for i in range(len(ds.reals)) if i not in px + full]
     x0, _ = ds._collate_fn(items)
-    assert (x0["decoder_cont"][..., idx[2]] == 1).any()  # raw pm_known, unscaled
-    for rate in (0.0, 1.0):
-        x, _ = dataset.PmMaskCollate.for_dataset(ds, rate)(items)
-        blank = (x["decoder_cont"][..., idx] == 0).all(dim=-1).all(dim=-1)
-        assert blank.all() if rate else (blank == (x0["decoder_cont"][..., idx] == 0).all(-1).all(-1)).all()
+    assert (x0["decoder_cont"][..., px[-1]] == 1).any()  # raw flags, unscaled
+    assert (x0["decoder_cont"][..., full[-1]] == 1).any()
+
+    def blank(x, idx):  # per sample: every value and the flag are 0
+        return (x["decoder_cont"][..., idx] == 0).all(dim=-1).all(dim=-1)
+
+    for state, (px_off, full_off) in {"night": (True, True), "px": (False, True),
+                                      "full": (False, False)}.items():
+        x, _ = dataset.PmMaskCollate.for_state(ds, state)(items)
         assert torch.equal(x["encoder_cont"], x0["encoder_cont"])  # history keeps real values
         assert torch.equal(x["decoder_cont"][..., others], x0["decoder_cont"][..., others])
+        assert blank(x, full).all() == full_off
+        if px_off:
+            assert blank(x, px).all()
+        else:
+            assert torch.equal(x["decoder_cont"][..., px], x0["decoder_cont"][..., px])
+        if not full_off:
+            assert torch.equal(x["decoder_cont"][..., full], x0["decoder_cont"][..., full])
+    # random masking at the plan's rates: full off for about 50%, prices for 25%, and full is
+    # never on where prices are off
     torch.manual_seed(0)
-    x, _ = dataset.PmMaskCollate.for_dataset(ds, 0.5)(items)
-    hit = ((x["decoder_cont"][..., idx[2]] == 0) & (x0["decoder_cont"][..., idx[2]] == 1)).flatten()
-    was_known = (x0["decoder_cont"][..., idx[2]] == 1).flatten()
-    assert 0.3 < hit.sum() / was_known.sum() < 0.7
+    rates = {"px": 0.25, "full": 0.5}
+    x, _ = dataset.PmMaskCollate.for_dataset(ds, rates)(items)
+    was_px = x0["decoder_cont"][..., px[-1]].flatten() == 1
+    was_full = x0["decoder_cont"][..., full[-1]].flatten() == 1
+    px_on = x["decoder_cont"][..., px[-1]].flatten() == 1
+    full_on = x["decoder_cont"][..., full[-1]].flatten() == 1
+    assert 0.55 < (px_on & was_px).sum() / was_px.sum() < 0.95
+    assert 0.3 < (full_on & was_full).sum() / was_full.sum() < 0.7
+    assert not (full_on & ~px_on).any()
+    # prices-only models have only the px columns
+    ds_px = _batch(panel_df, tmp_path, pm_groups="px")[1]
+    assert dataset.PmMaskCollate.for_dataset(ds_px, rates).cols_idx.keys() == {"px"}
 
-    det = dataset.PmMaskCollate.for_dataset(ds, 0.5, deterministic=True)
+    det = dataset.PmMaskCollate.for_dataset(ds, rates, deterministic=True)
     a, b = det(items)[0]["decoder_cont"], det(items)[0]["decoder_cont"]
     assert torch.equal(a, b)
-    blanked = (a != x0["decoder_cont"]).flatten(1).any(dim=1)
-    assert 0.2 < blanked.float().mean() < 0.8
+    assert 0.2 < (a != x0["decoder_cont"]).flatten(1).any(dim=1).float().mean() < 0.8
     assert pickle.loads(pickle.dumps(det)).cols_idx == det.cols_idx
 
 
-def test_optional_run_pm_in_decoder_scores_with_and_without(panel4_path, tmp_path):
+def test_optional_run_pm_in_decoder_scores_per_state(panel4_path, tmp_path):
     cfg = _cfg(panel4_path, tmp_path, premarket="optional", only_folds=[1], max_epochs=2)
     run_dir = train.run(cfg)
     cj = json.loads((run_dir / "config.json").read_text())
@@ -131,28 +154,79 @@ def test_optional_run_pm_in_decoder_scores_with_and_without(panel4_path, tmp_pat
     model = TemporalFusionTransformer.load_from_checkpoint(run_dir / "fold_1" / "best.ckpt")
     assert set(PREMARKET_REALS) <= set(model.hparams.time_varying_reals_decoder)
     assert set(PREMARKET_REALS) <= set(model.dataset_parameters["time_varying_known_reals"])
-    assert set(PREMARKET_REALS) & set(model.dataset_parameters["scalers"]) == set(PREMARKET_REALS)
     assert all(model.dataset_parameters["scalers"][c] is None for c in PREMARKET_REALS)
-    nopm = run_dir.with_name(run_dir.name + "~nopm")
-    assert json.loads((nopm / "config.json").read_text())["view_of"] == run_dir.name
+    sib = {s: run_dir.with_name(run_dir.name + f"~{s}") for s in ("night", "px")}
     a = pd.read_parquet(run_dir / "fold_1" / "test_predictions.parquet")
-    b = pd.read_parquet(nopm / "fold_1" / "test_predictions.parquet")
-    assert len(a) == len(b) and (a[["symbol", "day_idx"]].values == b[["symbol", "day_idx"]].values).all()
-    assert not np.allclose(a["q50"], b["q50"])  # the model does read the pre-market
-    assert (nopm / "fold_1" / "metrics.json").exists()
+    frames = {}
+    for s, d in sib.items():
+        assert json.loads((d / "config.json").read_text())["view_of"] == run_dir.name
+        frames[s] = pd.read_parquet(d / "fold_1" / "test_predictions.parquet")
+        assert (frames[s][["symbol", "day_idx"]].values == a[["symbol", "day_idx"]].values).all()
+        assert (d / "fold_1" / "metrics.json").exists()
+    assert not np.allclose(a["q50"], frames["night"]["q50"])  # the model does read the pre-market
+    assert not np.allclose(frames["px"]["q50"], frames["night"]["q50"])
+    assert not np.allclose(a["q50"], frames["px"]["q50"])
 
-    # the live path: pre-market from panel.next.parquet, both forecasts written and graded
+    # variable importance: per fold file and a per-group table in the summary
+    imp = json.loads((run_dir / "fold_1" / "importance.json").read_text())
+    assert set(imp["variables"]) == {"encoder", "decoder", "static"}
+    assert {"premarket_px", "premarket_full", "base"} <= set(imp["groups"]["decoder"])
+    assert abs(sum(imp["groups"]["decoder"].values()) - 1) < 1e-3
+    summ = json.loads((run_dir / "summary.json").read_text())
+    assert "premarket_px" in summ["importance_by_group"]["mean"]["decoder"]
+
+    # the live path: pre-market from panel.next.parquet; every state written and graded
     assert predict.main([str(run_dir)]) == 0
     day = json.loads(panel4_path.with_name("panel.meta.json").read_text())["next_session"]["date"]
-    with_pm = pd.read_parquet(run_dir / f"forecast_{day}.parquet")
-    without = pd.read_parquet(nopm / f"forecast_{day}.parquet")
-    assert len(with_pm) == len(without) == 6 and not np.allclose(with_pm["q50"], without["q50"])
-    assert (nopm / "actuals.parquet").exists()
+    live = {"full": pd.read_parquet(run_dir / f"forecast_{day}.parquet"),
+            **{s: pd.read_parquet(d / f"forecast_{day}.parquet") for s, d in sib.items()}}
+    assert all(len(f) == 6 for f in live.values())
+    assert not np.allclose(live["full"]["q50"], live["night"]["q50"])
+    assert not np.allclose(live["px"]["q50"], live["night"]["q50"])
+    assert not np.allclose(live["full"]["q50"], live["px"]["q50"])
+    for d in (run_dir, *sib.values()):
+        assert (d / "actuals.parquet").exists()
+    # --state night reproduces the same forecast; --symbols-file keeps the same rows
+    assert predict.main([str(run_dir), "--state", "night"]) == 0
+    again = pd.read_parquet(sib["night"] / f"forecast_{day}.parquet")
+    assert np.allclose(again["q50"], live["night"]["q50"])
+    sf = tmp_path / "syms.txt"
+    sf.write_text("S1\nS3\n")
+    assert predict.main([str(run_dir), "--state", "px", "--symbols-file", str(sf)]) == 0
+    sub = pd.read_parquet(sib["px"] / f"forecast_{day}_subset.parquet")
+    assert list(sub["symbol"]) == ["S1", "S3"]
+    ref = live["px"].set_index("symbol").loc[["S1", "S3"]]
+    assert np.allclose(sub.set_index("symbol")["q50"], ref["q50"], atol=1e-6)
+    assert not (sib["px"] / f"forecast_{day}_subset_moves.parquet").exists()
     # a next file from another export is refused
     make_next(pd.read_parquet(panel4_path), "other").to_parquet(
         panel4_path.with_name("panel.next.parquet"), index=False)
     with pytest.raises(ValueError, match="export_id"):
         predict.forecast(run_dir)
+
+
+def test_force_state_blanks_by_group():
+    nxt = pd.DataFrame({"symbol": ["A", "B"], "pm_last_pct_prev_vwap": [0.01, 0.02],
+                        "open_pct_prev_vwap": [0.0, 0.0], "pm_px_known": [1.0, 0.0],
+                        "pm_vwap_pct_prev_vwap": [0.03, 0.04], "pm_vol_pct_10d": [1.0, 2.0],
+                        "pm_range_pct": [0.1, 0.2], "pm_full_known": [1.0, 1.0]})
+    cols = list(PREMARKET_REALS)
+    assert (predict.force_state(nxt, "night", cols)[cols] == 0).all().all()
+    px = predict.force_state(nxt, "px", cols).set_index("symbol")
+    assert px.loc["A", "pm_px_known"] == 1 and px.loc["A", "pm_last_pct_prev_vwap"] == 0.01
+    assert (px[list(PM_FULL_REALS)] == 0).all().all()
+    full = predict.force_state(nxt, "full", cols).set_index("symbol")
+    assert full.loc["A", "pm_full_known"] == 1 and full.loc["A", "pm_vol_pct_10d"] == 1.0
+    assert full.loc["B", "pm_full_known"] == 0 and full.loc["B", "pm_vwap_pct_prev_vwap"] == 0
+
+
+def test_prices_only_model_has_no_full_group(panel4_path, tmp_path):
+    cfg = _cfg(panel4_path, tmp_path, premarket="optional", pm_groups="px", only_folds=[1])
+    assert cfg.known_reals[-3:] == list(PM_PX_REALS) and cfg.scoring_states == ["night", "px"]
+    run_dir = train.run(cfg)
+    assert (run_dir.with_name(run_dir.name + "~night") / "fold_1" / "test_predictions.parquet").exists()
+    assert not run_dir.with_name(run_dir.name + "~px").exists()
+    assert predict.main([str(run_dir)]) == 0
 
 
 def test_resume_continues_the_paused_fold(panel4_path, tmp_path, monkeypatch):
@@ -231,7 +305,7 @@ def test_future_rows_raises_on_unfilled_known_real(panel_df):
     with pytest.raises(ValueError, match="no next-session rows"):
         predict.future_rows(df, nxt, known, None)
     with pytest.raises(ValueError, match="lack known inputs"):
-        predict.future_rows(df, nxt, known, pd.DataFrame({"symbol": ["S0"], "pm_known": [1.0]}))
+        predict.future_rows(df, nxt, known, pd.DataFrame({"symbol": ["S0"], "pm_px_known": [1.0]}))
     with pytest.raises(ValueError, match="unfilled"):
         predict.future_rows(df, {k: v for k, v in nxt.items()} | {"month": np.nan}, known,
                             make_next(panel_df))
@@ -240,8 +314,8 @@ def test_future_rows_raises_on_unfilled_known_real(panel_df):
     fut = predict.future_rows(df, nxt, known, make_next(panel_df))
     assert len(fut) == 6 and (fut["day_idx"] == last + 1).all()
     s5 = fut.set_index("symbol").loc["S5"]  # last symbol: not in the next file -> blank
-    assert s5["pm_known"] == 0 and s5["pm_vwap_pct_prev_vwap"] == 0
-    assert fut.set_index("symbol").loc["S0", "pm_known"] == 1
+    assert s5["pm_px_known"] == 0 and s5["pm_full_known"] == 0 and s5["pm_vwap_pct_prev_vwap"] == 0
+    assert fut.set_index("symbol").loc["S0", "pm_px_known"] == 1
     assert predict.future_rows(df, nxt)["month"].eq(3).all()  # calendar-only model
 
 
@@ -336,13 +410,53 @@ def test_compare_splits_earnings_days(tmp_path, panel_df):
     assert r["by_earnings"]["earnings"]["rows"] + r["by_earnings"]["other"]["rows"] == 120
 
 
+def test_compare_matches_on_date_across_panels_and_states(tmp_path, panel_df):
+    # run B numbers its days differently (another panel) but has the same dates
+    folds = {0: range(1100, 1110)}
+    a = _fake_run(tmp_path, "a", folds, seed=1)
+    b = _fake_run(tmp_path, "b", folds, seed=1, shift=0.02)
+    night = _fake_run(tmp_path, "a~night", folds, seed=1, shift=0.02)
+    for run, off in ((a, 0), (b, 500), (night, 0)):
+        p = run / "fold_0" / "test_predictions.parquet"
+        f = pd.read_parquet(p)
+        f["date"] = pd.Timestamp("2024-01-01") + pd.to_timedelta(f["day_idx"] - 1100, unit="D")
+        f["day_idx"] += off
+        f.to_parquet(p, index=False)
+    r = compare.compare(a, b)
+    assert r["matched_on"] == "(symbol, date)" and r["rows"] == 40
+    # states: A~night is a sibling run dir, picked with --state
+    rs = compare.compare(a, b, state_a="night")
+    assert rs["a"].endswith("a~night") and rs["paired"]["diff"] > -1
+    with pytest.raises(FileNotFoundError, match="px"):
+        compare.compare(a, b, state_a="px")
+    assert compare.main([str(a), str(b), "--state", "night"]) == 0
+
+
+def test_compare_only_pm_keeps_rows_with_the_data(tmp_path, panel_df):
+    panel = tmp_path / "panel.parquet"
+    panel_df.to_parquet(panel, index=False)
+    folds = {0: range(1100, 1140)}
+    a = _fake_run(tmp_path, "a", folds, panel=panel, symbols=("S0", "S1", "S2"))
+    b = _fake_run(tmp_path, "b", folds, panel=panel, symbols=("S0", "S1", "S2"), shift=0.01)
+    r = compare.compare(a, b, only_pm="full")
+    known = panel_df[(panel_df["symbol"].isin(["S0", "S1", "S2"]))
+                     & panel_df["day_idx"].between(1100, 1139) & (panel_df["pm_full_known"] == 1)]
+    assert r["rows"] == len(known) and r["only_pm"] == "full"
+    assert compare.compare(a, b, only_pm="px")["rows"] > r["rows"]  # prices exist more often
+    assert "only rows with pre-market full" in compare.format_report(r)
+
+
 def test_overlay_never_crosses_and_never_uses_its_own_fold(tmp_path, panel4_path):
-    panel = pd.read_parquet(panel4_path)
     syms = ("S0", "S1", "S2", "S3")
     folds = {0: range(1100, 1115), 1: range(1115, 1130), 2: range(1130, 1145)}
     base = _fake_run(tmp_path, "base", folds, symbols=syms)
-    out = overlay.overlay(base, panel4_path)
-    assert json.loads((out / "config.json").read_text())["model"] == "overlay"
+    out = overlay.overlay(base, panel4_path, inputs="px")
+    assert out.name == "base-overlay-px"
+    cj = json.loads((out / "config.json").read_text())
+    assert cj["model"] == "overlay" and cj["inputs"] == "px" and cj["thin_folds"] == [1]
+    assert (out / "summary.json").exists()
+    assert json.loads((out / "fold_1" / "metrics.json").read_text())["thin"] is True
+    assert json.loads((out / "fold_2" / "metrics.json").read_text())["thin"] is False
     assert not (out / "fold_0").exists()  # nothing earlier to learn from
     for k in (1, 2):
         o = pd.read_parquet(out / f"fold_{k}" / "test_predictions.parquet")
@@ -350,6 +464,9 @@ def test_overlay_never_crosses_and_never_uses_its_own_fold(tmp_path, panel4_path
         assert (o["q10"] <= o["q50"]).all() and (o["q50"] <= o["q90"]).all()
         assert (o[["symbol", "day_idx", "prev_vwap", "actual"]].values == b[
             ["symbol", "day_idx", "prev_vwap", "actual"]].values).all()
+    # R6f uses more columns than R6p, writes elsewhere
+    f = overlay.overlay(base, panel4_path, inputs="full")
+    assert f.name == "base-overlay-full" and overlay.INPUTS["px"] == PM_PX_REALS
 
     # fold 1 is scored by a model fitted on fold 0 alone: corrupting fold 2 changes nothing
     # for fold 1, while corrupting fold 0 does
@@ -358,15 +475,44 @@ def test_overlay_never_crosses_and_never_uses_its_own_fold(tmp_path, panel4_path
     f2 = pd.read_parquet(p2)
     f2["actual"] *= 3
     f2.to_parquet(p2, index=False)
-    again = overlay.overlay(base, panel4_path, folds=[1], out=tmp_path / "again")
+    again = overlay.overlay(base, panel4_path, folds=[1], out=tmp_path / "again", inputs="px")
     assert np.allclose(first["q50"], pd.read_parquet(again / "fold_1" / "test_predictions.parquet")["q50"])
     p0 = base / "fold_0" / "test_predictions.parquet"
     f0 = pd.read_parquet(p0)
     f0["actual"] *= 1.5
     f0.to_parquet(p0, index=False)
-    moved = overlay.overlay(base, panel4_path, folds=[1], out=tmp_path / "moved")
+    moved = overlay.overlay(base, panel4_path, folds=[1], out=tmp_path / "moved", inputs="px")
     assert not np.allclose(first["q50"], pd.read_parquet(moved / "fold_1" / "test_predictions.parquet")["q50"])
-    assert panel is not None
+
+
+def test_gbm_runs_the_contract_and_loads_in_compare(tmp_path, panel4_path):
+    from tft_vwap import gbm
+    cfg = _cfg(panel4_path, tmp_path, n_folds=2, fold_len=10, early_stop_len=5,
+               premarket="on", market=True, after_hours=True)
+    out = gbm.run(cfg, max_iter=10)
+    cj = json.loads((out / "config.json").read_text())
+    assert cj["model"] == "gbm" and len(cj["folds"]) == 2 and (out / "summary.json").exists()
+    for k in (0, 1):
+        f = pd.read_parquet(out / f"fold_{k}" / "test_predictions.parquet")
+        q = f[list(compare.qlevels(f).values())].to_numpy()
+        assert (np.diff(q, axis=1) >= 0).all()  # sorted: quantiles never cross
+        assert {"symbol", "day_idx", "prev_vwap", "actual", "date"} <= set(f.columns)
+        assert (out / f"fold_{k}" / "metrics.json").exists()
+    # same folds and rows as a TFT-style fake run on the same days: compare pairs them
+    r = compare.compare(out, out)
+    assert r["rows"] > 0 and r["paired"]["diff"] == 0
+
+    # features: lags of vwap_pct_prev_day are the past values; pm flags come from row d
+    df = dataset.prepare(pd.read_parquet(panel4_path), extra=cfg.extra_reals)
+    feat = gbm.build_features(df, cfg)
+    row = feat.iloc[200]
+    s = df[df["symbol"] == row["symbol"]].set_index("day_idx")
+    d = int(row["day_idx"])
+    assert row["f_pm_full_known"] == s.loc[d, "pm_full_known"]
+    assert row["f_vwap_pct_prev_day"] == s.loc[d - 1, "vwap_pct_prev_day"]
+    if (d - 2) in s.index:
+        assert row["f_ret_lag1"] == s.loc[d - 2, "vwap_pct_prev_day"] or np.isnan(row["f_ret_lag1"])
+    assert row["actual"] == s.loc[d - 1, "target_tomorrow_vwap"]
 
 
 def test_write_panel_helper_schema4_meta(tmp_path, panel_df):

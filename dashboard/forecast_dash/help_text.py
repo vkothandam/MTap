@@ -587,8 +587,9 @@ The reliability curve for one event, one line per run. The line closer to the di
 calibrated. Bigger markers mean more forecasts, and the error bars are 95% CIs.
 """),
     "cmp_table": ("Metrics by run", """
-One row per run, scored on the same rows when *Only (stock, day) rows present in every chosen
-run* is ticked.
+One row per run, scored on the same rows when *Only rows present in every chosen run* is
+ticked. Rows match on (stock, date) when every chosen run has real dates, otherwise on
+(stock, day_idx); the checkbox help says which.
 
 - Lower `pinball` and `ece` are better. Higher `pinball_skill` is better.
 - `coverage` should be near `coverage_nominal`, and `bias` near 0.

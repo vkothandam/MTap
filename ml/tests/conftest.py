@@ -84,9 +84,13 @@ def add_schema4(df, rng):
     df["ah_vwap_pct_rth_vwap"] = np.where(df["ah_known"] == 1, rng.normal(0, 0.005, n), np.nan)
     df["ah_vol_pct_10d"] = np.where(df["ah_known"] == 1, rng.uniform(0, 3, n), np.nan)
     df["close_pct_rth_vwap"] = np.where(df["ah_known"] == 1, rng.normal(0, 0.004, n), np.nan)
-    df["pm_known"] = (rng.random(n) < 0.7).astype(float)
-    df["pm_vwap_pct_prev_vwap"] = np.where(df["pm_known"] == 1, rng.normal(0, 0.01, n), np.nan)
-    df["pm_vol_pct_10d"] = np.where(df["pm_known"] == 1, rng.uniform(0, 4, n), np.nan)
+    df["pm_px_known"] = (rng.random(n) < 0.8).astype(float)
+    df["pm_full_known"] = df["pm_px_known"] * (rng.random(n) < 0.8)  # full implies prices
+    for c in ("pm_last_pct_prev_vwap", "open_pct_prev_vwap"):
+        df[c] = np.where(df["pm_px_known"] == 1, rng.normal(0, 0.01, n), np.nan)
+    df["pm_vwap_pct_prev_vwap"] = np.where(df["pm_full_known"] == 1, rng.normal(0, 0.01, n), np.nan)
+    df["pm_vol_pct_10d"] = np.where(df["pm_full_known"] == 1, rng.uniform(0, 4, n), np.nan)
+    df["pm_range_pct"] = np.where(df["pm_full_known"] == 1, rng.uniform(0, 0.05, n), np.nan)
 
 
 def make_next(panel_df, export_id="exp-1"):
@@ -95,9 +99,12 @@ def make_next(panel_df, export_id="exp-1"):
     syms = sorted(panel_df.loc[panel_df["day_idx"] == last, "symbol"].unique())
     rng = np.random.default_rng(5)
     nxt = pd.DataFrame({"symbol": syms, "day_idx": last + 1,
+                        "pm_last_pct_prev_vwap": rng.normal(0, 0.01, len(syms)),
+                        "open_pct_prev_vwap": 0.0, "pm_px_known": 1.0,
                         "pm_vwap_pct_prev_vwap": rng.normal(0, 0.01, len(syms)),
                         "pm_vol_pct_10d": rng.uniform(0, 4, len(syms)),
-                        "pm_known": 1.0, "export_id": export_id})
+                        "pm_range_pct": rng.uniform(0, 0.05, len(syms)),
+                        "pm_full_known": 1.0, "export_id": export_id})
     return nxt.iloc[:-1]  # the last symbol has no pre-market row: it gets a blank one
 
 

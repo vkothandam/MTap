@@ -14,8 +14,17 @@ bucket came true (report/grid_by_symbol.csv), and the all-stock figure (grid_ove
 Writes runs/<run_id>/forecast_<date>.{parquet,csv} (one row per symbol: quantiles, ladder) and
 forecast_<date>_moves.csv (one row per symbol and move: probability + historical hit rates).
 A model with pre-market inputs reads them from panel.next.parquet (next to the panel, filled by
-`etrade export-next`; same export_id as the meta). In `optional` mode a second forecast with the
-pre-market blanked goes to runs/<run_id>~nopm/ and both are graded.
+`etrade export-next`; same export_id as the meta). --state sets which pre-market the forecast
+sees: night (both groups blank), px (prices only: full blanked) or full (the panel.next flags
+as they are; prices blank forces full blank too, as in training). Each state writes into its
+own run dir: full -> runs/<id>/ (the main run), night -> runs/<id>~night/, px -> runs/<id>~px/
+(the sibling dirs `optional` training creates; made here for other runs, with the main run's
+report grids), so forecast_<date>.parquet never collides between states and grade.py's glob
+forecast_????-??-??.parquet grades each dir. Without --state an `optional` run writes all its
+states; any other run writes its own (full, or px for --pm-groups px).
+--symbols-file F (one symbol per line) restricts the forecast to those symbols: the rows equal
+the full run's rows for them. It writes forecast_<date>_subset.* (not graded, never replaces
+the full file), e.g. the 09:30 shortlist.
 <date> is the forecast session; `asof` is the session whose bars it was made from. --asof D
 cuts the panel at D, so the session after D (already in the panel) can be graded against what
 happened. Every run then refreshes actuals.parquet (see grade.py).
@@ -33,7 +42,16 @@ import pandas as pd
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
 
 from .calibration import SIDE_DOWN, SIDE_UP, bucket_labels, bucket_of, ladder
-from .config import KNOWN_REALS, NOPM, PREMARKET_REALS, TrainConfig, from_run
+from .config import (
+    KNOWN_REALS,
+    PM_FULL_REALS,
+    PM_GROUPS,
+    PREMARKET_REALS,
+    STATE_SUFFIX,
+    STATES,
+    TrainConfig,
+    from_run,
+)
 from .dataset import prepare, read_meta
 from .evaluate import prob_below, qcol
 from .grade import grade
@@ -45,6 +63,30 @@ def latest_fold(run_dir: Path) -> int:
     if not folds:
         raise FileNotFoundError(f"no fold_*/best.ckpt under {run_dir}")
     return folds[-1]
+
+
+def force_state(next_df: pd.DataFrame, state: str, per_symbol: list[str]) -> pd.DataFrame:
+    """Set the pre-market inputs of the next-session rows to a scoring state: night blanks every
+    group (value 0, flag 0), px blanks the full group, full keeps the data. Prices blank
+    always blanks full too (the model never saw full without prices)."""
+    nxt = next_df.copy()
+    for c in per_symbol:
+        if c not in nxt.columns:
+            nxt[c] = 0.0
+    if state == "night":
+        nxt[per_symbol] = 0.0
+        return nxt
+    flag = PM_GROUPS["px"][-1]
+    if flag in nxt.columns:
+        off = nxt[flag].fillna(0) == 0
+        for c in PM_FULL_REALS:
+            if c in nxt.columns:
+                nxt.loc[off, c] = 0.0
+    if state == "px":
+        for c in PM_FULL_REALS:
+            if c in nxt.columns:
+                nxt[c] = 0.0
+    return nxt
 
 
 def future_rows(df: pd.DataFrame, next_session: dict, known_reals: list[str] | None = None,
@@ -120,10 +162,14 @@ def session_after(df: pd.DataFrame, day_idx: int) -> dict:
 
 def forecast(run_dir: Path, *, fold: int | None = None, cfg: TrainConfig | None = None,
              panel: Path | None = None, asof: str | None = None,
-             blank_premarket: bool = False) -> tuple[pd.DataFrame, dict]:
+             state: str = "full", symbols: list[str] | None = None
+             ) -> tuple[pd.DataFrame, dict]:
     """(per-symbol forecast frame with return quantiles + ladder, next_session). With `asof`,
     the panel is cut at that session (the latest one on or before it) and the forecast is for
-    the session after it. `blank_premarket` forecasts as if no pre-market had arrived."""
+    the session after it. `state` (STATES) sets the pre-market the forecast sees; `symbols`
+    restricts it to those symbols (same rows as the full forecast for them)."""
+    if state not in STATES:
+        raise ValueError(f"state must be one of {STATES}, got {state!r}")
     run_dir = Path(run_dir)
     cfg = cfg or from_run(run_dir, panel=panel)
     fold = latest_fold(run_dir) if fold is None else fold
@@ -136,7 +182,7 @@ def forecast(run_dir: Path, *, fold: int | None = None, cfg: TrainConfig | None 
     per_symbol = [c for c in known if c not in KNOWN_REALS]
     next_df = None
     if asof is None:
-        if per_symbol and not blank_premarket:
+        if per_symbol and state != "night":
             next_df = read_next(cfg)
         nxt = read_meta(cfg.panel).get("next_session")
         if not nxt:
@@ -150,12 +196,17 @@ def forecast(run_dir: Path, *, fold: int | None = None, cfg: TrainConfig | None 
         # the real next-day rows, before the cut: only the known pre-market columns are copied
         next_df = df.loc[df["day_idx"] == nxt["day_idx"], ["symbol", *per_symbol]]
         df = df[df["day_idx"] < nxt["day_idx"]]
-    if blank_premarket and per_symbol:
-        next_df = pd.DataFrame({c: [] for c in ["symbol", *per_symbol]})
+    if per_symbol:
+        if next_df is None:  # night: nothing to read
+            next_df = pd.DataFrame({c: [] for c in ["symbol", *per_symbol]})
+        next_df = force_state(next_df, state, per_symbol)
     last = int(df["day_idx"].max())
     active = df.loc[df["day_idx"] == last, "symbol"]
+    if symbols is not None:
+        active = active[active.isin(symbols)]
     hist = df[df["symbol"].isin(active) & (df["day_idx"] > last - cfg.encoder_length)]
-    data = pd.concat([hist, future_rows(df, nxt, known, next_df)], ignore_index=True)
+    fut = future_rows(df, nxt, known, next_df)
+    data = pd.concat([hist, fut[fut["symbol"].isin(active)]], ignore_index=True)
     ds = TimeSeriesDataSet.from_parameters(model.dataset_parameters, data, predict=True)
     pred = model.predict(
         ds.to_dataloader(train=False, batch_size=cfg.batch_size * 2, num_workers=cfg.num_workers),
@@ -269,6 +320,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--top", type=int, default=50)
     p.add_argument("--asof", help="forecast the session after this date (YYYY-MM-DD) from the "
                                   "panel as it stood then (default: after the panel's last day)")
+    p.add_argument("--state", choices=STATES, help="pre-market the forecast sees (see above; "
+                   "default: all states of an optional run, else the run's own)")
+    p.add_argument("--symbols-file", type=Path, help="only these symbols (one per line); "
+                   "written as forecast_<date>_subset.*")
     a = p.parse_args(argv)
     if (a.side is None) != (a.move is None):
         p.error("--side and --move go together")
@@ -277,28 +332,51 @@ def main(argv: list[str] | None = None) -> int:
     warnings.filterwarnings("ignore", module=r"lightning\..*")
     run_dir = a.run_dir
     cfg = from_run(run_dir, panel=a.panel)
-    fc, nxt = forecast(run_dir, fold=a.fold, cfg=cfg, asof=a.asof)
+    symbols = ([x.strip() for x in a.symbols_file.read_text().splitlines() if x.strip()]
+               if a.symbols_file else None)
+    main_state = "full" if "full" in cfg.pm_group_names else "px"
+    if a.state:
+        states = [a.state]
+    elif cfg.premarket == "optional":
+        states = [*cfg.scoring_states[:-1], main_state]
+    else:
+        states = [main_state]
     screen_move = None if a.move is None else abs(a.move) * (1 if a.side == SIDE_UP else -1)
     moves = sorted({*cfg.moves, *([screen_move] if screen_move is not None else [])})
+    suffix = "_subset" if symbols is not None else ""
 
-    def write(directory: Path, frame: pd.DataFrame) -> pd.DataFrame:
-        grid_sym, grid_all = _load_grids(directory)
+    def state_dir(state: str) -> Path:
+        # the main run's own state lives in run_dir; the others in sibling dirs
+        if state == main_state or cfg.premarket == "off":
+            return run_dir
+        return run_dir.with_name(run_dir.name + STATE_SUFFIX[state])
+
+    def write(directory: Path, frame: pd.DataFrame, date: str) -> pd.DataFrame:
+        # a sibling without its own test forecasts (not trained as `optional`) reuses the
+        # main run's grids
+        own = any(directory.glob("fold_*/test_predictions.parquet"))
+        grid_sym, grid_all = _load_grids(directory if own else run_dir)
         table = move_table(frame, cfg, grid_sym, grid_all, moves)
-        out = directory / f"forecast_{nxt['date']}"
+        directory.mkdir(parents=True, exist_ok=True)
+        out = directory / f"forecast_{date}{suffix}"
         frame.to_parquet(f"{out}.parquet", index=False)
         frame.to_csv(f"{out}.csv", index=False)
         table.to_csv(f"{out}_moves.csv", index=False)
         return table
 
-    mt = write(run_dir, fc)
-    stem = run_dir / f"forecast_{nxt['date']}"
-    print(f"forecast for {nxt['date']} from fold_{int(fc['fold'].iloc[0])}: {len(fc):,} symbols")
-    nopm_dir = None
-    if cfg.premarket == "optional":  # the same checkpoint with the pre-market blanked
-        nopm_dir = run_dir.with_name(run_dir.name + NOPM)
-        nofc, _ = forecast(run_dir, fold=a.fold, cfg=cfg, asof=a.asof, blank_premarket=True)
-        write(nopm_dir, nofc)
-        print(f"without pre-market: {nopm_dir / stem.name}.parquet")
+    written, shown = [], None
+    for state in states:
+        fc, nxt = forecast(run_dir, fold=a.fold, cfg=cfg, asof=a.asof, state=state,
+                           symbols=symbols)
+        d = state_dir(state)
+        mt = write(d, fc, nxt["date"])
+        written.append(d)
+        print(f"{state}: forecast for {nxt['date']} from fold_{int(fc['fold'].iloc[0])}: "
+              f"{len(fc):,} symbols -> {d / ('forecast_' + nxt['date'] + suffix)}.parquet")
+        if state == states[-1]:
+            shown = (fc, mt)
+    fc, mt = shown
+    stem = state_dir(states[-1]) / f"forecast_{nxt['date']}{suffix}"
 
     with pd.option_context("display.width", 220, "display.max_rows", 500):
         if a.symbol:
@@ -318,8 +396,8 @@ def main(argv: list[str] | None = None) -> int:
             print("\nstocks per event and call level (P(event) >= level)")
             print(_counts(mt, cfg.confidences).to_string())
     print(f"\nwrote {stem}.parquet/.csv and {stem.name}_moves.csv")
-    for d in (run_dir, nopm_dir):
-        if d is not None:
+    if not suffix:
+        for d in dict.fromkeys(written):
             act = grade(d, cfg.panel)
             print(f"{d.name}/actuals.parquet: {act['date'].nunique()} forecast day(s) graded, "
                   f"{len(act):,} rows")

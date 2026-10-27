@@ -55,11 +55,21 @@ MACRO_REALS = ("ust_3m_chg_bp", "ust_2y_chg_bp", "ust_10y_chg_bp", "ust_10y_2y_s
 SESSION_SHAPE_REALS = ("high_position_pct", "low_position_pct", "gap_open_pct",
                        "gap_open_vs_prev_vwap_pct")
 AFTER_HOURS_REALS = ("ah_vwap_pct_rth_vwap", "ah_vol_pct_10d", "close_pct_rth_vwap", "ah_known")
-# known-future: row d holds d's own pre-market (before the forecast cutoff)
-PREMARKET_REALS = ("pm_vwap_pct_prev_vwap", "pm_vol_pct_10d", "pm_known")
+# known-future: row d holds d's own pre-market (before the forecast cutoff). Two groups, each
+# with its own flag (value 0 and flag 0 when missing): prices (known from ~09:25, the 09:30
+# forecast) and full (pre-market VWAP/volume/range, the 09:45 forecast).
+PM_PX_REALS = ("pm_last_pct_prev_vwap", "open_pct_prev_vwap", "pm_px_known")
+PM_FULL_REALS = ("pm_vwap_pct_prev_vwap", "pm_vol_pct_10d", "pm_range_pct", "pm_full_known")
+PM_GROUPS = {"px": PM_PX_REALS, "full": PM_FULL_REALS}
+PREMARKET_REALS = (*PM_PX_REALS, *PM_FULL_REALS)
 PREMARKET_MODES = ("off", "on", "optional")
-# suffix of the sibling run dir holding an `optional` run's pre-market-blank scoring
-NOPM = "~nopm"
+PM_GROUP_CHOICES = ("px", "px,full")  # full is only ever on together with prices
+# Scoring states of a pre-market run: night (both groups blank), px (prices on, full blank),
+# full (the data's own flags). An `optional` run scores the extra states into sibling run dirs
+# <run>~night and <run>~px next to the main run (which is the full state, or the px state when
+# only the px group is an input).
+STATES = ("night", "px", "full")
+STATE_SUFFIX = {"night": "~night", "px": "~px"}
 # not standardised: a raw 0 means "blank" (and the flags are 0/1)
 UNSCALED_REALS = (*PREMARKET_REALS, "ah_known")
 # Series breaks (TrainConfig.series_breaks): more than BREAK_GAP sessions without a bar (a
@@ -98,10 +108,14 @@ class TrainConfig:
     session_shape: bool = False
     after_hours: bool = False
     # "on": pre-market of the forecast day is a known-future input; "optional": the same, with
-    # `pm_mask` of the training samples blanked (value 0, pm_known 0) so the one model also
-    # forecasts without it; test is then scored with and without
+    # the full group blanked (value 0, flag 0) for `pm_mask_full` of the training samples and
+    # the prices group for `pm_mask_px` (full is blank whenever prices are), so the one model
+    # also forecasts without them; test is then scored per state (STATES).
+    # pm_groups: "px" or "px,full" -- which groups are inputs
     premarket: str = "off"
-    pm_mask: float = 0.5
+    pm_groups: str = "px,full"
+    pm_mask_full: float = 0.5
+    pm_mask_px: float = 0.25
     premarket_cutoff: str | None = None  # from the panel meta at train time; predict checks it
     # one training sample per (symbol, target day) instead of one per encoder length
     dedupe_train: bool = True
@@ -160,8 +174,11 @@ class TrainConfig:
             raise ValueError(f"earnings must be one of {EARNINGS_MODES}, got {self.earnings!r}")
         if self.premarket not in PREMARKET_MODES:
             raise ValueError(f"premarket must be one of {PREMARKET_MODES}, got {self.premarket!r}")
-        if not 0 <= self.pm_mask <= 1:
-            raise ValueError(f"pm_mask must be in [0, 1], got {self.pm_mask}")
+        if self.pm_groups not in PM_GROUP_CHOICES:
+            raise ValueError(f"pm_groups must be one of {PM_GROUP_CHOICES}, got {self.pm_groups!r}")
+        for name in ("pm_mask_full", "pm_mask_px"):
+            if not 0 <= getattr(self, name) <= 1:
+                raise ValueError(f"{name} must be in [0, 1], got {getattr(self, name)}")
         if 0.5 not in self.quantiles:
             raise ValueError("quantiles must include 0.5 (the point forecast)")
         self.quantiles = sorted(self.quantiles)
@@ -180,8 +197,21 @@ class TrainConfig:
                 + [c for on, group in groups if on for c in group])
 
     @property
+    def pm_group_names(self) -> list[str]:
+        return self.pm_groups.split(",") if self.premarket != "off" else []
+
+    @property
+    def pm_reals(self) -> list[str]:
+        return [c for g in self.pm_group_names for c in PM_GROUPS[g]]
+
+    @property
     def known_reals(self) -> list[str]:
-        return list(KNOWN_REALS) + (list(PREMARKET_REALS) if self.premarket != "off" else [])
+        return list(KNOWN_REALS) + self.pm_reals
+
+    @property
+    def scoring_states(self) -> list[str]:
+        """The states an optional run is scored in; the last is the main run's own state."""
+        return ["night", "px", "full"] if "full" in self.pm_group_names else ["night", "px"]
 
     @property
     def extra_reals(self) -> list[str]:
@@ -202,7 +232,7 @@ REPORT_FIELDS = frozenset({"moves", "confidences", "prob_buckets"})
 # trained without them
 ADDED_INPUTS = {"earnings": "off", "series_breaks": False, "market": False, "macro": False,
                 "session_shape": False, "after_hours": False, "premarket": "off",
-                "dedupe_train": False}
+                "dedupe_train": False, "pm_groups": "px,full"}
 
 
 def from_run(run_dir: Path, **overrides) -> TrainConfig:

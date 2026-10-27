@@ -12,9 +12,12 @@ import numpy as np
 import pandas as pd
 
 
-def forecast_frame(model, dataset, df: pd.DataFrame, cfg, trainer_kwargs: dict) -> pd.DataFrame:
+def forecast_frame(model, dataset, df: pd.DataFrame, cfg, trainer_kwargs: dict,
+                   collate_fn=None) -> pd.DataFrame:
+    kw = {} if collate_fn is None else {"collate_fn": collate_fn}  # e.g. PmMaskCollate(1.0, ..)
     pred = model.predict(
-        dataset.to_dataloader(train=False, batch_size=cfg.batch_size * 2, num_workers=cfg.num_workers),
+        dataset.to_dataloader(train=False, batch_size=cfg.batch_size * 2,
+                              num_workers=cfg.num_workers, **kw),
         mode="quantiles",
         return_index=True,
         trainer_kwargs=dict(trainer_kwargs),  # predict() mutates it (adds its callback)

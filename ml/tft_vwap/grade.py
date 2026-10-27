@@ -35,7 +35,7 @@ def grade(run_dir: Path, panel: Path | None = None) -> pd.DataFrame:
     sessions = pd.Index(sorted(p["date"].unique()))
     vwap = p.set_index(["date", "symbol"])["today_vwap"]
     parts = []
-    for f in sorted(run_dir.glob("forecast_*.parquet")):
+    for f in sorted(run_dir.glob("forecast_????-??-??.parquet")):
         fc = pd.read_parquet(f)
         day = pd.Timestamp(fc["date"].iloc[0])
         if day not in sessions:

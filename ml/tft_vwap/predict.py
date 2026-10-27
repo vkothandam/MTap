@@ -13,6 +13,9 @@ bucket came true (report/grid_by_symbol.csv), and the all-stock figure (grid_ove
 
 Writes runs/<run_id>/forecast_<date>.{parquet,csv} (one row per symbol: quantiles, ladder) and
 forecast_<date>_moves.csv (one row per symbol and move: probability + historical hit rates).
+A model with pre-market inputs reads them from panel.next.parquet (next to the panel, filled by
+`etrade export-next`; same export_id as the meta). In `optional` mode a second forecast with the
+pre-market blanked goes to runs/<run_id>~nopm/ and both are graded.
 <date> is the forecast session; `asof` is the session whose bars it was made from. --asof D
 cuts the panel at D, so the session after D (already in the panel) can be graded against what
 happened. Every run then refreshes actuals.parquet (see grade.py).
@@ -30,7 +33,7 @@ import pandas as pd
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
 
 from .calibration import SIDE_DOWN, SIDE_UP, bucket_labels, bucket_of, ladder
-from .config import KNOWN_REALS, TrainConfig, from_run
+from .config import KNOWN_REALS, NOPM, PREMARKET_REALS, TrainConfig, from_run
 from .dataset import prepare, read_meta
 from .evaluate import prob_below, qcol
 from .grade import grade
@@ -44,18 +47,64 @@ def latest_fold(run_dir: Path) -> int:
     return folds[-1]
 
 
-def future_rows(df: pd.DataFrame, next_session: dict) -> pd.DataFrame:
+def future_rows(df: pd.DataFrame, next_session: dict, known_reals: list[str] | None = None,
+                next_df: pd.DataFrame | None = None) -> pd.DataFrame:
     """One row per symbol trading on the panel's last session, moved to the next session.
-    Known inputs come from the calendar; the rest are copies the decoder never reads."""
+    Every known-future input of the model is filled: calendar ones from `next_session`, the
+    per-symbol ones (pre-market) from `next_df` (symbol + those columns). A symbol missing from
+    `next_df` gets blank pre-market (pm_known 0, values 0). Anything else unfilled raises; the
+    remaining columns are copies the decoder never reads."""
+    known_reals = list(KNOWN_REALS if known_reals is None else known_reals)
     last = int(df["day_idx"].max())
     if next_session["day_idx"] != last + 1:
         raise ValueError(f"meta next_session day_idx {next_session['day_idx']} != last panel "
                          f"day_idx {last} + 1; re-export the panel")
     fut = df[df["day_idx"] == last].copy()
     fut["day_idx"] = last + 1
-    for c in KNOWN_REALS:
-        fut[c] = float(next_session[c])
+    per_symbol = [c for c in known_reals if c not in KNOWN_REALS]
+    for c in known_reals:
+        if c in KNOWN_REALS:
+            fut[c] = float(next_session[c])
+    if per_symbol:
+        if next_df is None:
+            raise ValueError(f"model needs per-symbol known inputs {per_symbol} but no "
+                             "next-session rows were given (panel.next.parquet)")
+        lacking = [c for c in per_symbol if c not in next_df.columns]
+        if lacking:
+            raise ValueError(f"next-session rows lack known inputs {lacking}")
+        nxt = next_df.drop_duplicates("symbol").set_index("symbol")
+        missing = ~fut["symbol"].isin(nxt.index)
+        for c in per_symbol:
+            fut[c] = fut["symbol"].map(nxt[c])
+            if c in PREMARKET_REALS:  # no pre-market row: blank, as in training
+                fut.loc[missing, c] = 0.0
+            elif missing.any():
+                raise ValueError(f"known input {c} is unfilled for {int(missing.sum())} symbols")
+            fut[c] = fut[c].astype("float64")
+    unfilled = [c for c in known_reals if fut[c].isna().any()]
+    if unfilled:
+        raise ValueError(f"known inputs unfilled for the next session: {unfilled}")
     return fut
+
+
+def read_next(cfg: TrainConfig) -> pd.DataFrame:
+    """panel.next.parquet beside the panel (symbol, day_idx, per-symbol known inputs and an
+    export_id column), checked against the meta: same export, and the pre-market cutoff the
+    model was trained with."""
+    path = cfg.panel.with_name(cfg.panel.stem + ".next.parquet")
+    if not path.exists():
+        raise FileNotFoundError(f"{path} missing: the model uses pre-market inputs; run "
+                                "`sourcing-py etrade export-next`")
+    meta = read_meta(cfg.panel)
+    nxt = pd.read_parquet(path)
+    ids = set(nxt["export_id"].astype(str)) if "export_id" in nxt else set()
+    if meta.get("export_id") is None or ids != {str(meta["export_id"])}:
+        raise ValueError(f"{path.name} export_id {sorted(ids)} != panel meta "
+                         f"{meta.get('export_id')!r}: they come from different exports")
+    if cfg.premarket_cutoff and meta.get("premarket_cutoff") != cfg.premarket_cutoff:
+        raise ValueError(f"panel pre-market cutoff {meta.get('premarket_cutoff')!r} != the "
+                         f"model's {cfg.premarket_cutoff!r}")
+    return nxt
 
 
 def session_after(df: pd.DataFrame, day_idx: int) -> dict:
@@ -70,16 +119,25 @@ def session_after(df: pd.DataFrame, day_idx: int) -> dict:
 
 
 def forecast(run_dir: Path, *, fold: int | None = None, cfg: TrainConfig | None = None,
-             panel: Path | None = None, asof: str | None = None) -> tuple[pd.DataFrame, dict]:
+             panel: Path | None = None, asof: str | None = None,
+             blank_premarket: bool = False) -> tuple[pd.DataFrame, dict]:
     """(per-symbol forecast frame with return quantiles + ladder, next_session). With `asof`,
     the panel is cut at that session (the latest one on or before it) and the forecast is for
-    the session after it."""
+    the session after it. `blank_premarket` forecasts as if no pre-market had arrived."""
     run_dir = Path(run_dir)
     cfg = cfg or from_run(run_dir, panel=panel)
     fold = latest_fold(run_dir) if fold is None else fold
     df = prepare(pd.read_parquet(cfg.panel), symbols=cfg.symbols, seed=cfg.seed,
-                 series_breaks=cfg.series_breaks)
+                 series_breaks=cfg.series_breaks, extra=cfg.extra_reals)
+    model = TemporalFusionTransformer.load_from_checkpoint(
+        run_dir / f"fold_{fold}" / "best.ckpt", map_location="cpu")
+    model.eval()
+    known = list(model.dataset_parameters["time_varying_known_reals"])
+    per_symbol = [c for c in known if c not in KNOWN_REALS]
+    next_df = None
     if asof is None:
+        if per_symbol and not blank_premarket:
+            next_df = read_next(cfg)
         nxt = read_meta(cfg.panel).get("next_session")
         if not nxt:
             raise ValueError(f"{cfg.panel}: meta has no next_session; re-export with "
@@ -89,15 +147,15 @@ def forecast(run_dir: Path, *, fold: int | None = None, cfg: TrainConfig | None 
         if on_or_before.empty:
             raise ValueError(f"--asof {asof} is before the panel starts")
         nxt = session_after(df, int(on_or_before.max()))
+        # the real next-day rows, before the cut: only the known pre-market columns are copied
+        next_df = df.loc[df["day_idx"] == nxt["day_idx"], ["symbol", *per_symbol]]
         df = df[df["day_idx"] < nxt["day_idx"]]
+    if blank_premarket and per_symbol:
+        next_df = pd.DataFrame({c: [] for c in ["symbol", *per_symbol]})
     last = int(df["day_idx"].max())
     active = df.loc[df["day_idx"] == last, "symbol"]
     hist = df[df["symbol"].isin(active) & (df["day_idx"] > last - cfg.encoder_length)]
-    data = pd.concat([hist, future_rows(df, nxt)], ignore_index=True)
-
-    model = TemporalFusionTransformer.load_from_checkpoint(
-        run_dir / f"fold_{fold}" / "best.ckpt", map_location="cpu")
-    model.eval()
+    data = pd.concat([hist, future_rows(df, nxt, known, next_df)], ignore_index=True)
     ds = TimeSeriesDataSet.from_parameters(model.dataset_parameters, data, predict=True)
     pred = model.predict(
         ds.to_dataloader(train=False, batch_size=cfg.batch_size * 2, num_workers=cfg.num_workers),
@@ -222,14 +280,25 @@ def main(argv: list[str] | None = None) -> int:
     fc, nxt = forecast(run_dir, fold=a.fold, cfg=cfg, asof=a.asof)
     screen_move = None if a.move is None else abs(a.move) * (1 if a.side == SIDE_UP else -1)
     moves = sorted({*cfg.moves, *([screen_move] if screen_move is not None else [])})
-    grid_sym, grid_all = _load_grids(run_dir)
-    mt = move_table(fc, cfg, grid_sym, grid_all, moves)
 
+    def write(directory: Path, frame: pd.DataFrame) -> pd.DataFrame:
+        grid_sym, grid_all = _load_grids(directory)
+        table = move_table(frame, cfg, grid_sym, grid_all, moves)
+        out = directory / f"forecast_{nxt['date']}"
+        frame.to_parquet(f"{out}.parquet", index=False)
+        frame.to_csv(f"{out}.csv", index=False)
+        table.to_csv(f"{out}_moves.csv", index=False)
+        return table
+
+    mt = write(run_dir, fc)
     stem = run_dir / f"forecast_{nxt['date']}"
-    fc.to_parquet(f"{stem}.parquet", index=False)
-    fc.to_csv(f"{stem}.csv", index=False)
-    mt.to_csv(f"{stem}_moves.csv", index=False)
     print(f"forecast for {nxt['date']} from fold_{int(fc['fold'].iloc[0])}: {len(fc):,} symbols")
+    nopm_dir = None
+    if cfg.premarket == "optional":  # the same checkpoint with the pre-market blanked
+        nopm_dir = run_dir.with_name(run_dir.name + NOPM)
+        nofc, _ = forecast(run_dir, fold=a.fold, cfg=cfg, asof=a.asof, blank_premarket=True)
+        write(nopm_dir, nofc)
+        print(f"without pre-market: {nopm_dir / stem.name}.parquet")
 
     with pd.option_context("display.width", 220, "display.max_rows", 500):
         if a.symbol:
@@ -249,8 +318,11 @@ def main(argv: list[str] | None = None) -> int:
             print("\nstocks per event and call level (P(event) >= level)")
             print(_counts(mt, cfg.confidences).to_string())
     print(f"\nwrote {stem}.parquet/.csv and {stem.name}_moves.csv")
-    act = grade(run_dir, cfg.panel)
-    print(f"actuals.parquet: {act['date'].nunique()} forecast day(s) graded, {len(act):,} rows")
+    for d in (run_dir, nopm_dir):
+        if d is not None:
+            act = grade(d, cfg.panel)
+            print(f"{d.name}/actuals.parquet: {act['date'].nunique()} forecast day(s) graded, "
+                  f"{len(act):,} rows")
     return 0
 
 

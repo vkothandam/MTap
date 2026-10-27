@@ -1,3 +1,8 @@
+> **Status (2026-10-27).** An outside research note, kept for reference. Its claims were reviewed
+> in [ml/MODEL-STRATEGY.md](../ml/MODEL-STRATEGY.md) Q12: the overlay idea is tested (R6p/R6f)
+> against one masked TFT and separate TFTs; raw OHLCV inputs, fundamentals line items, 3 quantiles
+> and weight cloning were rejected; XGBoost-style ranking became the 09:30 screener (Q15).
+
 # Hybrid Trading Architecture Research Specification
 
 ## Multi-Horizon Daily TFT, Real-Time Intraday XGBoost, and Pre-Market Overlay Framework

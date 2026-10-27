@@ -21,6 +21,7 @@ Every section carries a `Tags:` line. To find every section on a subject, search
 | `tag-open-close` | The open, the close, auctions and end-of-day values |
 | `tag-sourcing-host` | **Topic: Where the sourcing runs.** The iMac, the NAS containers, later a VM: what differs between hosts |
 | `tag-ml-daily` | **Topic: Daily model experiments.** Training runs of the daily model (`ml/tft_vwap`) compared on the same test days |
+| `tag-chartiq` | **Topic: Live pre-market sources.** E*TRADE ChartIQ, the watchlist feed and Massive's snapshot before the open: what each gives, how fast |
 
 ## Adding a learning
 
@@ -672,6 +673,98 @@ new container finds one. Then the production `daily` wrote 10-23 (12,557 rows; 1
 evening compact on real data. The Monday 10-26 checks in the runbook cover them.
 
 
+## Live pre-market sources
+
+Tags: `tag-chartiq`
+
+What the live sources give before and at the open, for the same-morning forecasts of the daily
+model: E*TRADE ChartIQ (`getChartiqFeed`), the E*TRADE watchlist feed, and Massive's snapshot and
+minute aggregates. Probed by hand on 2026-10-27 with the collector's token (read-only, no login).
+The design they led to is in [ml/MODEL-STRATEGY.md](../ml/MODEL-STRATEGY.md) Q14.
+
+### 2026-10 ChartIQ, watchlist and Massive before the open (session 2026-10-27)
+
+Tags: `tag-chartiq` `tag-price` `tag-volume` `tag-timestamps`
+
+**Short answers:**
+- **ChartIQ gives prices, not volume.** Its minute-bucket volume is about half of Massive's, and
+  the share moves by stock and by day. Prices agree. It is used for prices only.
+- **The watchlist's bid/ask mid is the live pre-market price** (within ~20 bp of Massive); its
+  `price` stays at the previous close until the first regular trade.
+- **Massive's delayed minute bars reach 09:30 by 09:45** for every stock, fast enough (120
+  calls/s) to give the full pre-market with training's own definitions.
+- So the 09:30 forecast uses prices only, and the 09:45 forecast the full pre-market from
+  Massive. Training uses Massive only.
+
+**ChartIQ (`POST getChartiqFeed`, bearer token, origin/referer etrade.wallst.com):**
+- Bars are fixed **86.4 s buckets** whatever `dataInterval` says: OHLC and volume, no VWAP.
+- A call returns about 2 sessions whatever `dateStart` says (TSLA: 1,200 bars, 127 KB, 0.48 s);
+  filter by time yourself. The `Second` period is empty; `Day` works (23 bars, 0.28 s).
+- Sessions: pre 04:00–09:30, regular 09:30–16:00, post 16:00–20:00 ET.
+- **The updated agreement's token is real-time:** `isRealTimeQuote: true`, newest bucket 20 s
+  old. The old token was about 15 min behind.
+- **Several symbols per call:** prices for 20 symbols in one call (3.0 s, 2 MB). The first symbol
+  sits at the top level of each bar, the rest are nested under their XID. **Only the first symbol
+  keeps its volume**, in every layout tried (price/volume pairs, all prices then all volumes,
+  volume only, lowercase `volume`).
+- The XIDs from `symbol-lookup` match the feed's own `symbolInfo` for all 20 (205778 → MSFT …).
+- **Throughput, one symbol per call, 20 symbols:**
+
+  | at a time | wall time | calls/s | all returned |
+  | --- | --- | --- | --- |
+  | 4 | 3.4 s | ~6 | yes |
+  | 8 | 3.7 s | ~5 | yes |
+  | 16 | 2.0 s | ~10 | yes |
+
+  Median latency 0.5 s, no 429 at 16.
+
+**ChartIQ volume vs Massive** (ChartIQ ÷ Massive, 10-27):
+
+| stock | pre-market buckets | regular buckets | Day bar |
+| --- | --- | --- | --- |
+| TSLA | 0.62 | 0.59 | 0.99 |
+| AAPL | 0.53 | 0.52 | 1.00 |
+| META | 0.61 | 0.49 | 1.00 |
+| AMD | 0.58 | 0.48 | 1.00 |
+| F | 0.66 | 0.58 | 1.00 |
+
+- The buckets carry only part of the prints. Scaling by the previous day's share still left
+  errors of −7% to −43%, so no learned factor is used.
+- Prices agree because any sample of trades sits at the same level: the last price is the same,
+  and the typical-price VWAP over the buckets differed by 0.1–28 bp.
+- Whether the Day bar is consolidated *during* pre-market is not checked (and no longer needed).
+
+**Watchlist feed before the open** (NAS `intraday_feed`, 1,028 symbols, at 09:28:59 ET):
+
+| | TSLA | AAPL | AMD | F | META |
+| --- | --- | --- | --- | --- | --- |
+| `price` (all = previous close) | 391.62 | 343.91 | 531.28 | 11.58 | 630.56 |
+| bid/ask mid vs Massive's last pre-market trade | +6 bp | −8 bp | +17 bp | −21 bp | −2 bp |
+| `volume_cum` ÷ Massive pre-market minute volume to 09:28 | 1.09 | 1.10 | 1.14 | 1.02 | 1.03 |
+
+- The bid/ask mid is on the Experimental list only (606 symbols).
+- `volume_cum` is live pre-market volume for 1,011 symbols, 2–14% above Massive's minute bars
+  (Massive's bars leave out some prints, `tag-massive-etrade-comparison`). Good for ranking, not
+  a model input.
+- `day_open` is null until the open; then `price` turns live.
+
+**Massive:**
+- **Full-market snapshot** (`/v2/snapshot/locale/us/markets/stocks/tickers`): 13,271 tickers in
+  one call, 2.2 s. Per ticker `day` (o, h, l, c, v, vw), `min` (latest minute, `av` running
+  volume), `prevDay`, `todaysChangePerc`. 15 min delayed; `lastTrade` is null.
+- **Minute aggregates, one stock per call:** 120 calls/s at 64 at a time (median 0.42 s, p95
+  0.48 s, no throttling); 35/s at 16. ~2k liquid stocks in ~17 s, ~3.7k panel stocks in ~30 s.
+- **Same-day daily bars** were served by 17:20 ET on 10-27 (status `DELAYED`), not only after
+  midnight ET.
+
+**Caveats and follow-ups:**
+- One morning, a handful of stocks. S1 (one live morning, read-only) checks: what the snapshot's
+  `day`/`min` hold at 09:29:30; the shortlist's live prices vs Massive's last pre-market trade the
+  next day (accept if the median gap is under 10 bp on liquid names); when `day_open` and
+  ChartIQ's first regular bucket appear; and `premarket full` at 64 at a time with no 429.
+- Check once that Massive's same-day daily bars don't change after 20:00 ET (tonight's copy vs
+  tomorrow's).
+
 ## Daily model experiments
 
 Tags: `tag-ml-daily`
@@ -679,6 +772,41 @@ Tags: `tag-ml-daily`
 Training runs of the daily model (`ml/tft_vwap`) compared with each other. The setup, the
 parameters and the candidate inputs are in [ml/FEATURES.md](../ml/FEATURES.md), sections 12–17.
 This topic keeps what each comparison found.
+
+### 2026-10 5-year retrain series R0–R8 (planned; results to be added here)
+
+Tags: `tag-ml-daily`
+
+The series that tests the new inputs and the same-morning forecasts on 5 years. The reasons are
+in [ml/MODEL-STRATEGY.md](../ml/MODEL-STRATEGY.md) Q11–Q16; the inputs in
+[ml/FEATURES.md](../ml/FEATURES.md).
+- **Panel:** `out/tft/exp5y/panel.parquet` (schema 4), frozen for the whole series.
+- **Testing:** 16 walk-forward folds of 63 sessions (about 2022-11 → 2026-10), each with a
+  21-session early-stop block in front; fold 0 trains on about 1 year, fold 15 on about 4.6.
+  Ablations use the 8 odd folds.
+
+| run | inputs | folds | result |
+| --- | --- | --- | --- |
+| R0 | 5-year baseline, no new groups | 0–15 | |
+| R1 | R0 + market/sector + macro + after-hours + session shape | 0–15 | |
+| R4 | A: R1 + pre-market `optional` (full off 50%, prices off 25%) | 8 odd | |
+| R4p | B: R1 + prices always on | 8 odd | |
+| R4f | B: R1 + prices and full always on | 8 odd | |
+| R6p, R6f | C: HGB overlays on R1 (prices; everything) | 8 odd | |
+| R7 | plain HGB per quantile, R1 inputs | 0–15 | |
+| R5 | the final model(s), the winning way per forecast | 0–15 | |
+| R8 | screener on R5's out-of-fold forecasts vs naive ATR and others | 8 odd | |
+
+**How each is judged:**
+- `tft-vwap-compare` against R0, and against production `20261005-025909Z` on the shared dates
+  (2025-09 → 2026-08): paired per (symbol, date) pinball difference with a bootstrap CI, per
+  fold, earnings vs other days, coverage per quantile.
+- **R1's groups:** variable-selection weights per group and fold, and R1 vs R0 per fold. A
+  drop-one run only if R1 loses somewhere or a group has near-zero weight (macro first).
+- **Pre-market, per forecast** (night, 09:30, 09:45), on the 8 odd folds and rows with pre-market
+  data: night R4 vs R1; 09:30 R4 vs R4p vs R6p; 09:45 R4 vs R4f vs R6f. Lowest pinball wins
+  when its CI is clear; otherwise fewer models (A, then C, then B).
+- **Screener (R8):** kept only if its top 20 beat the naive ATR top 20 with a CI clear of 0.
 
 ### 2026-10 pit earnings and series breaks vs production (test sessions 2025-09-02 to 2026-08-14)
 

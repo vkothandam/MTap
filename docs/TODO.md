@@ -2,6 +2,15 @@
 
 Running list of follow-ups that were decided but deferred. Newest first; tick and date an item when done. What runs today, and where: [STATUS.md](STATUS.md).
 
+- [ ] **Daily model, phase 2 (after the R0–R8 series).** Added 2026-10-27 (ml/MODEL-STRATEGY.md Q12, Q15).
+  - **Cross-model bake-off:** AutoGluon-TimeSeries, DeepAR, PatchTST, Chronos, fitted fold by fold on the same 16 folds. Needs a separate environment and hours per fold; done once the inputs are settled.
+  - **Recency weighting** of training samples.
+  - **Recycled tickers:** a ticker reused by a different company (BNY) beyond the series breaks.
+  - **GNN / latent-vector ideas** from docs/training-options-daily.md (cross-stock links, the TFT's latent state as an input).
+  - **Intraday re-rank of the watch list after 09:31** from the watchlist's live prices.
+  - **XGBoost or LightGBM for the screener**, only if R8 shows HGB clearly behind.
+  - **Live Massive prices** replace ChartIQ/watchlist (`[premarket] live_source`); the 09:45 full step can then move to 09:30.
+
 - [ ] **A second copy of MTap-Data (contingency, low priority).** Added 2026-10-25.
   - **Why:** the NAS holds the only copy of the data, and since the cutover it is also
     what writes to it.
@@ -33,7 +42,7 @@ Running list of follow-ups that were decided but deferred. Newest first; tick an
   - Optional: a small daily incremental, so REST also covers days the live feed missed.
 - [ ] **Schedule this Mac's daily load.** Added 2026-10-15. The iMac fetches at 06:40 PT. The Mac that owns the DuckDB should then run `daily-sourcing.sh` with `MTAP_DAILY_INGEST_ONLY=1` (no Massive calls, reads the NAS) at a later time. `setup-schedule.sh` has one fixed `DAILY_H:DAILY_M` (06:40) and installs the collector agents too, so it needs a separate "ingest only, at HH:MM" option. Until then, run it by hand.
 - [ ] **Clean up failed `massive-ext gaps` jobs.** Added 2026-10-15. A gaps run with a failed stock leaves `state/massive_ext/jobs/<from>_<to>/` behind, and the next day's run uses a new range. The sessions are retried, because their file is still missing, but the old folder stays (a few MB). Remove job folders older than 14 days at the start of `gaps`.
-- [ ] **Feed pre-market / after-hours into the model.** Added 2026-10-15. The columns are in `daily_bars` (ml/FEATURES.md section 11) but not in the panel. Deciding which go in, and on which step (after-hours of day t is known by 20:00 ET; pre-market of t+1 only that morning), is a model decision for ml/MODEL-STRATEGY.md.
+- [x] **Feed pre-market / after-hours into the model.** Added 2026-10-15. Decided 2026-10-27 (ml/MODEL-STRATEGY.md Q14, Q16): after-hours of day t goes in with the always-available groups (R1); pre-market in two masked groups, prices at 09:30 and full at 09:45 from Massive. Built on `feat/daily-5y-inputs`; results in LEARNINGS `tag-ml-daily`.
 - [ ] **Stop storing the data twice (NAS files + local DuckDB copy).** Decided 2026-10-15: keep the duplicate for now, revisit later.
   - **Today.** The raw daily jsonl on the NAS is 1.8 GB for 2 years. `state/etrade/fundamentals.duckdb` holds the same 6.2M bars again, and is 1.0 GB in total including fundamentals, EDGAR and splits. The 5-year backfill and the pre-market/after-hours columns grow both copies by about 2.5×.
   - **(a) Parquet on the NAS as the only store, with view-only DuckDBs.**

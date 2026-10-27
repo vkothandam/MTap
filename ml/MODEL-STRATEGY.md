@@ -5,7 +5,7 @@ A hand-maintained reference for the modelling choices behind `ml/`.
 - **Q&A log** keeps every question and its answer, newest last. Numbers and facts are as of each entry's date.
 - **Glossary** explains the terms the answers use.
 
-## Current position (2026-10-25)
+## Current position (2026-10-27)
 
 **Design**
 - **Two models, trained separately.**
@@ -42,7 +42,16 @@ A hand-maintained reference for the modelling choices behind `ml/`.
 2. **News backfill:** Massive history (and which sentiment score), or only the news collected from now on.
 3. **Benzinga partner data:** whether the Massive plan includes it.
 4. **Production run:** keep `20261005-025909Z-return-3712sym --fold 3`, or switch to the 10-11 retrain `20261011-173109Z-return-3785sym --fold 3`, which tests 2.7% better ([FEATURES.md](FEATURES.md) sections 13 and 17).
-5. **Resuming a stopped training run (`--resume`):** not built. A stopped run starts over.
+5. ~~**Resuming a stopped training run (`--resume`):** not built.~~ Done 2026-10-27 (Q13): runs pause and resume, and `tft-vwap-status` shows the time left.
+6. **Pre-market approach per forecast** (night, 09:30, 09:45): one masked TFT, separate TFTs, or overlays on R1. Decided by the R4/R4p/R4f/R6p/R6f bake-off (Q12).
+
+**5-year retrain (decided 2026-10-27)**
+- **Testing:** 16 walk-forward folds of 63 sessions over 5 years, 21-session early stop (Q11).
+- **Inputs:** all always-available groups (market/sector, macro, after-hours, session shape) in one run, R1 (Q16). Pre-market in two groups with their own flags: prices (09:30) and full (09:45, Massive) (Q14).
+- **Three daily forecasts from the same inputs:** night (no pre-market), 09:30 (prices), 09:45 (full pre-market).
+- **A 09:30 screener** ranks the liquid stocks by expected range from the open (Q15).
+- **Baselines:** a plain HGB per quantile (R7). AutoGluon and other model types are phase 2 ([docs/TODO.md](../docs/TODO.md)).
+- The runs, R0–R8, and their results: [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-ml-daily`.
 
 ## Glossary
 
@@ -296,3 +305,113 @@ Where to start, in order:
    - [dashboard/README.md](../dashboard/README.md): the run-file contract any new model must write
 
 Not needed: FEATURES-intraday.md, and the original plans (docs/stock-prediction-plan.md, docs/next-session-parquet-tft.md), whose content is in FEATURES.md now.
+
+### Q11 (2026-10-27): With 5 years of data, how should training and testing be split?
+
+**Walk-forward quarters across all 5 years, not only the last year.**
+- 16 test blocks of 63 sessions each, about 2022-11 → 2026-10. They span the 2022 bear market,
+  the 2023 rally, the April 2025 sell-off and 2026, so a gain must hold in several regimes.
+- Each block has a 21-session early-stop block in front of it. Each fold trains on everything
+  before that: fold 0 on about 1 year, fold 15 on about 4.6 years
+  (`--fold-len 63 --early-stop-len 21 --min-train-sessions 252`).
+- Comparisons of input groups (ablations) use the 8 odd folds, to halve the cost.
+- **Inside training, batches mix all training quarters at random**, as before. Each (stock, day)
+  is now one sample (`dedupe_train`): before, the last training day of each stock appeared in
+  about 41 samples, 16% of the set.
+- Scores are paired per (symbol, date) with a bootstrap interval over test days, and shown per
+  fold, so a win in one regime can't hide a loss in another.
+
+### Q12 (2026-10-27): One TFT with masked pre-market, separate models, or an overlay? Does masking cost accuracy?
+
+**Measured, not assumed: three approaches compete, judged per forecast.**
+- **Why masking might cost:** one model spreads its capacity over three cases (no pre-market,
+  prices, everything), and each case sees fewer samples with its inputs on.
+- **Why it might not:** the cases share almost everything (the stock's history, market, macro);
+  hiding inputs works like dropout; and a pure pre-market model has never seen a failed morning,
+  so it needs the night model as a fallback anyway.
+- **The contenders:**
+  - **A. R4**, one TFT: full pre-market off for 50% of training samples, prices off for 25%, full
+    on only when prices are on. One checkpoint gives night, 09:30 and 09:45.
+  - **B.** R1 for the night, **R4p** (prices always on) for 09:30, **R4f** (everything on) for 09:45.
+  - **C.** R1 plus **overlays** R6p/R6f: gradient-boosted trees per quantile that adjust R1's
+    quantiles with the pre-market inputs. They train only on R1's out-of-fold test forecasts
+    (the TFT's training-day outputs are overconfident), for fold k only on folds before k.
+- **Judged** on the 8 odd folds, rows with pre-market data: night R4 vs R1; 09:30 R4 vs R4p vs
+  R6p; 09:45 R4 vs R4f vs R6f. Lowest pinball wins when its interval is clear of the others;
+  otherwise fewer models (A, then C, then B). A mixed answer is fine.
+- **Also:** a plain HGB per quantile (R7) checks that the TFT is worth its cost. Cloning weights
+  and fine-tuning with an added input was rejected: the variable-selection layers change shape.
+- **Review of [docs/training-options-daily.md](../docs/training-options-daily.md):**
+  - "A single TFT collapses when the feed drops": only if never trained with blank inputs; the
+    masks and known flags handle it.
+  - Raw OHLCV prices as inputs: wrong across stocks priced 1000× apart; ratios to VWAP instead.
+  - 30 fundamental line items: E*TRADE has about 5 quarters and no filing dates, so they leak.
+  - 3 quantiles instead of 19: no gain, and it breaks the dashboard.
+  - XGBoost for fast ranking: right, for the 09:30 screener (Q15).
+
+### Q13 (2026-10-27): Can a training run stop and resume? Will I see how long is left?
+
+**Yes, both.**
+- **Pause:** `touch runs/<id>/STOP` stops at the next epoch end, or `--max-hours H` stops on a
+  time budget. At most the current epoch is lost. **Resume:** `tft-vwap --resume runs/<id>`.
+  - Each fold keeps a `best` and a `resume` checkpoint (no `best-v1` shadowing), `state.json`
+    records the run state, `test_end` is pinned, and a resumed fold reseeds with
+    `seed + start_epoch`. A resume refuses if `panel.parquet` changed since the run started.
+- **Time left:** a `[progress]` line each epoch, `runs/<id>/progress.json` every 30 s, and
+  `tft-vwap-status [runs/<id> | runs]`. It shows fold and run time left as a range, because a
+  fold ends either by early stopping or at `max_epochs`:
+  - earliest: the fold early-stops as soon as it can, and every later fold after patience + 1 epochs;
+  - estimate: the mean epochs and time of the folds already finished;
+  - latest: every fold runs to `max_epochs`.
+  Example: `fold 6 (7/16) epoch 6/15, early-stop wait 2/3, 14 min/epoch | fold left 14 min–2.1 h
+  (est 47 min) | run left 8.6 h–33.6 h (est 20.4 h), ETA 03:40`.
+
+### Q14 (2026-10-27): Where does today's pre-market come from, live and in training?
+
+**Training uses Massive only. Live, prices come first (09:30), and the full pre-market at 09:45.**
+- **Two input groups**, each with its own known flag:
+  - **prices** (`pm_px_known`): the last pre-market trade before 09:30 and day d's open, each vs
+    the previous VWAP;
+  - **full** (`pm_full_known`): pre-market VWAP, volume vs the 10-day mean, and range, from
+    Massive minute bars to 09:30.
+  - Both are 0 when data is missing, the previous session is missing, or a split executes that day.
+- **Why no live volume at 09:30:** no live source matches training for every stock. E*TRADE
+  ChartIQ's minute buckets carry 0.48–0.66 of Massive's volume, varying by stock and day; the
+  watchlist's `volume_cum` covers only ~1k stocks. Prices agree within ~20 bp everywhere
+  ([docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-chartiq`).
+- **Why 09:45:** Massive's delayed minute bars reach 09:30 by 09:45 for every stock, at 120
+  calls/s, so the full pre-market is the same quantity as in training.
+- **Live prices** (`[premarket] live_source = "etrade"`): the watchlist bid/ask mid where it
+  covers the stock, else ChartIQ price-only calls, 20 symbols per call. When live Massive
+  arrives, only this adapter changes. No ChartIQ history, no volume scale factors.
+- **The cutoff is 09:30** for every model, in training and live; predict checks it.
+
+### Q15 (2026-10-27): What does the 09:30 screener rank, and how is it tested?
+
+**The biggest expected range from the open, top 20 of the liquid stocks.**
+- **Target:** `max(high − open, open − low) / open` on day d (the low-to-high range is stored too).
+- **Model:** sklearn HistGradientBoostingRegressor on log(range), plus a 0.8-quantile model for a
+  "big range" score; trains in minutes, scores 200 stocks in under 50 ms.
+- **Inputs (all known by 09:31):** the open vs previous close and VWAP; pre-market prices (and at
+  09:45 the full group); the TFT's band width and median for d (**out-of-fold forecasts only**);
+  yesterday's range, ATR(14)%, 20-day dollar volume; market and sector moves; earnings timing;
+  day of week. The TFT's direction is shown as a lean, not used for ranking.
+- **Universe:** average dollar volume ≥ $5M and price ≥ $3, picked each evening; rule filters
+  (`[screener]`) are dashboard sliders.
+- **Test (R8):** its top-20 realised range vs a random 20, the top 20 by ATR (naive), by TFT
+  band width alone, and by pre-market volume alone. Kept only if it beats naive ATR with an
+  interval clear of 0.
+
+### Q16 (2026-10-27): Why test market, macro, after-hours and session shape in separate runs? Aren't all always-known inputs better together?
+
+**They are now one run, R1.** The per-group runs were dropped (saves ~3 TFT runs, 6–10 h).
+- These inputs are known every evening for every stock, so they need no masking, and the TFT's
+  variable selection already learns to down-weight weak ones.
+- **Separate runs would only answer "which group helps"**, which variable-selection weights answer
+  more cheaply, per group and per fold.
+- **The risk is not "more inputs = worse" in general but specific failure modes:** an input that
+  lets the model memorise dates (macro has one value per day for every stock), or one that shifts
+  meaning across regimes. So R1 is checked against R0 per fold, and **a drop-one run is made only
+  on evidence**: R1 fails to beat R0, loses in some folds, or a group has near-zero weight.
+- Pre-market is different: it is not always available, which is why it needs the masks and the
+  bake-off (Q12).

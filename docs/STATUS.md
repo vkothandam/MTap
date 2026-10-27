@@ -186,3 +186,8 @@ MTap sources market data for the ML work.
   - `push.sh` (production) fixed; the NAS runs production: MTap-Data, roles `etrade massive-ws`.
   - DSM updated to 7.4.1-90080 (Compose still v2.20.1; tasks unchanged); updates notify only.
   - Alerts: `watch` in every queue tick, mailed by DSM on a non-zero task exit.
+- 2026-10-27 (5y-morning): `etrade premarket precheck|xids|prices|full` and `forecast-night` (claim file
+  `MTap-State/forecast/claim-D.json`, earliest 20:20 ET). NAS jobs `morning` (DSM mtap-morning 06:14 PT, no jobs
+  lock, pid file) and `night` (mtap-night 17:25 PT) replace `premarket`. Settings: `[premarket]` live_source,
+  shortlist_size, move_pct, vol_ratio, full_workers; `[forecast]`. Needs a container-local DuckDB, ml/ + model
+  in the job container (MTAP_PREDICT_CMD, MTAP_FORECAST_RUN_DIR); see deploy/synology/README.md.

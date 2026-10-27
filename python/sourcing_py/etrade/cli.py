@@ -38,8 +38,10 @@ _USAGE = (
     "      (fill panel.next.parquet from premarket_live/prices-D.jsonl and premarket-D.jsonl)\n"
     "  sourcing-py etrade universe [--date D]  (liquid symbols -> premarket_live/universe-D.csv)\n"
     "  sourcing-py etrade ingest-reference  (economy + quarter-end share files -> DuckDB)\n"
-    "  sourcing-py etrade premarket [--date D|today] [--symbols A,B] [--xids-file F] [--cutoff HH:MM]\n"
-    "      [--source auto|etrade|massive]  (live pre-market -> out/premarket_live/)"
+    "  sourcing-py etrade premarket precheck --date D [--night FORECAST.parquet] [--panel-next F]  (-> shortlist-D.csv)\n"
+    "  sourcing-py etrade premarket prices --date D --symbols-file F [--open] [--xids-file F]  (-> prices-D.jsonl)\n"
+    "  sourcing-py etrade premarket xids  (symbol,XID lines for hosts without the DuckDB; the night job runs it)\n"
+    "  sourcing-py etrade premarket full --date D [--force] [--symbols-file F]  (Massive to the cutoff -> premarket-D.jsonl)"
 )
 
 
@@ -266,36 +268,75 @@ def _cmd_ingest_reference(p: dict) -> int:
     return 0
 
 
-def _cmd_premarket(p: dict) -> int:
+def _flag(p: dict, key: str):
+    return p[key] if p.get(key) not in (None, True) else None
+
+
+def _cmd_premarket(p: dict, rest: list[str]) -> int:
     from datetime import date as _date
     from datetime import datetime as _dt
     from pathlib import Path
 
-    from . import premarket
+    from . import precheck, premarket, premarket_full
 
+    sub = rest[0] if rest else ""
     try:
-        d = _dt.now(premarket.NY).date() if p.get("date") in (None, "today") else _date.fromisoformat(p["date"])
-        symbols = [s for s in str(p["symbols"]).split(",") if s] if p.get("symbols") not in (None, True) else None
-        xids = Path(p["xids-file"]) if p.get("xids-file") not in (None, True) else None
-        universe = premarket.load_universe(symbols, xids)
-        if not universe:
-            print("premarket: no symbols with an XID", file=sys.stderr)
-            return 1
-        cutoff = p["cutoff"] if p.get("cutoff") not in (None, True) else None
-        source = p["source"] if p.get("source") not in (None, True) else "auto"
-        if source not in ("auto", "etrade", "massive"):
-            print("error: --source is auto|etrade|massive", file=sys.stderr)
-            return 2
-        summary = premarket.run_premarket(d, universe, source=source, cutoff=cutoff)
-    except (ConfigError, premarket.AuthStop, ValueError) as exc:
+        params = _parse(rest[1:])
+        raw = _flag(params, "date")
+        d = _dt.now(premarket.NY).date() if raw in (None, "today") else _date.fromisoformat(raw)
+        if sub == "precheck":
+            night = _flag(params, "night")
+            summary = precheck.run_precheck(
+                d, night=Path(night) if night else None,
+                panel_next=Path(_flag(params, "panel-next")) if _flag(params, "panel-next") else None,
+                use_snapshot=not params.get("no-snapshot"))
+            print(f"precheck {summary['date']}: shortlist {summary['shortlist']} of {summary['symbols']} "
+                  f"({summary['pulled_by_threshold']} pulled in by a threshold); inputs: snapshot "
+                  f"{summary['snapshot']}, watchlist {summary['watchlist']}, night {summary['night']} "
+                  f"-> {summary['path']}")
+            if summary["snapshot_error"]:
+                print(f"  snapshot failed ({summary['snapshot_error']}); ranked without it", file=sys.stderr)
+            return 0 if summary["shortlist"] else 1
+        if sub == "xids":
+            path, n = premarket.write_xids()
+            print(f"xids: {n:,} symbols -> {path}")
+            return 0
+        if sub == "prices":
+            sf = _flag(params, "symbols-file")
+            if not sf:
+                print("error: premarket prices needs --symbols-file", file=sys.stderr)
+                return 2
+            symbols = premarket.read_symbols_file(Path(sf))
+            xf = _flag(params, "xids-file")
+            xids = premarket.load_universe(symbols, Path(xf)) if xf else None
+            rows = precheck.read_watchlist()
+            summary = premarket.run_prices(d, symbols, open_pass=bool(params.get("open")), rows=rows, xids=xids)
+            print(f"prices {summary['date']}{' (open pass)' if summary['open_pass'] else ''}: "
+                  f"{summary['with_last']}/{summary['symbols']} with a last price {summary['by_source']}, "
+                  f"{summary['with_open']} with an open, {summary['errors']} errors -> {summary['path']}")
+            if summary["auth_error"]:
+                print(f"  ChartIQ: {summary['auth_error']}; the watchlist prices stand", file=sys.stderr)
+            return 0 if summary["with_last"] or summary["with_open"] else 1
+        if sub == "full":
+            sf = _flag(params, "symbols-file")
+            symbols = premarket.read_symbols_file(Path(sf)) if sf else premarket_full.panel_symbols()
+            if not symbols:
+                print("error: no symbols (no panel.next.parquet; pass --symbols-file)", file=sys.stderr)
+                return 1
+            summary = premarket_full.run_full(d, symbols, cutoff=_flag(params, "cutoff"),
+                                              force=bool(params.get("force")))
+            print(f"full {summary['date']} cutoff {summary['cutoff']}: {summary['written']}/{summary['symbols']} "
+                  f"written, {summary['with_bars']} with bars, {summary['errors']} errors, "
+                  f"{summary['complete']} complete (data until {summary['data_until']}) -> {summary['path']}")
+            return 0 if summary["written"] else 1
+        print("usage: sourcing-py etrade premarket precheck|prices|full --date D ...", file=sys.stderr)
+        return 2
+    except premarket_full.TooEarly as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 3
+    except (ConfigError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(f"premarket {summary['date']} cutoff {summary['cutoff']}: {summary['written']}/{summary['symbols']} "
-          f"written ({summary['by_source']}), {summary['with_bars']} with bars, {summary['errors']} errors; "
-          f"latency {summary['latency_s']}, newest bar lag {summary['newest_bar_lag_s']} s -> {summary['path']}")
-    if summary["auth_error"]:
-        print(f"  E*TRADE: {summary['auth_error']}; Massive fallback used: {summary['fallback_used']}", file=sys.stderr)
-    return 0 if summary["written"] else 1
 
 
 def main(argv: list[str]) -> int:
@@ -304,6 +345,8 @@ def main(argv: list[str]) -> int:
         print(_USAGE, file=sys.stderr)
         return 2
     sub, rest = argv[0], argv[1:]
+    if sub == "premarket":
+        return _cmd_premarket({}, rest)
     try:
         params = _parse(rest)
     except ValueError as exc:
@@ -334,7 +377,5 @@ def main(argv: list[str]) -> int:
         return _cmd_universe(params)
     if sub == "ingest-reference":
         return _cmd_ingest_reference(params)
-    if sub == "premarket":
-        return _cmd_premarket(params)
     print(f"unknown etrade subcommand {sub!r}\n{_USAGE}", file=sys.stderr)
     return 2

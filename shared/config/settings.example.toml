@@ -137,3 +137,21 @@ user_agent = "MTap vijayan.kothandaraman@gmail.com"
 requests_per_sec = 8
 # Concurrent fetch workers; the throttle above still caps the aggregate rate.
 workers = 4
+
+[premarket]
+# Live pre-market (sourcing-py etrade premarket, NAS job `premarket`, 06:28 PT = 09:28 ET).
+# Typical-price VWAP and volume of the bars in [04:00, cutoff) ET. The cutoff is recorded
+# in the panel meta; predict refuses a mismatch. Env PREMARKET_CUTOFF.
+cutoff = "09:25"
+# The Massive fallback feed is this many minutes behind (the forecast runs at cutoff + delay).
+feed_delay_min = 15
+# The bearer token the NAS collector mirrors (Authentication.ts); a path under state/ resolves
+# under the state root. The job only reads it: it never logs in. Env PREMARKET_TOKEN_PATH.
+token_path = "state/etrade/bearer.json"
+# Concurrent getChartiqFeed calls (hard cap 4).
+max_concurrency = 4
+
+[macro]
+# Economy sources (massive_treasury_yields, massive_inflation): the daily job fetches the
+# last `yields_window_days` days of yields, and inflation only when a month is due.
+yields_window_days = 10

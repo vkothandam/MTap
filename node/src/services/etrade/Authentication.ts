@@ -6,6 +6,7 @@ import { ENV } from "./env.js";
 import { SMSNotifier } from "./utils/SMSNotifier.js";
 import { BrowserGuard } from "./utils/BrowserGuard.js";
 import { BrowserClosedError } from "./utils/errors.js";
+import { writeBearerFile } from "./utils/bearerFile.js";
 import type { OtpCoordinator } from "./otp.js";
 import { stateRoot } from "../../common/config.js";
 
@@ -50,7 +51,10 @@ export class Authentication {
   }
 
   setBearerToken(token: string): void {
+    const changed = token !== this.bearerToken;
     this.bearerToken = token;
+    // Mirror a changed token to STATE/etrade/bearer.json for the premarket job (never throws).
+    if (changed) writeBearerFile(token);
   }
 
   getBearerToken(): string | null {

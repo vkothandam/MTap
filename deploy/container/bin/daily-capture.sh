@@ -26,6 +26,18 @@ for D in $GAPS; do
 done
 echo "$(ts) >>> sourcing-py run massive_grouped_daily --retry-failed"
 sourcing-py run massive_grouped_daily --retry-failed || { echo "$(ts) daily: FAILED at --retry-failed"; exit 1; }
+# Economy and shares inputs: a failure is logged and never fails the daily job.
+# Yields: the last 10 days (each fetch file is a vintage). Inflation: only when the stored
+# series lacks the month before last. Shares: only when a quarter-end snapshot is missing.
+echo "$(ts) >>> sourcing-py run massive_treasury_yields --days ${MTAP_YIELDS_DAYS:-10}"
+sourcing-py run massive_treasury_yields --days "${MTAP_YIELDS_DAYS:-10}" \
+    || echo "$(ts) daily: treasury yields fetch failed (not fatal); next run retries"
+echo "$(ts) >>> sourcing-py run massive_inflation --if-due"
+sourcing-py run massive_inflation --if-due \
+    || echo "$(ts) daily: inflation fetch failed (not fatal); next run retries"
+echo "$(ts) >>> sourcing-py run massive_shares"
+sourcing-py run massive_shares \
+    || echo "$(ts) daily: shares snapshot failed (not fatal); next run retries"
 echo "$(ts) >>> sourcing-py massive-ext gaps --days 14 --max 10"
 sourcing-py massive-ext gaps --days 14 --max 10 \
     || echo "$(ts) daily: extended-hours fetch failed; retried next run"

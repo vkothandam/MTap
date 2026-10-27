@@ -42,6 +42,15 @@ features the downstream TFT panel needs, and writes them back onto `daily_bars`:
   after_hours_pct_close — last after-hours price vs the same day's close. Fractions on
                    split-adjusted prices; NULL with no extended-hours trade (or no prior bar).
 
+  market_daily (table) — per session, the cap-weighted close-to-close return of the whole
+                   market (sector_code '00') and of each of the 11 TRBC sectors, from the
+                   split-adjusted closes of the CS/DR symbols with bars on both days.
+  macro_daily (table) — per session: treasury-yield changes/slopes/z-score (the previous
+                   session's yields) and CPI inflation (month M from the first session of M+2).
+  The per-bar session-shape / after-hours / pre-market inputs are computed at export time
+  from the raw columns (export.py); pm_expr() below builds the pre-market expressions so
+  `export-next` computes live rows the same way.
+
 The recompute is FULL and idempotent — every derived column is reset and rewritten each
 run — because the forward-looking columns for existing rows change as new bars land, so
 `derive-features` must be re-run after each `ingest-eod`. All work is set-based SQL in one
@@ -51,10 +60,13 @@ utils.trading_calendar helper (the source of truth for day_idx).
 
 from __future__ import annotations
 
+import math
 from datetime import date, datetime, timedelta, timezone
 
 import pyarrow as pa
 
+from ..common import config
+from ..massive_ext.extended import CUTOFFS
 from ..utils import trading_calendar as tc
 from . import db, edgar
 
@@ -247,11 +259,23 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
             )
 
             # 2. Snapped filing days: the trading day each filing becomes actionable (t=0).
+            #    10-K/10-Q come from EDGAR (sec_edgar_filings, by filing date, amendments
+            #    excluded: 10-K/A and 10-Q/A are other forms) for symbols mapped to a CIK
+            #    (sec_edgar_tickers); E*TRADE's sec_filings (2023-08 on) only for symbols with
+            #    no mapping. _build_announcements and vwap_nx_qtr read the same table.
             con.execute(
                 f"CREATE OR REPLACE TEMP TABLE _filing_days AS "
-                f"SELECT f.symbol, f.form_type, "
-                f"  (SELECT min(c.day_idx) FROM trading_calendar c WHERE c.date >= f.date_filed) AS fday "
-                f"FROM sec_filings f WHERE f.date_filed IS NOT NULL{s('f')}"
+                f"SELECT u.symbol, u.form_type, "
+                f"  (SELECT min(c.day_idx) FROM trading_calendar c WHERE c.date >= u.date_filed) AS fday "
+                f"FROM ("
+                f"  SELECT t.symbol, f.form AS form_type, f.filing_date AS date_filed "
+                f"  FROM sec_edgar_filings f JOIN sec_edgar_tickers t ON t.cik = f.cik "
+                f"  WHERE f.form IN ('10-K', '10-Q') AND f.filing_date IS NOT NULL{s('t')} "
+                f"  UNION "
+                f"  SELECT f.symbol, f.form_type, f.date_filed FROM sec_filings f "
+                f"  WHERE f.date_filed IS NOT NULL AND f.form_type IN ('10-K', '10-Q') "
+                f"    AND f.symbol NOT IN (SELECT symbol FROM sec_edgar_tickers){s('f')}"
+                f") u"
             )
             filings_snapped = con.execute(
                 "SELECT count(*) FROM _filing_days WHERE fday IS NOT NULL"
@@ -376,6 +400,10 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
                 f"SELECT count(*) FROM daily_bars WHERE ext_fetched_at IS NOT NULL{and_scope}"
             ).fetchone()[0]
 
+            # 5c. market and sector returns, macro inputs (whole tables, rewritten each run)
+            market_rows, market_mode = _build_market_daily(con)
+            macro_rows = _build_macro_daily(con)
+
             # 6. vwap_nx_qtr: current day .. next filing day (inclusive). Reset first, since
             #    rows with no future filing must end up NULL, not carry a stale value.
             con.execute(f"UPDATE daily_bars SET vwap_nx_qtr = NULL{where_scope}")
@@ -423,4 +451,251 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
         "bars_missing_day_idx": missing,
         "bars_split_adjusted": bars_split_adjusted,
         "bars_extended": bars_extended,
+        "market_daily_rows": market_rows,
+        "market_weighting": market_mode,
+        "macro_daily_rows": macro_rows,
+    }
+
+
+# --- market and sector returns ---------------------------------------------------------
+
+SECTORS = ("50", "51", "52", "53", "54", "55", "56", "57", "59", "60", "63")
+RET_CLIP = 0.5
+
+
+def _table_exists(con, name: str) -> bool:
+    return bool(con.execute(
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = ?", [name]).fetchone()[0])
+
+
+def _build_market_daily(con) -> tuple[int, str]:
+    """Rewrite market_daily: Σ cap(t-1)·r(t) / Σ cap(t-1) over CS/DR symbols with bars on
+    consecutive sessions, r the split-adjusted close-to-close return clipped at ±50%.
+
+    cap(t-1) = market_cap(S) × adjclose(t-1) / adjclose(S), S the latest share_snapshots
+    date <= t-1; a symbol without a snapshot falls back to adjclose(t-1) × the latest
+    E*TRADE shares outstanding (QTCO), else it is left out. With no share_snapshots table
+    at all the returns are equal-weighted (a warning is printed). Returns (rows, mode)."""
+    con.execute("DELETE FROM market_daily")
+    con.execute(
+        "CREATE OR REPLACE TEMP TABLE _mk_px AS "
+        "SELECT b.symbol, b.date, b.day_idx, b.close * COALESCE(b.split_factor, 1.0) AS adj, "
+        "  LAG(b.day_idx) OVER w AS p_idx, LAG(b.date) OVER w AS p_date, "
+        "  LAG(b.close * COALESCE(b.split_factor, 1.0)) OVER w AS p_adj "
+        "FROM daily_bars b JOIN symbols s ON s.symbol = b.symbol "
+        "WHERE b.day_idx IS NOT NULL AND b.close > 0 AND s.issue_type IN ('CS', 'DR') "
+        "WINDOW w AS (PARTITION BY b.symbol ORDER BY b.day_idx)"
+    )
+    con.execute(
+        f"CREATE OR REPLACE TEMP TABLE _mk_ret AS "
+        f"SELECT symbol, date, p_date, p_adj, greatest(-{RET_CLIP}, least({RET_CLIP}, adj / p_adj - 1)) AS r "
+        f"FROM _mk_px WHERE p_idx = day_idx - 1"
+    )
+    if _table_exists(con, "share_snapshots"):
+        mode = "cap"
+        # S's adjusted close: the bar on/after-before S (latest on or before S, else the
+        # symbol's first bar when the snapshot predates the data)
+        con.execute(
+            "CREATE OR REPLACE TEMP TABLE _mk_snap AS "
+            "SELECT sn.symbol, sn.snap_date, sn.market_cap, COALESCE(px.adj, fb.adj) AS s_adj "
+            "FROM share_snapshots sn "
+            "ASOF LEFT JOIN _mk_px px ON px.symbol = sn.symbol AND sn.snap_date >= px.date "
+            "LEFT JOIN (SELECT symbol, arg_min(adj, date) AS adj FROM _mk_px GROUP BY symbol) fb "
+            "  ON fb.symbol = sn.symbol "
+            "WHERE sn.market_cap > 0"
+        )
+        con.execute(
+            "CREATE OR REPLACE TEMP TABLE _mk_shares AS "
+            "SELECT symbol, arg_max(value * CASE WHEN thousand_multiplier THEN 1000 ELSE 1 END, fiscal_end) AS shares "
+            "FROM fundamentals WHERE line_item = 'QTCO' AND value > 0 GROUP BY symbol"
+        )
+        con.execute(
+            "CREATE OR REPLACE TEMP TABLE _mk_w AS "
+            "SELECT r.symbol, r.date, r.r, "
+            "  COALESCE(sn.market_cap * r.p_adj / sn.s_adj, fb.shares * r.p_adj) AS w "
+            "FROM _mk_ret r "
+            "ASOF LEFT JOIN _mk_snap sn ON sn.symbol = r.symbol AND r.p_date >= sn.snap_date "
+            "LEFT JOIN _mk_shares fb ON fb.symbol = r.symbol"
+        )
+    else:
+        mode = "equal"
+        print("warning: no share_snapshots table; market and sector returns are equal-weighted")
+        con.execute("CREATE OR REPLACE TEMP TABLE _mk_w AS SELECT symbol, date, r, 1.0 AS w FROM _mk_ret")
+    secs = ", ".join(f"'{c}'" for c in SECTORS)
+    con.execute(
+        "CREATE OR REPLACE TEMP TABLE _mk_sec AS "
+        "SELECT symbol, left(min(industry_code), 2) AS sec FROM symbol_industry GROUP BY symbol"
+    )
+    con.execute(
+        "INSERT INTO market_daily "
+        "SELECT date, '00', sum(w * r) / sum(w), count(*) FROM _mk_w WHERE w > 0 GROUP BY date "
+        "UNION ALL "
+        "SELECT m.date, k.sec, sum(m.w * m.r) / sum(m.w), count(*) FROM _mk_w m "
+        f"JOIN _mk_sec k ON k.symbol = m.symbol WHERE m.w > 0 AND k.sec IN ({secs}) GROUP BY m.date, k.sec"
+    )
+    for t in ("_mk_px", "_mk_ret", "_mk_snap", "_mk_shares", "_mk_w", "_mk_sec"):
+        con.execute(f"DROP TABLE IF EXISTS {t}")
+    return con.execute("SELECT count(*) FROM market_daily").fetchone()[0], mode
+
+
+# --- macro inputs ----------------------------------------------------------------------
+
+Z_WINDOW = 252
+Z_MIN = 126  # fewest past sessions for a z-score
+
+
+def _month_idx(d: date) -> int:
+    return d.year * 12 + d.month - 1
+
+
+def _as_date(v) -> date | None:
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    return date.fromisoformat(str(v)[:10])
+
+
+def macro_series(sessions: list[date], yields: list[tuple], infl: list[tuple], *, lag: int = 1) -> dict:
+    """The macro_daily values per session date. Pure function.
+
+    yields: (date, y_3m, y_2y, y_10y) rows in % (any order). The value used at session i is
+    the latest yield dated on or before session i-lag (so bond holidays carry forward, and
+    the default lag of 1 is the previous session's yield). Changes are vs the previous
+    session's used value, in bp; slopes in % points; z252 is the 10y level vs the mean/std of
+    the previous Z_WINDOW used values (today excluded; NULL under Z_MIN).
+    infl: (month_start, cpi, cpi_core, cpi_yoy_field) rows. Month M is known from the first
+    session of month M+2, i.e. on session d the latest month is month(d)-2."""
+    ys = sorted((_as_date(r[0]), *r[1:4]) for r in yields if r[0] is not None)
+    used: list[tuple | None] = []
+    j, cur = 0, None
+    for i in range(len(sessions)):
+        cutoff = sessions[i - lag] if i - lag >= 0 else None
+        while cutoff is not None and j < len(ys) and ys[j][0] <= cutoff:
+            cur = ys[j]
+            j += 1
+        used.append(cur if cutoff is not None else None)
+    cpi = {_month_idx(_as_date(r[0])): r for r in infl if r[0] is not None}
+
+    def level(m: int, k: int):  # k: 1 = cpi, 2 = core
+        r = cpi.get(m)
+        return r[k] if r and r[k] else None
+
+    def yoy(m: int, k: int):
+        a, b = level(m, k), level(m - 12, k)
+        if a is not None and b:
+            return a / b - 1
+        r = cpi.get(m)
+        return r[3] if (k == 1 and r and r[3] is not None) else None
+
+    out: dict[date, dict] = {}
+    for i, d in enumerate(sessions):
+        u, prev = used[i], used[i - 1] if i else None
+        row = dict.fromkeys(("ust_3m_chg_bp", "ust_2y_chg_bp", "ust_10y_chg_bp", "ust_10y_2y_slope",
+                             "ust_10y_3m_slope", "ust_10y_z252", "cpi_yoy", "core_cpi_yoy",
+                             "cpi_yoy_chg", "core_cpi_mom"))
+        if u is not None:
+            _, y3m, y2, y10 = u
+            if y10 is not None and y2 is not None:
+                row["ust_10y_2y_slope"] = y10 - y2
+            if y10 is not None and y3m is not None:
+                row["ust_10y_3m_slope"] = y10 - y3m
+            if prev is not None:
+                for key, a, b in (("ust_3m_chg_bp", u[1], prev[1]), ("ust_2y_chg_bp", u[2], prev[2]),
+                                  ("ust_10y_chg_bp", u[3], prev[3])):
+                    if a is not None and b is not None:
+                        row[key] = (a - b) * 100.0
+            hist = [x[3] for x in used[max(0, i - Z_WINDOW):i] if x is not None and x[3] is not None]
+            if y10 is not None and len(hist) >= Z_MIN:
+                mu = sum(hist) / len(hist)
+                sd = math.sqrt(sum((h - mu) ** 2 for h in hist) / len(hist))
+                row["ust_10y_z252"] = (y10 - mu) / sd if sd > 0 else None
+        m = _month_idx(d) - 2
+        row["cpi_yoy"], row["core_cpi_yoy"] = yoy(m, 1), yoy(m, 2)
+        prev_yoy = yoy(m - 1, 1)
+        if row["cpi_yoy"] is not None and prev_yoy is not None:
+            row["cpi_yoy_chg"] = row["cpi_yoy"] - prev_yoy
+        c0, c1 = level(m, 2), level(m - 1, 2)
+        if c0 is not None and c1:
+            row["core_cpi_mom"] = c0 / c1 - 1
+        out[d] = row
+    return out
+
+
+def _build_macro_daily(con) -> int:
+    """Rewrite macro_daily (one row per session in daily_bars) from treasury_yields and
+    inflation; with either table absent its columns stay NULL."""
+    con.execute("DELETE FROM macro_daily")
+    last = con.execute("SELECT max(date) FROM daily_bars").fetchone()[0]
+    if last is None:
+        return 0
+    lag = int((config.settings().get("macro") or {}).get("yield_lag_sessions", 1))
+    sessions = [r[0] for r in con.execute(
+        "SELECT date FROM trading_calendar WHERE date <= ? ORDER BY date", [last]).fetchall()]
+    yields = (con.execute("SELECT date, yield_3_month, yield_2_year, yield_10_year FROM treasury_yields "
+                          "ORDER BY date").fetchall() if _table_exists(con, "treasury_yields") else [])
+    infl = []
+    if _table_exists(con, "inflation"):
+        cols = {r[0] for r in con.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'inflation'").fetchall()}
+        yoy_col = "cpi_year_over_year" if "cpi_year_over_year" in cols else "NULL"
+        infl = con.execute(f"SELECT date, cpi, cpi_core, {yoy_col} FROM inflation ORDER BY date").fetchall()
+    series = macro_series(sessions, yields, infl, lag=lag)
+    have = {r[0] for r in con.execute("SELECT DISTINCT date FROM daily_bars").fetchall()}
+    names = ["ust_3m_chg_bp", "ust_2y_chg_bp", "ust_10y_chg_bp", "ust_10y_2y_slope", "ust_10y_3m_slope",
+             "ust_10y_z252", "cpi_yoy", "core_cpi_yoy", "cpi_yoy_chg", "core_cpi_mom"]
+    rows = [d for d in sessions if d in have]
+    if not rows:
+        return 0
+    tbl = pa.table({"date": pa.array(rows, pa.date32()),
+                    **{n: pa.array([series[d][n] for d in rows], pa.float64()) for n in names}})
+    con.register("_macro", tbl)
+    try:
+        con.execute("INSERT INTO macro_daily SELECT date, " + ", ".join(names) + " FROM _macro")
+    finally:
+        con.unregister("_macro")
+    return len(rows)
+
+
+# --- pre-market expressions (shared by export-tft and export-next) ---------------------
+
+PM_CLIP = 0.30
+PM_VOL_CLIP = 6.0
+DEFAULT_CUTOFF = "09:25"
+
+
+def cutoff_key(cutoff: str) -> str:
+    """'09:25' -> '0925' (a key of massive_ext CUTOFFS)."""
+    key = cutoff.replace(":", "")
+    if key not in CUTOFFS:
+        raise ValueError(f"unknown pre-market cutoff {cutoff!r}; one of "
+                         f"{', '.join(k[:2] + ':' + k[2:] for k in CUTOFFS)}")
+    return key
+
+
+def premarket_cutoff() -> str:
+    """The [premarket] cutoff setting, e.g. '09:25'."""
+    cutoff = str((config.settings().get("premarket") or {}).get("cutoff", DEFAULT_CUTOFF))
+    cutoff_key(cutoff)
+    return cutoff
+
+
+def pm_expr(tp: str, vol: str, mean: str, pvwap: str, ok: str) -> dict[str, str]:
+    """SQL expressions for the three pre-market inputs.
+
+    tp    pre-market typical-price VWAP up to the cutoff, split-adjusted
+    vol   pre-market volume up to the cutoff, split-adjusted
+    mean  mean daily volume of the previous 10 sessions (same source and adjustment)
+    pvwap the previous session's daily VWAP, split-adjusted
+    ok    boolean: the previous session is exactly one session back and no split executes today
+    pm_known is 1 only with all of them present; otherwise both values are 0 (the masked value)."""
+    known = f"({tp} IS NOT NULL AND {vol} IS NOT NULL AND {mean} > 0 AND {pvwap} > 0 AND coalesce({ok}, false))"
+    return {
+        "pm_vwap_pct_prev_vwap": (f"CASE WHEN {known} THEN greatest(-{PM_CLIP}, least({PM_CLIP}, "
+                                  f"{tp} / {pvwap} - 1)) ELSE 0.0 END"),
+        "pm_vol_pct_10d": (f"CASE WHEN {known} THEN greatest(0.0, least({PM_VOL_CLIP}, "
+                           f"ln(1 + 100 * {vol} / {mean}))) ELSE 0.0 END"),
+        "pm_known": f"CASE WHEN {known} THEN 1 ELSE 0 END::SMALLINT",
     }

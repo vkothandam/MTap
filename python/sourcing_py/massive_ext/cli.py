@@ -6,6 +6,9 @@ Dispatched from `sourcing_py.__main__` when the first arg is `massive-ext`:
     sourcing-py massive-ext gaps [--days 14] [--max 10] [--list]
 
 `fetch` is the backfill: rerun the same command to resume it or retry failed tickers.
+--allow-failures N finalizes even with up to N failed tickers; --chunk quarter runs each
+calendar quarter as its own resumable job; --save-bars DIR also writes the raw minute bars
+as DIR/month=YYYY-MM/*.parquet.
 `gaps` fetches the recent sessions that have a daily_summary file but no extended_hours
 file (scripts/schedule/daily-sourcing.sh), refreshing the common-stock list first when it
 is over a week old; --list only prints them.
@@ -22,6 +25,7 @@ from ..intraday.cli import _parse
 _USAGE = (
     "usage:\n"
     "  sourcing-py massive-ext fetch --fromdate D1 --todate D2 [--tickers A,B] [--workers N] [--keep]\n"
+    "      [--allow-failures N] [--chunk quarter] [--save-bars DIR]\n"
     "  sourcing-py massive-ext gaps [--days 14] [--max 10] [--list]"
 )
 
@@ -40,7 +44,10 @@ def main(argv: list[str]) -> int:
             d0, d1 = date.fromisoformat(params["fromdate"]), date.fromisoformat(params["todate"])
             if d1 < d0:
                 raise ValueError(f"todate {d1} is before fromdate {d0}")
-            return ext.fetch(d0, d1, tickers=tickers, workers=workers, keep=bool(params.get("keep")))
+            return ext.fetch(d0, d1, tickers=tickers, workers=workers, keep=bool(params.get("keep")),
+                             allow_failures=int(params.get("allow-failures", 0)),
+                             chunk=params.get("chunk") or None,
+                             save_bars=params.get("save-bars") or None)
         gaps = ext.missing_sessions(datetime.now(ext.NY).date(), days=int(params.get("days", 14)),
                                     cap=int(params.get("max", 10)))
         if params.get("list"):

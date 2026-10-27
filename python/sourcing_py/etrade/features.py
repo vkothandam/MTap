@@ -38,6 +38,8 @@ features the downstream TFT panel needs, and writes them back onto `daily_bars`:
                    volumes (price * factor, volume / factor).
   ext_split_factor — the same for the pre-market / after-hours columns, keyed on when
                    those were fetched (ext_fetched_at), which can differ from the bar's.
+  vol_10d_mean   — mean split-adjusted daily volume of the 10 sessions before the day
+                   (past-only; NULL on a symbol's first bar).
   pre_market_pct_prev_close — last pre-market price vs the previous bar's close; and
   after_hours_pct_close — last after-hours price vs the same day's close. Fractions on
                    split-adjusted prices; NULL with no extended-hours trade (or no prior bar).
@@ -48,7 +50,7 @@ features the downstream TFT panel needs, and writes them back onto `daily_bars`:
   macro_daily (table) — per session: treasury-yield changes/slopes/z-score (the previous
                    session's yields) and CPI inflation (month M from the first session of M+2).
   The per-bar session-shape / after-hours / pre-market inputs are computed at export time
-  from the raw columns (export.py); pm_expr() below builds the pre-market expressions so
+  from the raw columns (export.py); pm_px_expr() / pm_full_expr() below build the pre-market expressions so
   `export-next` computes live rows the same way.
 
 The recompute is FULL and idempotent — every derived column is reset and rewritten each
@@ -400,6 +402,18 @@ def derive_features(*, db_path=None, calendar: str = "XNYS", symbols: list[str] 
                 f"SELECT count(*) FROM daily_bars WHERE ext_fetched_at IS NOT NULL{and_scope}"
             ).fetchone()[0]
 
+            # 5b2. vol_10d_mean: mean split-adjusted daily volume of the 10 sessions before d
+            #      (past-only; the pre-market volume ratio's denominator, same source as the
+            #      Massive daily volume).
+            con.execute(f"UPDATE daily_bars SET vol_10d_mean = NULL{where_scope}")
+            con.execute(
+                f"UPDATE daily_bars b SET vol_10d_mean = v.m FROM ("
+                f"  SELECT symbol, date, AVG(volume) OVER (PARTITION BY symbol ORDER BY day_idx"
+                f"    RANGE BETWEEN 10 PRECEDING AND 1 PRECEDING) AS m"
+                f"  FROM _adj_bars WHERE day_idx IS NOT NULL{and_scope}"
+                f") v WHERE b.symbol = v.symbol AND b.date = v.date"
+            )
+
             # 5c. market and sector returns, macro inputs (whole tables, rewritten each run)
             market_rows, market_mode = _build_market_daily(con)
             macro_rows = _build_macro_daily(con)
@@ -663,11 +677,12 @@ def _build_macro_daily(con) -> int:
 
 PM_CLIP = 0.30
 PM_VOL_CLIP = 6.0
-DEFAULT_CUTOFF = "09:25"
+PM_RANGE_CLIP = 1.0
+DEFAULT_CUTOFF = "09:30"
 
 
 def cutoff_key(cutoff: str) -> str:
-    """'09:25' -> '0925' (a key of massive_ext CUTOFFS)."""
+    """'09:30' -> '0930' (a key of massive_ext CUTOFFS)."""
     key = cutoff.replace(":", "")
     if key not in CUTOFFS:
         raise ValueError(f"unknown pre-market cutoff {cutoff!r}; one of "
@@ -676,26 +691,52 @@ def cutoff_key(cutoff: str) -> str:
 
 
 def premarket_cutoff() -> str:
-    """The [premarket] cutoff setting, e.g. '09:25'."""
+    """The [premarket] cutoff setting, e.g. '09:30'."""
     cutoff = str((config.settings().get("premarket") or {}).get("cutoff", DEFAULT_CUTOFF))
     cutoff_key(cutoff)
     return cutoff
 
 
-def pm_expr(tp: str, vol: str, mean: str, pvwap: str, ok: str) -> dict[str, str]:
-    """SQL expressions for the three pre-market inputs.
+def pm_px_expr(last: str, open_: str, pvwap: str, ok: str) -> dict[str, str]:
+    """SQL expressions for the pre-market PRICES group (the 09:30 forecast).
 
-    tp    pre-market typical-price VWAP up to the cutoff, split-adjusted
-    vol   pre-market volume up to the cutoff, split-adjusted
-    mean  mean daily volume of the previous 10 sessions (same source and adjustment)
+    last  the last pre-market trade before 09:30, split-adjusted
+    open_ day d's open, split-adjusted
     pvwap the previous session's daily VWAP, split-adjusted
     ok    boolean: the previous session is exactly one session back and no split executes today
-    pm_known is 1 only with all of them present; otherwise both values are 0 (the masked value)."""
-    known = f"({tp} IS NOT NULL AND {vol} IS NOT NULL AND {mean} > 0 AND {pvwap} > 0 AND coalesce({ok}, false))"
+    pm_px_known is 1 only with all of them present (an open without a last is not enough);
+    otherwise both values are 0 (the masked value). Values are clipped to +-PM_CLIP."""
+    known = f"({last} IS NOT NULL AND {open_} IS NOT NULL AND {pvwap} > 0 AND coalesce({ok}, false))"
+
+    def pct(x: str) -> str:
+        return (f"CASE WHEN {known} THEN greatest(-{PM_CLIP}, least({PM_CLIP}, {x} / {pvwap} - 1)) "
+                "ELSE 0.0 END")
+
+    return {
+        "pm_last_pct_prev_vwap": pct(last),
+        "open_pct_prev_vwap": pct(open_),
+        "pm_px_known": f"CASE WHEN {known} THEN 1 ELSE 0 END::SMALLINT",
+    }
+
+
+def pm_full_expr(vwap: str, vol: str, mean: str, high: str, low: str, pvwap: str, ok: str) -> dict[str, str]:
+    """SQL expressions for the pre-market FULL group (the 09:45 forecast).
+
+    vwap  pre-market VWAP (minute-bar vw) up to the cutoff, split-adjusted
+    vol   pre-market volume up to the cutoff, split-adjusted
+    mean  vol_10d_mean: mean Massive daily volume of the previous 10 sessions (same adjustment)
+    high, low  pre-market high / low up to the cutoff, split-adjusted
+    pvwap, ok  as in pm_px_expr
+    pm_full_known is 1 only with all of them present; otherwise the values are 0. Each group's
+    flag reflects its own data only: the trainer masks full when prices are off."""
+    known = (f"({vwap} IS NOT NULL AND {vol} IS NOT NULL AND {high} IS NOT NULL AND {low} IS NOT NULL "
+             f"AND {mean} > 0 AND {pvwap} > 0 AND coalesce({ok}, false))")
     return {
         "pm_vwap_pct_prev_vwap": (f"CASE WHEN {known} THEN greatest(-{PM_CLIP}, least({PM_CLIP}, "
-                                  f"{tp} / {pvwap} - 1)) ELSE 0.0 END"),
+                                  f"{vwap} / {pvwap} - 1)) ELSE 0.0 END"),
         "pm_vol_pct_10d": (f"CASE WHEN {known} THEN greatest(0.0, least({PM_VOL_CLIP}, "
                            f"ln(1 + 100 * {vol} / {mean}))) ELSE 0.0 END"),
-        "pm_known": f"CASE WHEN {known} THEN 1 ELSE 0 END::SMALLINT",
+        "pm_range_pct": (f"CASE WHEN {known} THEN greatest(0.0, least({PM_RANGE_CLIP}, "
+                         f"({high} - {low}) / {pvwap})) ELSE 0.0 END"),
+        "pm_full_known": f"CASE WHEN {known} THEN 1 ELSE 0 END::SMALLINT",
     }

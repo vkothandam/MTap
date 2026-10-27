@@ -78,6 +78,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setenv("MTAP_STATE_ROOT", str(tmp_path / "state"))
     monkeypatch.setenv("MASSIVE_API_KEY", "test-key")
     monkeypatch.setenv("MASSIVE_RATE_LIMIT_PER_MIN", "0")
+    monkeypatch.setenv("PREMARKET_CUTOFF", "09:25")  # these fixtures are built around 09:25
     return tmp_path
 
 

@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "premarket_prices",
+  "title": "premarket_prices record",
+  "description": "One symbol's pre-market PRICES for the 09:30 forecast (premarket_live/prices-D.jsonl, written by `premarket prices`, read by `etrade export-next --prices`). One line per symbol; a later run of the same day replaces the file. export-next sets pm_last_pct_prev_vwap = last / previous session VWAP - 1 and open_pct_prev_vwap = open / previous session VWAP - 1 (both clipped +-0.30) and pm_px_known = 1 only when BOTH last and open are numbers (an open without a last leaves the group at 0). Prices are as the source quotes them today (split-adjusted by the current listing); a split executing on `date` masks the group. Live definitions differ from training (Massive): the last is the watchlist mid or ChartIQ's last bucket close, not the last trade.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["symbol", "date", "last", "last_at", "open", "open_at", "source", "as_of"],
+  "properties": {
+    "symbol": { "type": "string" },
+    "date": { "type": "string", "format": "date", "description": "The forecast session (New York date)." },
+    "last": { "type": ["number", "null"], "description": "Last pre-market price before 09:30 ET; null when unknown." },
+    "last_at": { "type": ["string", "null"], "description": "UTC ISO time of that price (the quote or bucket time); null when last is null." },
+    "open": { "type": ["number", "null"], "description": "The regular-session opening price of `date`; null before the stock opens (the --open pass fills it)." },
+    "open_at": { "type": ["string", "null"], "description": "UTC ISO time of the open print; null when open is null." },
+    "source": { "type": "string", "description": "Where last came from: watchlist, etrade_chartiq, massive, ...; a record may mix (the open can come from another source)." },
+    "as_of": { "type": "string", "description": "UTC ISO time the record was written." }
+  }
+}

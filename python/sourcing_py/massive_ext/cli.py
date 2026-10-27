@@ -8,7 +8,8 @@ Dispatched from `sourcing_py.__main__` when the first arg is `massive-ext`:
 `fetch` is the backfill: rerun the same command to resume it or retry failed tickers.
 --allow-failures N finalizes even with up to N failed tickers; --chunk quarter runs each
 calendar quarter as its own resumable job; --save-bars DIR also writes the raw minute bars
-as DIR/month=YYYY-MM/*.parquet.
+as DIR/month=YYYY-MM/*.parquet (New York month); --bars-universe PANEL.parquet limits the
+saved bars to the symbols of that panel.
 `gaps` fetches the recent sessions that have a daily_summary file but no extended_hours
 file (scripts/schedule/daily-sourcing.sh), refreshing the common-stock list first when it
 is over a week old; --list only prints them.
@@ -26,6 +27,7 @@ _USAGE = (
     "usage:\n"
     "  sourcing-py massive-ext fetch --fromdate D1 --todate D2 [--tickers A,B] [--workers N] [--keep]\n"
     "      [--allow-failures N] [--chunk quarter] [--save-bars DIR]\n"
+    "      [--bars-universe PANEL.parquet]\n"
     "  sourcing-py massive-ext gaps [--days 14] [--max 10] [--list]"
 )
 
@@ -47,7 +49,9 @@ def main(argv: list[str]) -> int:
             return ext.fetch(d0, d1, tickers=tickers, workers=workers, keep=bool(params.get("keep")),
                              allow_failures=int(params.get("allow-failures", 0)),
                              chunk=params.get("chunk") or None,
-                             save_bars=params.get("save-bars") or None)
+                             save_bars=params.get("save-bars") or None,
+                             bars_universe=(ext.panel_symbols(params["bars-universe"])
+                                            if params.get("bars-universe") else None))
         gaps = ext.missing_sessions(datetime.now(ext.NY).date(), days=int(params.get("days", 14)),
                                     cap=int(params.get("max", 10)))
         if params.get("list"):

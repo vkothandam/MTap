@@ -34,7 +34,9 @@ _USAGE = (
     "  sourcing-py etrade derive-features [--symbols A,B]  (day_idx, filing flags, VWAP; re-run after ingest-eod)\n"
     "  sourcing-py etrade export-tft [--out PATH] [--include-inference] [--issue-types CS,DR]\n"
     "      [--min-bars 120] [--min-median-vwap 1] [--min-median-volume 50000]  (TFT panel.parquet)\n"
-    "  sourcing-py etrade export-next [--date D] [--panel PATH]  (fill panel.next.parquet from premarket_live)\n"
+    "  sourcing-py etrade export-next [--date D] [--panel PATH] [--prices F] [--premarket F]\n"
+    "      (fill panel.next.parquet from premarket_live/prices-D.jsonl and premarket-D.jsonl)\n"
+    "  sourcing-py etrade universe [--date D]  (liquid symbols -> premarket_live/universe-D.csv)\n"
     "  sourcing-py etrade ingest-reference  (economy + quarter-end share files -> DuckDB)\n"
     "  sourcing-py etrade premarket [--date D|today] [--symbols A,B] [--xids-file F] [--cutoff HH:MM]\n"
     "      [--source auto|etrade|massive]  (live pre-market -> out/premarket_live/)"
@@ -196,13 +198,29 @@ def _cmd_export_next(p: dict) -> int:
 
     try:
         summary = export.export_next(date_=date.fromisoformat(p["date"]) if p.get("date") else None,
-                                     panel=p["panel"] if p.get("panel") else None)
+                                     panel=p["panel"] if p.get("panel") else None,
+                                     prices_path=p["prices"] if p.get("prices") else None,
+                                     premarket_path=p["premarket"] if p.get("premarket") else None)
     except (RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(f"export-next {summary['date']} (cutoff {summary['cutoff']}): pm_known for "
-          f"{summary['pm_known']:,}/{summary['symbols']:,} symbols from {summary['live_records']:,} "
-          f"live record(s) -> {summary['next_path']}")
+    print(f"export-next {summary['date']} (cutoff {summary['cutoff']}): pm_px_known for "
+          f"{summary['pm_px_known']:,} and pm_full_known for {summary['pm_full_known']:,} of "
+          f"{summary['symbols']:,} symbols from {summary['prices_records']:,} price and "
+          f"{summary['premarket_records']:,} pre-market record(s) -> {summary['next_path']}")
+    return 0
+
+
+def _cmd_universe(p: dict) -> int:
+    from datetime import date
+
+    try:
+        summary = export.liquid_universe(date_=date.fromisoformat(p["date"]) if p.get("date") else None)
+    except (RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"universe {summary['date']}: {summary['symbols']:,} symbols (20-session mean dollar volume >= "
+          f"{summary['min_dollar_volume']:,.0f}, close >= {summary['min_price']}) -> {summary['path']}")
     return 0
 
 
@@ -312,6 +330,8 @@ def main(argv: list[str]) -> int:
         return _cmd_export_tft(params)
     if sub == "export-next":
         return _cmd_export_next(params)
+    if sub == "universe":
+        return _cmd_universe(params)
     if sub == "ingest-reference":
         return _cmd_ingest_reference(params)
     if sub == "premarket":

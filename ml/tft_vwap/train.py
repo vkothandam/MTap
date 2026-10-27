@@ -9,6 +9,8 @@ fold_<k>/{best.ckpt, resume.ckpt, metrics.json, test_predictions.parquet, logs/}
 Long runs go in segments: `--max-hours 2.5` stops at an epoch end (also on a runs/<id>/STOP
 file, Ctrl-C or SIGTERM), writes state.json {"status": "paused"} and exits without scoring the
 half-trained fold; `--resume runs/<id> [--max-hours H]` continues it where it stopped.
+Each epoch prints a `[progress]` line with the time left, also kept in runs/<id>/progress.json
+and shown by `tft-vwap-status` (progress.py).
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from pytorch_forecasting.metrics import QuantileLoss
 from .config import EARNINGS_MODES, NOPM, PREMARKET_MODES, TrainConfig, from_run
 from .dataset import Fold, PmMaskCollate, build_datasets, load_panel, make_folds
 from .evaluate import calibration, forecast_frame, metrics
+from .progress import Progress
 from .report import build_report
 
 
@@ -89,7 +92,7 @@ def _epoch_of(ckpt: Path) -> int:
 
 
 def train_fold(df: pd.DataFrame, cfg: TrainConfig, fold: Fold, fold_dir: Path,
-               budget: TimeBudget | None = None) -> dict | None:
+               budget: TimeBudget | None = None, progress: Progress | None = None) -> dict | None:
     """Train, then score one fold. None when the budget paused it (nothing is scored)."""
     resume_ckpt = fold_dir / "resume.ckpt"
     resuming = resume_ckpt.exists()
@@ -132,7 +135,8 @@ def train_fold(df: pd.DataFrame, cfg: TrainConfig, fold: Fold, fold_dir: Path,
         devices=1,
         gradient_clip_val=cfg.gradient_clip_val,
         limit_train_batches=cfg.limit_train_batches,
-        callbacks=[ckpt, last, EarlyStopping(monitor="val_loss", patience=cfg.patience), budget],
+        callbacks=[ckpt, last, EarlyStopping(monitor="val_loss", patience=cfg.patience), budget,
+                   *([progress] if progress else [])],
         logger=CSVLogger(fold_dir, name="logs", version=""),
         enable_model_summary=False,
         deterministic=False,
@@ -170,7 +174,7 @@ def train_fold(df: pd.DataFrame, cfg: TrainConfig, fold: Fold, fold_dir: Path,
     result = {
         "fold": asdict(fold),
         "train_samples": len(train_ds),
-        "epochs": trainer.current_epoch + 1,
+        "epochs": trainer.current_epoch,  # after fit: epochs completed (resumed ones included)
         "best_val_loss": float(ckpt.best_model_score) if ckpt.best_model_score is not None else None,
         "train_seconds": round(train_secs, 1),
         "early_stop": metrics(es_frame, cfg.quantiles),
@@ -243,9 +247,10 @@ def run(cfg: TrainConfig, *, max_hours: float | None = None, resume: Path | None
 
     budget = TimeBudget(max_hours, run_dir / "STOP", run_dir / "resume.ckpt")
     _set_state(run_dir, "running", path=os.path.realpath(run_dir))
+    selected = [k for k in range(len(folds)) if cfg.only_folds is None or k in cfg.only_folds]
     results, trained = [], False  # trained: a fold ran in this segment
     for k, fold in enumerate(folds):
-        if cfg.only_folds is not None and k not in cfg.only_folds:
+        if k not in selected:
             continue
         done = run_dir / f"fold_{k}" / "metrics.json"
         if done.exists():
@@ -257,7 +262,10 @@ def run(cfg: TrainConfig, *, max_hours: float | None = None, resume: Path | None
             print(f"fold {k}: train <{fold.es_start}, early-stop {fold.es_start}-"
                   f"{fold.test_start - 1}, test {fold.test_start}-{fold.test_end}")
             try:
-                result = train_fold(df, cfg, fold, run_dir / f"fold_{k}", budget)
+                progress = Progress(run_dir / "progress.json", fold=k,
+                                    pos=selected.index(k) + 1, n_folds=len(selected),
+                                    prior=[r for _, r in results], patience=cfg.patience)
+                result = train_fold(df, cfg, fold, run_dir / f"fold_{k}", budget, progress)
             except SystemExit:  # Ctrl-C (Lightning exits) or SIGTERM: a clean pause, no scoring
                 _set_state(run_dir, "paused", fold=k)
                 print(f"interrupted in fold {k}; continue with: tft-vwap --resume {run_dir}")
@@ -289,6 +297,7 @@ def run(cfg: TrainConfig, *, max_hours: float | None = None, resume: Path | None
         print(_quantile_report(pooled_cal["quantiles"]))
         print(_signal_report(pooled_cal["signals"]))
     build_report(run_dir)  # per-stock / per-day calibration grid, bias and ladder hits
+    (run_dir / "progress.json").unlink(missing_ok=True)
     _set_state(run_dir, "done")
     print(f"results: {run_dir} (calibration report: {run_dir / 'report'})")
     return run_dir

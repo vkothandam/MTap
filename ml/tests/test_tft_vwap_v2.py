@@ -182,7 +182,7 @@ def test_resume_continues_the_paused_fold(panel4_path, tmp_path, monkeypatch):
     assert log["epoch"].max() == metrics["epochs"] - 1
     assert (run_dir / "summary.json").exists()
 
-    with pytest.raises(ValueError, match="panel changed"):
+    with pytest.raises(ValueError, match="changed since the run started"):
         meta = panel4_path.with_name("panel.meta.json")
         meta.write_text(json.dumps({**json.loads(meta.read_text()), "export_id": "new"}))
         train.run(from_run(run_dir), resume=run_dir)
@@ -376,3 +376,40 @@ def test_write_panel_helper_schema4_meta(tmp_path, panel_df):
     meta = json.loads(path.with_name("panel.meta.json").read_text())
     assert meta["schema_version"] == 4 and meta["export_id"] == "exp-1"
     assert dataset.read_meta(path)["premarket_cutoff"] == "09:25"
+
+
+def test_time_left_range():
+    from tft_vwap.progress import estimate_left
+
+    # epoch 3 of 15 done, wait 1 of patience 3, 100 s/epoch, 2 folds after, none finished yet
+    left = estimate_left(epoch_secs=100, completed=3, frac_left=0, max_epochs=15, wait=1,
+                         patience=3, folds_after=2, prior_epochs=[], prior_secs=[])
+    assert left["fold"] == [200, 700, 1200]  # earliest: 2 more epochs without improvement
+    assert left["run"] == [200 + 2 * 400, 700 + 2 * 950, 1200 + 2 * 1500]
+    # finished folds took 8 epochs / 900 s on average: the estimate follows them
+    left = estimate_left(epoch_secs=100, completed=3, frac_left=0, max_epochs=15, wait=0,
+                         patience=3, folds_after=1, prior_epochs=[8], prior_secs=[900])
+    assert left["fold"][1] == 500 and left["run"][1] == 500 + 900
+    # mid-epoch: half of the current epoch remains
+    left = estimate_left(epoch_secs=100, completed=14, frac_left=0.5, max_epochs=15, wait=0,
+                         patience=3, folds_after=0, prior_epochs=[], prior_secs=[])
+    assert left["fold"] == [50, 50, 50]
+
+
+def test_progress_written_and_status(panel_path, tmp_path, capsys):
+    from tft_vwap import progress
+
+    cfg = _cfg(panel_path, tmp_path, only_folds=[0, 1], max_epochs=3)
+    run_dir = train.run(cfg, max_hours=1e-9)  # pauses after fold 0's first epoch
+    p = json.loads((run_dir / "progress.json").read_text())
+    assert p["fold"] == 0 and p["fold_pos"] == 1 and p["folds"] == 2 and p["epoch"] == 1
+    lo, mid, hi = p["run_left_seconds"]
+    assert 0 < lo <= mid <= hi and p["fold_left_seconds"][2] <= hi
+    assert "[progress] fold 0 (1/2) epoch 1/3" in capsys.readouterr().out
+    text = progress.status(run_dir)
+    assert "paused" in text and "run left" in text
+    progress.main([str(cfg.out_dir)])
+    assert run_dir.name in capsys.readouterr().out
+    train.run(from_run(run_dir), resume=run_dir)
+    assert not (run_dir / "progress.json").exists()
+    assert progress.status(run_dir).endswith(": done")

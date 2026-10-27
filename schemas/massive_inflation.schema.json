@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "massive_inflation",
+  "title": "massive_inflation record",
+  "description": "One reference month of US inflation indicators from Massive.com /fed/v1/inflation. Each fetch file is a vintage (values are revised later).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["date"],
+  "properties": {
+    "date": { "type": "string", "format": "date", "description": "First day of the reference month." },
+    "cpi": { "type": ["number", "null"], "description": "CPI-U index level." },
+    "cpi_core": { "type": ["number", "null"], "description": "Core CPI index level." },
+    "cpi_year_over_year": { "type": ["number", "null"], "description": "CPI year-over-year change (when the API returns it)." },
+    "pce": { "type": ["number", "null"], "description": "PCE price index." },
+    "pce_core": { "type": ["number", "null"], "description": "Core PCE price index." },
+    "pce_spending": { "type": ["number", "null"], "description": "Personal consumption expenditures, billions of dollars." }
+  }
+}

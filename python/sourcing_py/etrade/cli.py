@@ -34,7 +34,10 @@ _USAGE = (
     "  sourcing-py etrade derive-features [--symbols A,B]  (day_idx, filing flags, VWAP; re-run after ingest-eod)\n"
     "  sourcing-py etrade export-tft [--out PATH] [--include-inference] [--issue-types CS,DR]\n"
     "      [--min-bars 120] [--min-median-vwap 1] [--min-median-volume 50000]  (TFT panel.parquet)\n"
-    "  sourcing-py etrade export-next [--date D] [--panel PATH]  (fill panel.next.parquet from premarket_live)"
+    "  sourcing-py etrade export-next [--date D] [--panel PATH]  (fill panel.next.parquet from premarket_live)\n"
+    "  sourcing-py etrade ingest-reference  (economy + quarter-end share files -> DuckDB)\n"
+    "  sourcing-py etrade premarket [--date D|today] [--symbols A,B] [--xids-file F] [--cutoff HH:MM]\n"
+    "      [--source auto|etrade|massive]  (live pre-market -> out/premarket_live/)"
 )
 
 
@@ -235,6 +238,48 @@ def _cmd_export_tft(p: dict) -> int:
     return 0
 
 
+def _cmd_ingest_reference(p: dict) -> int:
+    from . import db
+    from .reference_ingest import ingest_reference
+
+    with db.connect() as con:
+        counts = ingest_reference(con)
+    print("ingested reference data: " + ", ".join(f"{k} {v:,}" for k, v in counts.items()))
+    return 0
+
+
+def _cmd_premarket(p: dict) -> int:
+    from datetime import date as _date
+    from datetime import datetime as _dt
+    from pathlib import Path
+
+    from . import premarket
+
+    try:
+        d = _dt.now(premarket.NY).date() if p.get("date") in (None, "today") else _date.fromisoformat(p["date"])
+        symbols = [s for s in str(p["symbols"]).split(",") if s] if p.get("symbols") not in (None, True) else None
+        xids = Path(p["xids-file"]) if p.get("xids-file") not in (None, True) else None
+        universe = premarket.load_universe(symbols, xids)
+        if not universe:
+            print("premarket: no symbols with an XID", file=sys.stderr)
+            return 1
+        cutoff = p["cutoff"] if p.get("cutoff") not in (None, True) else None
+        source = p["source"] if p.get("source") not in (None, True) else "auto"
+        if source not in ("auto", "etrade", "massive"):
+            print("error: --source is auto|etrade|massive", file=sys.stderr)
+            return 2
+        summary = premarket.run_premarket(d, universe, source=source, cutoff=cutoff)
+    except (ConfigError, premarket.AuthStop, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"premarket {summary['date']} cutoff {summary['cutoff']}: {summary['written']}/{summary['symbols']} "
+          f"written ({summary['by_source']}), {summary['with_bars']} with bars, {summary['errors']} errors; "
+          f"latency {summary['latency_s']}, newest bar lag {summary['newest_bar_lag_s']} s -> {summary['path']}")
+    if summary["auth_error"]:
+        print(f"  E*TRADE: {summary['auth_error']}; Massive fallback used: {summary['fallback_used']}", file=sys.stderr)
+    return 0 if summary["written"] else 1
+
+
 def main(argv: list[str]) -> int:
     """argv is everything AFTER the `etrade` verb."""
     if not argv:
@@ -267,5 +312,9 @@ def main(argv: list[str]) -> int:
         return _cmd_export_tft(params)
     if sub == "export-next":
         return _cmd_export_next(params)
+    if sub == "ingest-reference":
+        return _cmd_ingest_reference(params)
+    if sub == "premarket":
+        return _cmd_premarket(params)
     print(f"unknown etrade subcommand {sub!r}\n{_USAGE}", file=sys.stderr)
     return 2

@@ -57,13 +57,20 @@ The Mac never opens `MTap-State` over SMB, and no DuckDB is used here.
        ```bash
        ssh vijayan.synology@192.168.1.100 'echo start > /volume2/Backups/MTap-State/run-next'
        ```
-     - Only build, start, daily, evening, stop, status, ws-test and selftest are accepted, with no
-       arguments.
+     - Only build, start, daily, evening, stop, status, ws-test, selftest, premarket and
+       inputs-backfill are accepted, with no arguments.
    - **The weekday schedule:** Scheduled Task, Mon–Fri. Create these now with **Enabled
      unticked**, and tick Enabled at cutover:
      - `mtap-start` 06:10: `start`
      - `mtap-daily` 06:40: `daily`
      - `mtap-evening` 13:15: `evening`
+     - `mtap-premarket` 06:28: `premarket` (09:28 ET; the DSM times are PT). Alerts by email
+       like the others. It runs `etrade premarket --date today`, which only reads
+       `MTap-State/etrade/bearer.json` (the collector keeps it current), never logs in, and
+       stops on the first 401/403/429. It then fetches the rest from Massive minute bars
+       (15 min delayed). It takes a few minutes and runs inside the shared job lock, so
+       it waits if another job holds it. Output: `MTap-Data/out/premarket_live/` and
+       `MTap-State/logs/premarket-<date>.log`.
    - On the **Schedule** tab, set "Run on the following days" to Mon–Fri and "First run
      time" to the time above. DSM's defaults are every day at 00:00, when the NAS is off. On
      2026-10-24 the first three tasks kept those defaults. To check, read
@@ -87,6 +94,32 @@ The Mac never opens `MTap-State` over SMB, and no DuckDB is used here.
    - it must not shut down before 13:45 on weekdays.
 5. **Firewall:** if the DSM firewall is on, allow ports 7900 (noVNC) and 8787 (the OTP
    page) from the LAN.
+
+## The 5-year inputs backfill (one-off)
+
+`inputs-backfill` loads the data for the 5-year daily model. Every step is resumable and
+idempotent, so after a failure or a stop, queue it again.
+
+1. Put the first date with minute aggs (spike S5) in `host.env`: `MTAP_BACKFILL_FROM=YYYY-MM-DD`.
+2. After `push.sh`, queue `build` once (the new sources need the new image).
+3. Queue it **after the 13:15 `evening` job** (all jobs share one lock; the queue skips
+   a run while another job holds it and takes the file on a later 5-minute tick):
+   ```bash
+   ssh vijayan.synology@192.168.1.100 'echo inputs-backfill > /volume2/Backups/MTap-State/run-next'
+   ```
+4. It copies `out/extended_hours` to `MTap-Data/backup/extended_hours-pre-vwap` (once), runs
+   `massive-ext fetch --chunk quarter --allow-failures 50 --save-bars /data/bars_1m`, refreshes
+   `tickers_cs`, fetches the quarter-end share snapshots, then the economy series.
+   The log is `MTap-State/logs/inputs-backfill-<date>.log`.
+
+## Collector restart for the token file
+
+The collector now also writes the E*TRADE bearer token to `MTap-State/etrade/bearer.json`
+(mode 600, atomic) whenever it changes; the `premarket` job reads it. After `push.sh` and
+`build`, the collector needs **one restart outside market hours** (queue `stop`, then `start`,
+before 06:10 PT or after 13:45 PT) to pick the change up. Until then `premarket` finds no
+token file and uses the Massive fallback. The token is a secret: it stays in `MTap-State`,
+never in the repo or the data share.
 
 ## Trial (the weekend before cutover)
 

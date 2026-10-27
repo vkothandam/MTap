@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "etrade_premarket",
+  "title": "etrade_premarket record",
+  "description": "One symbol's live pre-market summary up to a cutoff (sourcing-py etrade premarket): typical-price VWAP and volume of the bars in [04:00 ET, cutoff) on `date`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["symbol", "date", "cutoff", "source", "fetched_at", "n_bars", "complete"],
+  "properties": {
+    "symbol": { "type": "string" },
+    "xid": { "type": ["integer", "null"], "description": "E*TRADE XID." },
+    "date": { "type": "string", "format": "date" },
+    "cutoff": { "type": "string", "description": "HH:MM ET; bars with DT strictly before it." },
+    "pm_tpvwap": { "type": ["number", "null"], "description": "sum(((H+L+C)/3)*V)/sum(V); null with no volume." },
+    "pm_volume": { "type": ["number", "null"] },
+    "vol_10d_mean_source": { "type": ["number", "null"], "description": "Mean daily volume of the 10 sessions before `date`, in the same source." },
+    "n_bars": { "type": "integer" },
+    "last_bar_dt": { "type": ["string", "null"], "description": "UTC time of the newest bar used." },
+    "data_until": { "type": ["string", "null"], "description": "UTC time the source's data reaches (E*TRADE: median newest bar; Massive: now - feed delay)." },
+    "complete": { "type": "boolean", "description": "data_until >= cutoff: the whole [04:00, cutoff) window was available." },
+    "source": { "type": "string", "enum": ["etrade_chartiq", "massive"] },
+    "fetched_at": { "type": "string" }
+  }
+}

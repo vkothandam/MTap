@@ -16,9 +16,15 @@
 #   ws-test   a 2-minute massive-ws connection, outside its window (a trial; refused
 #             while the massive-ws service runs: one connection per key)
 #   selftest  what a py container sees: its user, Python's path, the package and its CLI
+#   premarket today's live pre-market from E*TRADE ChartIQ (etrade premarket), in a one-off py
+#             container: it only reads STATE/etrade/bearer.json, never touches the collector
+#             or logs in, and stops on the first 401/403/429 (then Massive minute bars)
+#   inputs-backfill  the 5-year inputs, resumable and idempotent: back up out/extended_hours
+#             once, massive-ext refetch from MTAP_BACKFILL_FROM with minute bars, tickers_cs
+#             refresh, quarter-end shares, the economy series. Queue it after the evening job
 #   run ARGS  sourcing-py ARGS in a one-off py container
 #   queue     run the job named in STATE/run-next (one of build start daily evening stop
-#             status ws-test selftest; no arguments), then delete the file; nothing if it
+#             status ws-test selftest premarket inputs-backfill; no arguments), then delete the file; nothing if it
 #             is absent. Every queue run also runs `watch` first.
 #   watch     in market hours (Mon-Fri ET), a role's heartbeats older than
 #             MTAP_WATCH_STALE_MIN (10) minutes are a problem; exit 1, with the reason in
@@ -118,6 +124,57 @@ daily() {
         log "daily: FAILED (see $dlog)"
         return 1
     fi
+}
+
+# Today's live pre-market (DSM task mtap-premarket, Mon-Fri 06:28 PT = 09:28 ET). Quick; the
+# E*TRADE part only reads the token file the collector keeps, so the collector is untouched.
+premarket() {
+    data_ready || { log "ERROR: $MTAP_DATA_DIR has no .mtap-data-root; not running"; return 1; }
+    local plog; plog="$LOGS/premarket-$(date +%F).log"
+    log "premarket: etrade premarket --date today (log $plog)"
+    if py etrade premarket --date today --source auto >> "$plog" 2>&1; then
+        log "premarket: $(tail -1 "$plog")"
+    else
+        log "premarket: FAILED (see $plog)"
+        return 1
+    fi
+}
+
+# The one-off 5-year inputs load. Every step is resumable and idempotent; a failed step is
+# logged and the next one still runs (queue the job again to finish). Run it after the
+# evening job (all jobs share one lock).
+inputs_backfill() {
+    data_ready || { log "ERROR: $MTAP_DATA_DIR has no .mtap-data-root; not running"; return 1; }
+    has_key || { log "inputs-backfill: no MASSIVE_API_KEY in $MTAP_SECRETS_FILE; nothing to do"; return 0; }
+    local blog edge yday rc=0 src dst step
+    blog="$LOGS/inputs-backfill-$(date +%F).log"
+    edge="${MTAP_BACKFILL_FROM:-}"
+    [ -n "$edge" ] || { log "inputs-backfill: MTAP_BACKFILL_FROM (the first date with minute aggs) is not set in host.env"; return 1; }
+    yday="$(date -d yesterday +%F)"
+    log "inputs-backfill: from $edge to $yday (log $blog)"
+    src="$MTAP_DATA_DIR/out/extended_hours"; dst="$MTAP_DATA_DIR/backup/extended_hours-pre-vwap"
+    if [ -d "$dst" ]; then
+        echo "backup exists, kept: $dst" >> "$blog"
+    elif [ -d "$src" ]; then
+        if mkdir -p "$MTAP_DATA_DIR/backup" && cp -a "$src" "$dst.tmp" && mv "$dst.tmp" "$dst"; then
+            echo "backed up $src -> $dst" >> "$blog"
+        else
+            log "inputs-backfill: FAILED to back up extended_hours; stopping"
+            return 1
+        fi
+    fi
+    for step in \
+        "massive-ext fetch --chunk quarter --allow-failures 50 --save-bars /data/bars_1m --fromdate $edge --todate $yday" \
+        "run massive_tickers_cs" \
+        "run massive_shares" \
+        "run massive_treasury_yields" \
+        "run massive_inflation"; do
+        echo "$(date '+%F %T') >>> sourcing-py $step" >> "$blog"
+        # shellcheck disable=SC2086
+        py $step >> "$blog" 2>&1 || { log "inputs-backfill: step failed: $step"; rc=1; }
+    done
+    log "inputs-backfill: done (rc $rc); see $blog"
+    return "$rc"
 }
 
 # The Massive feed is 15 min behind, so its window closes after the E*TRADE collector
@@ -302,8 +359,8 @@ queue() {
     next="$(head -n 1 "$f" | tr -d '[:space:]')"
     rm -f "$f"
     case "$next" in
-        build|start|daily|evening|stop|status|ws-test|selftest) JOB="$next"; log "queued job"; dispatch "$next" ;;
-        *) log "ignoring queued job '$next' (not one of build start daily evening stop status ws-test selftest)" ;;
+        build|start|daily|evening|stop|status|ws-test|selftest|premarket|inputs-backfill) JOB="$next"; log "queued job"; dispatch "$next" ;;
+        *) log "ignoring queued job '$next' (not one of build start daily evening stop status ws-test selftest premarket inputs-backfill)" ;;
     esac
 }
 
@@ -317,14 +374,16 @@ dispatch() {
         status) status ;;
         ws-test) ws_test ;;
         selftest) selftest ;;
+        premarket) premarket ;;
+        inputs-backfill) inputs_backfill ;;
         watch) watch ;;
         *) return 2 ;;
     esac
 }
 
 case "$JOB" in
-    build|start|daily|evening|stop|status|ws-test|selftest|watch|queue|run) ;;
-    *) die "usage: $0 {build|start|daily|evening|stop|status|ws-test|selftest|watch|queue|run ARGS}" ;;
+    build|start|daily|evening|stop|status|ws-test|selftest|premarket|inputs-backfill|watch|queue|run) ;;
+    *) die "usage: $0 {build|start|daily|evening|stop|status|ws-test|selftest|premarket|inputs-backfill|watch|queue|run ARGS}" ;;
 esac
 check_secrets
 prepare_state

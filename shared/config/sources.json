@@ -27,6 +27,27 @@
       "schema": "schemas/massive_tickers_cs.schema.json",
       "description": "Massive.com common stocks (type CS), listed and delisted: the massive-ext universe."
     },
+    "massive_treasury_yields": {
+      "runtime": "python",
+      "format": "jsonl",
+      "dataset": "treasury_yields",
+      "schema": "schemas/massive_treasury_yields.schema.json",
+      "description": "Massive.com US Treasury yields (/fed/v1/treasury-yields), daily; each fetch file is a vintage."
+    },
+    "massive_inflation": {
+      "runtime": "python",
+      "format": "jsonl",
+      "dataset": "inflation",
+      "schema": "schemas/massive_inflation.schema.json",
+      "description": "Massive.com US inflation (/fed/v1/inflation), monthly; each fetch file is a vintage."
+    },
+    "massive_shares": {
+      "runtime": "python",
+      "format": "jsonl",
+      "dataset": "shares",
+      "schema": "schemas/massive_shares.schema.json",
+      "description": "Quarter-end point-in-time market cap and share counts per CS/ADRC ticker (/v3/reference/tickers/{T}?date=)."
+    },
     "massive_extended_hours": {
       "runtime": "python",
       "format": "jsonl",

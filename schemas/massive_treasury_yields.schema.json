@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "massive_treasury_yields",
+  "title": "massive_treasury_yields record",
+  "description": "One day of US Treasury par yields (percent) from Massive.com /fed/v1/treasury-yields. Each fetch file is a vintage.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["date"],
+  "properties": {
+    "date": { "type": "string", "format": "date", "description": "Observation date (YYYY-MM-DD)." },
+    "yield_1_month": { "type": ["number", "null"] },
+    "yield_3_month": { "type": ["number", "null"] },
+    "yield_6_month": { "type": ["number", "null"] },
+    "yield_1_year": { "type": ["number", "null"] },
+    "yield_2_year": { "type": ["number", "null"] },
+    "yield_3_year": { "type": ["number", "null"] },
+    "yield_5_year": { "type": ["number", "null"] },
+    "yield_7_year": { "type": ["number", "null"] },
+    "yield_10_year": { "type": ["number", "null"] },
+    "yield_20_year": { "type": ["number", "null"] },
+    "yield_30_year": { "type": ["number", "null"] }
+  }
+}

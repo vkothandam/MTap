@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "massive_shares",
+  "title": "massive_shares record",
+  "description": "A quarter-end point-in-time market cap and share counts for one ticker, from Massive.com /v3/reference/tickers/{T}?date=.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["symbol", "snap_date"],
+  "properties": {
+    "symbol": { "type": "string", "description": "Ticker symbol." },
+    "snap_date": { "type": "string", "format": "date", "description": "Quarter-end date the overview was requested for." },
+    "market_cap": { "type": ["number", "null"], "description": "Market cap as of snap_date (absent for some tickers)." },
+    "weighted_shares_outstanding": { "type": ["number", "null"] },
+    "share_class_shares_outstanding": { "type": ["number", "null"] },
+    "close_at_snap": { "type": ["number", "null"], "description": "Close at snap_date when the endpoint returns one." }
+  }
+}

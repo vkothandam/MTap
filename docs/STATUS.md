@@ -3,7 +3,7 @@
 The one page that says what runs where, when, on what data, with which secrets and limits.
 The details are in the linked docs.
 
-**Last updated: 2026-10-25.**
+**Last updated: 2026-10-27.**
 
 **Keep it current.** Any change to any of these updates this file, in the same change:
 
@@ -57,8 +57,10 @@ MTap sources market data for the ML work.
 | 06:00 | power on (DSM power schedule) | |
 | 06:10 | `mtap-start` → `start` | Redis, store, E*TRADE collector; massive-ws (connects 09:00 ET = 06:00 PT, ends after 16:21 ET) |
 | 06:40 | `mtap-daily` → `daily` | Massive grouped daily and extended hours for every missed session (14 days, at most 10) |
+| 06:14 | `mtap-morning` → `morning` (**not deployed yet**, branch `feat/daily-5y-inputs`) | no jobs lock, pid file. `forecast-night` if no done claim; 09:29:30 ET `premarket precheck` → shortlist; 09:30 `premarket prices` (+ `--open` to 09:32), `export-next`, predict px, screener; 09:45 `premarket full` (Massive), `export-next`, predict full, screener |
 | 13:15 | `mtap-evening` → `evening` | stop the collector, flush, intraday summary, daily fill, wait for massive-ws, compact; done by about 13:45 |
 | 22:10 | power off | |
+| 17:25 | `mtap-night` → `night` (**not deployed yet**) | `forecast-night --date <next session>`: Massive EOD + extended hours of day t, derive-features, universe, xids, export-tft, TFT night forecast. Claim file `MTap-State/forecast/claim-D.json` makes it run once across NAS and Mac; refused before 20:20 ET |
 | every 5 min | `mtap-queue` → `queue` | `watch` (in market hours, an email when a heartbeat is over 10 min old, and when all recover), then the job named in `MTap-State/run-next` (how the Mac runs `status` or a one-off job) |
 
 - **Not scheduled:**
@@ -81,6 +83,11 @@ MTap sources market data for the ML work.
 | Massive second bars, live | `agg_1s/date=D/source=massive_ws/`, compacted to `day-D.parquet` | Massive WebSocket `A.*`, 15 min delayed | massive-ws; `evening` compacts |
 | Massive second bars, history | `agg_1s/date=D/source=massive_rest/day-D.parquet` | Massive REST 1-second bars | `nas/massive1s` (2-year run deployed 2026-10-19) |
 | news | `news/` | Yahoo raw HTML; a read-only copy of news.duckdb | by hand |
+| treasury yields, inflation | `out/treasury_yields/`, `out/inflation/` (vintage files) | Massive economy endpoints | `daily` (`daily-capture.sh`); yields lag 1 session, CPI used from M+2 |
+| shares outstanding | `out/shares/shares-D.jsonl` (quarter ends) | Massive reference | `daily`, `inputs-backfill` |
+| minute bars (panel stocks) | `bars_1m/month=YYYY-MM/*.parquet` (US Eastern month) | Massive 1-min aggregates | `inputs-backfill` (`--save-bars`, `MTAP_BARS_UNIVERSE`) |
+| morning live files (audit only, never training) | `out/premarket_live/{universe,xids,shortlist,prices,premarket}-D.*` | Massive snapshot + minute aggs, E*TRADE watchlist (Redis), ChartIQ prices | `night`, `morning` |
+| screener lists | `out/screener/screener-D.parquet`, `-top20.csv`, `outcomes.parquet` | `ml/screener` | `morning` (when ml/ is in the job container), or the Mac |
 | DuckDB backups | `backup/etrade/` | | `daily-sourcing.sh --ingest-only` on this Mac |
 
 **Elsewhere:**
@@ -102,6 +109,7 @@ MTap sources market data for the ML work.
 | `MASSIVE_API_KEY` | `~/.mtap.env`, `~/.massive1s.env` (chmod 600) | repo `.env` | `shared/config/settings.toml` |
 | E*TRADE login (`ET_*`), changed 2026-10-24 | `~/.mtap.env` | repo `.env`: **needs the new password** | |
 | E*TRADE device trust and session | `MTap-State/etrade/chrome-profile` | `<state>/etrade/chrome-profile`, `session.json` | `state/etrade/session.json` (fundamentals) |
+| E*TRADE bearer token (live, short-lived) | `MTap-State/etrade/bearer.json` (mode 600), written by the collector; read only by `premarket prices`, which never logs in and stops on the first 401/403/429 | | |
 | noVNC password (`SE_VNC_PASSWORD`) | `~/.mtap.env` | | |
 | SMS gateway (`SMS_EMAIL*`) | not set: no texted OTP link | `.env`, if set | |
 | NAS SMB password | | login Keychain (`mount-nas.sh --save-password`) | |
@@ -157,6 +165,12 @@ MTap sources market data for the ML work.
     E*TRADE password in the iMac's `.env`.
 - **Next:** Monday 10-26, the first live day on the NAS, with the runbook's Monday checks.
 
+- **2026-10-27:** the daily model's 5-year retrain and the same-morning forecasts are built on
+  `feat/daily-5y-inputs` (ml/MODEL-STRATEGY.md Q11–Q16): new panel inputs, the `morning` and
+  `night` jobs, the screener and the dashboard Watchlist page. **Not deployed:** the NAS push,
+  the collector restart outside market hours, S1 (one live morning) and S7 (inference time on
+  the NAS) come first, then the 5-year load and the runs R0–R8.
+
 ## Docs index
 
 | doc | what |
@@ -191,3 +205,8 @@ MTap sources market data for the ML work.
   lock, pid file) and `night` (mtap-night 17:25 PT) replace `premarket`. Settings: `[premarket]` live_source,
   shortlist_size, move_pct, vol_ratio, full_workers; `[forecast]`. Needs a container-local DuckDB, ml/ + model
   in the job container (MTAP_PREDICT_CMD, MTAP_FORECAST_RUN_DIR); see deploy/synology/README.md.
+- 2026-10-27 (5y retrain, not deployed): panel schema 4 gains `volume`, `vol_10d_mean` and the two
+  pre-market groups (`pm_px_known`, `pm_full_known`); `[premarket] cutoff` 09:30, `min_dollar_volume`,
+  `min_price`; `etrade universe`; massive-ext stores `pm_last/pm_last_t/pm_high/pm_low` per cutoff;
+  `--bars-universe` (env `MTAP_BARS_UNIVERSE` in `inputs-backfill`) and ET-month partitions; `[screener]`
+  settings; env `MTAP_SCREENER_CMD`, `MTAP_SCREENER_MODEL` for the morning job.

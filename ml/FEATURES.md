@@ -1,7 +1,7 @@
 # Daily model (tft_vwap): fields, training and testing
 
-Every panel column and what the TFT does with it. The panel (`panel.parquet`, schema 3, written
-by `sourcing-py etrade export-tft`) is the model's only input: one row per stock and trading
+Every panel column and what the TFT does with it. The panel (`panel.parquet`, schema 4 since
+2026-10-27, written by `sourcing-py etrade export-tft`; schema-3 panels and runs still load) is the model's only input: one row per stock and trading
 session. The groups are the tuples in [tft_vwap/config.py](tft_vwap/config.py), and `prepare()`
 in [tft_vwap/dataset.py](tft_vwap/dataset.py) applies the transforms listed here.
 
@@ -11,6 +11,9 @@ in [tft_vwap/dataset.py](tft_vwap/dataset.py) applies the transforms listed here
   far, the parameters you can change, candidate inputs, and how to add one and test it.
 - **Current state** (section 17): the production run, the daily routine, the runs to keep, known
   data issues and standing decisions.
+- **Schema-4 input groups** (section 18): market/sector, macro, session shape, after-hours and
+  the two pre-market groups, with their flags and the night / 09:30 / 09:45 forecast states.
+- **Screener** (section 19): the 09:30 watch list's target and features (`ml/screener`).
 
 **Leakage rule:** every input on day t's row is known at the close of day t. The model forecasts
 day t+1, so the only inputs it has for t+1 itself are the calendar ones (known in advance).
@@ -34,6 +37,9 @@ The TFT sorts its fields into the roles below. Defaults are shown (`--target ret
 | Index and display | `day_idx`, `date` | Time index | 9 |
 | Text the flags come from | `results_window`, `results_window_pit` | Turned into the 0/1 window flags | 6 |
 | Not an input with the default target | `today_vwap` | Converts forecast moves into prices. It is the target with `--target vwap`. | 1 |
+| Observed reals, schema 4 (each group behind a flag) | market/sector (13), macro (10), session shape (4), after-hours (4) | Read for the encoder days only; off unless `--market`, `--macro`, `--session-shape`, `--after-hours` | 18 |
+| Known-future reals, schema 4 (`--premarket`) | prices: `pm_last_pct_prev_vwap`, `open_pct_prev_vwap`, `pm_px_known`; full: `pm_vwap_pct_prev_vwap`, `pm_vol_pct_10d`, `pm_range_pct`, `pm_full_known` | Day d's own pre-market on the decoder step; masked in training so one model gives the night, 09:30 and 09:45 forecasts | 18 |
+| Carried for live and the screener, not TFT inputs | `vol_10d_mean`, `volume`, `export_id` | `vol_10d_mean` makes the live `pm_vol_pct_10d`; `volume` feeds the screener's ATR and dollar volume | 18, 19 |
 
 ### Inputs by run
 
@@ -51,6 +57,12 @@ Columns the model reads, by group (`--target return`):
 
 No full-panel run has used `exact` yet. The 10-11 retrain is `20261011-173109Z-return-3785sym`
 (section 13).
+
+**The 5-year series** (planned 2026-10-27, section 18 and [README.md](README.md)): R0 has the
+columns above (`exact`, series breaks on). R1 adds market/sector 13, macro 10, session shape 4
+and after-hours 4. R4 adds the 7 pre-market columns (`--premarket optional`), R4p only the 3
+price ones always on, R4f all 7 always on. R6p/R6f (overlays) and R7 (HGB) read R1's inputs plus
+the pre-market ones as stated in section 18.
 
 ## 1. What the model predicts
 
@@ -318,11 +330,13 @@ Off by default because the news history is still near-empty.
 | `vwap_nx_10d`, `vwap_end_week`, `vwap_nx_qtr` | forward VWAPs over the next 10 sessions / rest of the week / up to the next filing |
 | `vwap_nx_1d` | not dropped: it is exported as `target_tomorrow_vwap`, the answer key on day t's row (section 1) |
 
-## 11. In `daily_bars` but not exported yet (pre-market / after-hours, added 2026-10-15)
+## 11. Extended-hours totals in `daily_bars` (added 2026-10-15)
 
-From Massive 1-minute bars (`sourcing-py massive-ext`), loaded by `ingest-eod`. Whether and how
-the panel uses them is an open model decision (section 15). As of 2026-10-25 this Mac's DuckDB
-doesn't have them yet: the files are on the NAS.
+From Massive 1-minute bars (`sourcing-py massive-ext`), loaded by `ingest-eod`. Since schema 4
+(2026-10-27) the panel uses minute-bar VWAPs and volumes built from the same bars, as the
+after-hours and pre-market groups (section 18); the totals below stay in `daily_bars` and are
+not exported themselves. As of 2026-10-27 this Mac's DuckDB doesn't have them yet: the files are
+on the NAS.
 
 | column (`daily_bars`) | meaning |
 | --- | --- |
@@ -362,6 +376,15 @@ by `--test-end 1663`:
 
 Encoders may read back across these boundaries; targets never do. Without `--test-end` the folds
 end at the panel's last session.
+
+**5-year folds (from 2026-10-27).** `--n-folds 0 --min-train-sessions 252 --fold-len 63
+--early-stop-len 21` makes as many 63-session test blocks as fit after a year of training: 16 on
+the 5-year panel, about 2022-11 → 2026-10 (the 2022 bear market, the 2023 rally, the April 2025
+sell-off). Each has a 21-session early-stop block before it. Fold 0 trains on about 1 year, fold
+15 on about 4.6. Training samples are one per (stock, day) (`dedupe_train`), so a stock's last
+training day no longer appears in ~41 samples. Runs can pause and resume (`touch runs/<id>/STOP`,
+`--resume runs/<id>`, `tft-vwap-status`). The pre-market bake-off uses the 8 odd folds
+(`--folds 1,3,...,15`) on rows where the pre-market data exists.
 
 **Training.**
 - The loss is the quantile loss over the 19 levels (section 1), with Adam at learning rate 1e-3
@@ -565,12 +588,14 @@ clock time.
    new optional group.
    - An optional group gets a `TrainConfig` switch and a flag in train.py.
    - Put the switch in `ADDED_INPUTS` with its "off" value, so runs saved before it still load
-     with their original inputs. `earnings` and `series_breaks` work this way.
+     with their original inputs. `earnings`, `series_breaks`, `market`, `macro`,
+     `session_shape`, `after_hours` and `premarket` work this way.
 5. **Clean it** in `prepare()` ([dataset.py](tft_vwap/dataset.py)): fill missing values, clip,
    and take the log of heavy tails. A new categorical also needs an `embedding_sizes` entry.
-6. **Check the forecast path.** `tft-vwap-predict` builds the decoder row in `future_rows()`,
-   which copies one calendar row to every stock. A known-future input that differs by stock has
-   to be filled per stock there.
+6. **Check the forecast path.** `tft-vwap-predict` builds the decoder row in `future_rows()`.
+   Calendar columns are one row copied to every stock; per-stock known-future columns (the
+   pre-market group) come from `panel.next.parquet`, which `export-tft` writes and
+   `export-next` fills on the morning. A new per-stock known-future input goes there too.
 7. **Document it** in this file: the at-a-glance table and its section.
 8. **Test it** in [tests/test_features.py](tests/test_features.py). Check its values, and that
    day t's value uses nothing from after the cutoff.
@@ -588,7 +613,15 @@ clock time.
 12. **Record it** in [docs/LEARNINGS.md](../docs/LEARNINGS.md) under `tag-ml-daily`. Update
     [MODEL-STRATEGY.md](MODEL-STRATEGY.md)'s Current position if the result changes the plan.
 
-## 17. Current state (2026-10-25)
+## 17. Current state (2026-10-25; 5-year retrain added 2026-10-27)
+
+**5-year retrain (built 2026-10-27, not run).** Schema 4, the new groups, the masked pre-market
+states, the overlays (R6p/R6f), the HGB baseline (R7), the screener and the morning/night jobs are
+on branch `feat/daily-5y-inputs`. Before the runs: the NAS deploy, S1 (one live morning), S7
+(inference time on the NAS), then the 5-year load (`ingest-eod`, `derive-features`, `export-tft
+--include-inference --out out/tft/exp5y/panel.parquet`) and R0–R8 (commands in
+[README.md](README.md), the decisions in [MODEL-STRATEGY.md](MODEL-STRATEGY.md) Q11–Q16, results
+to [docs/LEARNINGS.md](../docs/LEARNINGS.md)). Production stays as below until a run beats it.
 
 **Production** is `runs/20261005-025909Z-return-3712sym --fold 3`. Switching to the 10-11 retrain
 (`runs/20261011-173109Z-return-3785sym --fold 3`) is the user's open decision. The latest live
@@ -644,3 +677,132 @@ Backups from before the EDGAR change: `state/etrade/fundamentals.pre-edgar.duckd
   contract ([dashboard/README.md](../dashboard/README.md)).
 - `ml/` never imports `sourcing_py` or reads DuckDB: `panel.parquet` and its meta are the only
   input. Every dashboard chart and table needs its ⓘ help text (a test checks).
+
+## 18. Schema-4 input groups (added 2026-10-27)
+
+Built by `derive-features` ([features.py](../python/sourcing_py/etrade/features.py):
+`market_daily`, `macro_daily`, `pm_px_expr`, `pm_full_expr`) and exported by `export-tft`. Each
+group has its own `TrainConfig` switch, is in `ADDED_INPUTS` (runs saved before it load with it
+off), and is NULL-filled with 0 in `prepare()` after its known flag is set. Day-t lags check
+`day_idx`, so a gap in a stock's bars never pairs it with an older session.
+
+**Market / sector** (`--market`, observed, day t):
+
+| column | meaning |
+| --- | --- |
+| `mkt_cap_ret` | cap-weighted close-to-close return of day t over common stocks with bars on both days; each return clipped to ±50%. Cap = the quarter-end share snapshot × the split-consistent close, carried forward by price |
+| `sec_50_cap_ret` … `sec_63_cap_ret` | the same within each of the 11 TRBC sectors (50, 51, 52, 53, 54, 55, 56, 57, 59, 60, 63) |
+| `own_sector_cap_ret` | the stock's own sector's return (the first two digits of `industry_code`), else the market's |
+
+Delisted tickers with no cap fall back to shares × close, then to equal weight with a warning.
+
+**Macro** (`--macro`, observed; one value per day for every stock):
+
+| column | meaning |
+| --- | --- |
+| `ust_3m_chg_bp`, `ust_2y_chg_bp`, `ust_10y_chg_bp` | 1-session change of the 3-month, 2-year, 10-year Treasury yield, in bp |
+| `ust_10y_2y_slope`, `ust_10y_3m_slope` | curve slopes, percentage points |
+| `ust_10y_z252` | the 10-year yield vs its past 252 sessions (z-score, past only) |
+| `cpi_yoy`, `core_cpi_yoy` | CPI and core CPI year on year, computed from the index levels |
+| `cpi_yoy_chg` | change in `cpi_yoy` from the month before |
+| `core_cpi_mom` | core CPI month on month |
+
+Timing: yields lag 1 session (`[macro] yield_lag_sessions = 1`: day t's yields are not served by
+the next afternoon); CPI for month M is used from the first session of M+2. No raw levels.
+Macro is the group most able to memorise dates; check its importance and folds (README.md).
+
+**Session shape** (`--session-shape`, observed, day t):
+
+| column | formula |
+| --- | --- |
+| `high_position_pct`, `low_position_pct` | (high − VWAP) / VWAP, (low − VWAP) / VWAP |
+| `gap_open_pct` | open / previous close − 1 |
+| `gap_open_vs_prev_vwap_pct` | open / previous VWAP − 1 |
+
+**After-hours** (`--after-hours`, observed, day t; known by 20:00 ET, so the night forecast
+from 20:20 ET has it):
+
+| column | formula |
+| --- | --- |
+| `ah_vwap_pct_rth_vwap` | after-hours VWAP (minute-bar `vw`, 16:00–19:59) / regular-session VWAP (09:30–15:59) − 1 |
+| `ah_vol_pct_10d` | log(1 + 100 × after-hours volume / mean daily volume of the 10 sessions before t) |
+| `close_pct_rth_vwap` | close / regular-session VWAP − 1 |
+| `ah_known` | 1 when both VWAPs exist (not scaled) |
+
+Rows before the minute-bar history starts (the first week of the 5 years, S5) have `ah_known` 0.
+Existing `daily_bars` rows get these only after a `massive-ext` re-run, `ingest-eod
+--extended-only` and `derive-features`.
+
+**Pre-market** (`--premarket off|on|optional`, `--pm-groups px|px,full`, **known-future**: row d
+holds day d's own pre-market up to the panel meta's `premarket_cutoff`, 09:30 ET; bars count by
+their start time). All from Massive minute bars in training; never ChartIQ or the watchlist.
+
+| group | column | formula |
+| --- | --- | --- |
+| prices (09:30) | `pm_last_pct_prev_vwap` | last pre-market trade before 09:30 / previous session's VWAP − 1, clipped ±30% |
+| | `open_pct_prev_vwap` | day d's open / previous VWAP − 1, clipped ±30% |
+| | `pm_px_known` | 1 when the last price, the open and the previous VWAP all exist |
+| full (09:45) | `pm_vwap_pct_prev_vwap` | pre-market VWAP (minute `vw`) / previous VWAP − 1, clipped ±30% |
+| | `pm_vol_pct_10d` | log(1 + 100 × pre-market volume / `vol_10d_mean`), clipped [0, 6] |
+| | `pm_range_pct` | (pre-market high − low) / previous VWAP, clipped [0, 1] |
+| | `pm_full_known` | 1 when all of these exist |
+
+- Both flags are 0, and the values 0, when the data is missing, the previous session is not
+  exactly one session back, or a split executes on d. The pre-market columns and flags are not
+  scaled.
+- **Masks (`optional`).** In training `pm_full_known` is off for 50% of samples
+  (`--pm-mask-full`) and `pm_px_known` for 25% (`--pm-mask-px`), from one shared draw, so full
+  is never on while prices are off. A masked group's values are set to 0 with its flag. The
+  early-stop mask is fixed, so epochs compare.
+- **States.** One `optional` run scores three ways: `night` (both off), `px` (prices on), `full`
+  (the data's own flags). The run dir is the full state; `<run>~px` and `<run>~night` sit beside
+  it, each with `config.json` {`view_of`, `state`}. `tft-vwap-predict --state` writes into the
+  matching dir; `--symbols-file` (the 09:30 shortlist) writes `forecast_<date>_subset.*`, which
+  is not graded.
+- **Live.** `panel.next.parquet` has the next session's rows with both flags 0 and
+  `vol_10d_mean`. On the morning, `export-next --prices prices-D.jsonl` sets the prices group
+  (watchlist mid or ChartIQ, S1 checks the gap to Massive) and `--premarket premarket-D.jsonl`
+  the full group (Massive, the same definitions as training). An incomplete record leaves its
+  group at 0; a cutoff or date mismatch is an error.
+- `vol_10d_mean`: mean Massive daily volume of the 10 sessions before d, per stock
+  (`derive-features`). Not a TFT input.
+- `volume`: day t's split-adjusted daily volume, for the screener (section 19). Not a TFT input.
+
+**Overlays and the baseline.** `tft-vwap-overlay --inputs px|full` (R6p/R6f) fits one
+gradient-boosted adjustment per quantile on R1's out-of-fold test quantiles plus the pre-market
+group, for test fold k from folds before k only. `tft-vwap-gbm` (R7) is a plain HGB per quantile
+on the last-day inputs plus lags 1, 2, 5 and 20 of `vwap_pct_prev_day`, sorted so quantiles never
+cross; fixed `--max-iter`, no early stop.
+
+## 19. Screener features (`ml/screener`, added 2026-10-27)
+
+Ranks the liquid universe at 09:30 (state `px`) and 09:45 (state `full`) by expected range from
+the open. Reads the panel and run files only.
+
+- **Target:** `range_from_open` = max(high − open, open − low) / open on day d; HGB on its log,
+  plus a 0.8-quantile HGB for a "big range" score. `hl_range_open` = (high − low) / open is
+  stored for the dashboard. Day d's high and low appear only in the target.
+- **Features** (all known by 09:31; [features.py](screener/features.py)):
+
+| feature | meaning |
+| --- | --- |
+| `gap_prev_close`, `gap_prev_vwap` | d's open vs the previous close, the previous VWAP |
+| `tft_width90`, `tft_width50`, `tft_median` | the TFT forecast for d: P5–P95 and P25–P75 width, and the median move, vs the previous VWAP. Out-of-fold test forecasts only in training |
+| `prev_range`, `prev_range_open` | t's (high − low) / VWAP, and t's range from its open |
+| `atr14_pct` | 14-session mean true range / close |
+| `log_dollar_volume` | log1p of the 20-session mean volume × VWAP |
+| `mkt_ret`, `sector_ret` | t's `mkt_cap_ret`, `own_sector_cap_ret` |
+| `days_to_results`, `days_since_results`, `earn_near` | moved forward to d; `earn_near` = a release within a session |
+| `day_of_week` | 1 … 5 |
+| `pm_last_pct_prev_vwap` | both states |
+| `pm_vwap_pct_prev_vwap`, `pm_vol_pct_10d`, `pm_range_pct` | `full` state only |
+
+- Pre-market values with their flag 0 become NaN (HGB handles missing).
+- **Rules** (`[screener]` in settings, the Watchlist sliders): `min_price`, `min_dollar_volume`,
+  `min_pm_vol_pct`, `min_abs_gap_pct`, `exclude_split_day`, `earnings = any|only|exclude`,
+  `top_n`. The TFT median is shown as a lean (up/down), not ranked on. Live scoring assumes no
+  split on d.
+- **Output:** `out/screener/screener-D.parquet` (the universe, score, `rule_pass`, rank),
+  `-top20.csv`; `screener-outcomes` grades past lists into `outcomes.parquet`.
+- **Kept only if** (R8) its top 20 beats the naive top 20 by ATR with a CI clear of 0; also
+  compared with a random 20, the TFT width alone and the pre-market volume ratio alone.

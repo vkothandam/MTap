@@ -118,6 +118,9 @@ The Mac never opens `MTap-State` over SMB, and no DuckDB is used here.
 idempotent, so after a failure or a stop, queue it again.
 
 1. Put the first date with minute aggs (spike S5) in `host.env`: `MTAP_BACKFILL_FROM=YYYY-MM-DD`.
+   To keep minute bars only for the panel's stocks (~25–65 GB instead of up to 145 GB), also set
+   `MTAP_BARS_UNIVERSE=/data/out/tft/panel.parquet` (a panel copied to the share); unset, every
+   ticker's bars are kept. Check the free space on volume2 first.
 2. After `push.sh`, queue `build` once (the new sources need the new image).
 3. Queue it **after the 13:15 `evening` job** (all jobs share one lock; the queue skips
    a run while another job holds it and takes the file on a later 5-minute tick):

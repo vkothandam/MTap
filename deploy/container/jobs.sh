@@ -242,7 +242,7 @@ inputs_backfill() {
         fi
     fi
     for step in \
-        "massive-ext fetch --chunk quarter --allow-failures 50 --save-bars /data/bars_1m --fromdate $edge --todate $yday" \
+        "massive-ext fetch --chunk quarter --allow-failures 50 --save-bars /data/bars_1m${MTAP_BARS_UNIVERSE:+ --bars-universe $MTAP_BARS_UNIVERSE} --fromdate $edge --todate $yday" \
         "run massive_tickers_cs" \
         "run massive_shares" \
         "run massive_treasury_yields" \

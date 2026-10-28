@@ -1,6 +1,6 @@
 """Phase 2a — export the TFT training panel (panel.parquet + panel.meta.json).
 
-One row per (symbol, day_idx) over a liquid common-stock/ADR universe, with split-adjusted
+One row per (symbol, day_idx) over a liquid common-stock universe (CS; `--issue-types CS,DR` adds ADRs), with split-adjusted
 (daily_bars.split_factor) but otherwise raw, un-normalized values: TFT's GroupNormalizer does the per-symbol scaling at training time.
 The Parquet file plus its meta sidecar is the ONLY contract with the downstream ML code.
 
@@ -63,7 +63,7 @@ from . import db, features
 SCHEMA_VERSION = 4
 
 _DEFAULTS = {
-    "issue_types": ("CS", "DR"),
+    "issue_types": ("CS",),  # common stocks only (ADRs dropped 2026-10-27)
     "min_bars": 120,
     "min_median_vwap": 1.0,
     "min_median_volume": 50_000.0,
@@ -499,7 +499,8 @@ def liquid_universe(*, date_: date | None = None, db_path: Path | None = None,
     """Write premarket_live/universe-D.csv: the symbols (symbol column, sorted) whose mean dollar
     volume (vwap x volume) over their last 20 sessions before D is >= [premarket]
     min_dollar_volume and whose last close before D is >= min_price. D defaults to the session
-    after the newest bar. Only the sessions before D count, so the night job can run it for D."""
+    after the newest bar. Only the sessions before D count, so the night job can run it for D.
+    Common stocks (CS) only, as the panel."""
     pcfg = config.premarket_config()
     min_dv, min_px = pcfg["min_dollar_volume"], pcfg["min_price"]
     with db.connect(db_path) as con:
@@ -511,7 +512,8 @@ def liquid_universe(*, date_: date | None = None, db_path: Path | None = None,
         rows = con.execute(
             "WITH r AS (SELECT symbol, date, close * COALESCE(split_factor, 1.0) AS close, vwap * volume AS dv, "
             "    row_number() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn "
-            "  FROM daily_bars WHERE date < ? AND vwap IS NOT NULL AND volume IS NOT NULL) "
+            "  FROM daily_bars WHERE date < ? AND vwap IS NOT NULL AND volume IS NOT NULL "
+            "    AND symbol IN (SELECT symbol FROM symbols WHERE issue_type = 'CS')) "
             "SELECT symbol FROM r WHERE rn <= 20 GROUP BY symbol "
             "HAVING count(*) = 20 AND avg(dv) >= ? AND max(close) FILTER (WHERE rn = 1) >= ? ORDER BY symbol",
             [date_, min_dv, min_px]).fetchall()

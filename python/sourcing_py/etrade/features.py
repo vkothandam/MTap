@@ -497,7 +497,7 @@ def _build_market_daily(con) -> tuple[int, str]:
         "  LAG(b.day_idx) OVER w AS p_idx, LAG(b.date) OVER w AS p_date, "
         "  LAG(b.close * COALESCE(b.split_factor, 1.0)) OVER w AS p_adj "
         "FROM daily_bars b JOIN symbols s ON s.symbol = b.symbol "
-        "WHERE b.day_idx IS NOT NULL AND b.close > 0 AND s.issue_type IN ('CS', 'DR') "
+        "WHERE b.day_idx IS NOT NULL AND b.close > 0 AND s.issue_type = 'CS' "
         "WINDOW w AS (PARTITION BY b.symbol ORDER BY b.day_idx)"
     )
     con.execute(

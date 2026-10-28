@@ -932,7 +932,9 @@ def test_export_tft_columns_formulas_and_fills(tmp_path):
             _ohlc_bar(con, "AAA", d, 10.0 + i)
             _ohlc_bar(con, "BBB", d, 20.0)
     features.derive_features(db_path=dbp)
-    summary, rows = _export(tmp_path, dbp)
+    _, default_rows = _export(tmp_path, dbp)
+    assert {r["symbol"] for r in default_rows} == {"AAA"}  # common stocks only by default
+    summary, rows = _export(tmp_path, dbp, issue_types=("CS", "DR"))
 
     assert list(rows[0])[:31] == [
         "target_tomorrow_vwap", "target_return", "symbol", "industry_code", "exchange",

@@ -193,7 +193,7 @@ move left is +529%. Runs saved before the setting existed load with it off.
 | `symbol` | 16 | ticker |
 | `industry_code` | 4 | lowest code in `symbol_industry` (E*TRADE/MBin), `unknown` if none |
 | `exchange` | 2 | `symbols.exchange` |
-| `issue_type` | 1 | `CS` common stock, `DR` depositary receipt (ADR) |
+| `issue_type` | 1 | `CS` common stock, `DR` depositary receipt (ADR). The 5-year panel is `CS` only, so the input is constant there |
 
 ## 3. Known-future reals (calendar, also on the decoder step t+1)
 
@@ -356,7 +356,8 @@ only if the forecast is made after it, before the open.
 model is tested on sessions it never saw.
 
 - **Data:** the panel covers 2024-08-16 … 2026-10-06: 536 sessions, 3,763 stocks, 1.91M rows.
-  `export-tft` keeps common stocks and ADRs that have:
+  `export-tft` keeps common stocks and ADRs (the 2-year panel; the 5-year series from 2026-10-27
+  keeps common stocks only, `--issue-types CS`) that have:
   - at least 120 bars
   - a median VWAP of at least $1
   - a median volume of at least 50,000

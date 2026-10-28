@@ -287,7 +287,7 @@ uv run sourcing-py etrade export-tft --out /tmp/panel.parquet --min-bars 250 --i
 
 - One row per `(symbol, day_idx)` with **split-adjusted, otherwise raw values**. Per-symbol scaling happens at
   training time (`GroupNormalizer`).
-- **Universe** (flags shown with their defaults): `--issue-types CS,DR`, `--min-bars 120`,
+- **Universe** (flags shown with their defaults): `--issue-types CS` (common stocks only since 2026-10-27; `CS,DR` adds ADRs), `--min-bars 120`,
   `--min-median-vwap 1`, `--min-median-volume 50000`.
 - **Target:** `target_tomorrow_vwap` (`vwap_nx_1d`) and `target_return`
   (`vwap_nx_1d / vwap - 1`). Rows with a NULL target are dropped. `--include-inference`

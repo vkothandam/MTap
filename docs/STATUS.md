@@ -403,3 +403,7 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
   Every trainer (`tft-vwap`, `tft-vwap-gbm`, both overlays, `tft-intraday`, `screener-train`) now writes the run's
   `MODEL.md` itself (`ml/model_card/`, `--label/--about/--purpose`); the dashboard's Intraday run picker shows labels
   and an ⓘ. Progress bars off in training logs (`enable_progress_bar=False`).
+- 2026-10-29 12:10: local cleanup, ~77 GB freed: the training logs `logs/{r0-resume,r1,r1-variants,r4-queue,overnight-queue}.log`
+  (67 GB, nearly all progress bars) replaced by `logs/*.digest.txt` (timestamps, comparisons, errors); the merged
+  `.claude/worktrees` and their branches (9.6 GB); the 10-04/05 smoke and first runs and two run logs (on the NAS).
+  `logs/` is gitignored. Repo work merged to `main` and pushed (remote holds `main` only).

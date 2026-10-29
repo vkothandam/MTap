@@ -8,7 +8,7 @@ import streamlit as st
 
 from forecast_dash import calib, insights
 from forecast_dash import intraday_calib as ic
-from forecast_dash.contract import discover
+from forecast_dash.contract import discover, run_label
 from forecast_dash.intraday_contract import discover_intraday, load_config
 from forecast_dash.intraday_page import get_report, get_summary
 from forecast_dash.ui import ICONS, _pct_cols, _table, get_live, get_run, goto_section
@@ -40,7 +40,7 @@ def _daily_card(run: Path | None):
     else:
         r = get_run(str(run))
         g = calib.live_grade(r.r_q, r.r_act, r.levels, 0.1, 0.9)
-        st.markdown(f"Newest run: `{run.name}` · {g['rows']:,} test forecasts")
+        st.markdown(f"Newest run: `{run_label(run)}` · {g['rows']:,} test forecasts")
         m = st.columns(3)
         m[0].metric("P10–P90 coverage", f"{g['coverage']:.1%}",
                     f"{g['coverage'] - g['coverage_nominal']:+.1%} vs 80%", delta_color="off",

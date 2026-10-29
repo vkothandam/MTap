@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from forecast_dash import insights
-from forecast_dash.contract import Live, Run, load_live, load_run
+from forecast_dash.contract import Live, Run, load_live, load_run, read_card
 from forecast_dash.help_text import HELP, PANELS, column_help
 
 ICONS = {insights.GOOD: "✅", insights.WARN: "⚠️", insights.BAD: "❌", insights.INFO: "ℹ️"}
@@ -38,6 +38,17 @@ def _about(panel: str, columns=()):
     with st.popover(title, icon=":material/info:", type="tertiary", key=f"about_{panel}",
                     help="What this shows and how to read it"):
         st.markdown(body)
+
+
+def _model_popover(where, run: Path):
+    """ⓘ with the run's MODEL.md (purpose, inputs, folds, result), when it has one."""
+    card = read_card(run)
+    if card is None:
+        where.caption("No MODEL.md in this run: no description.")
+        return
+    with where.popover(f"ℹ️ {card.label}: about this model"):
+        st.markdown(f"**{card.label}** · {card.forecast} forecast  \n{card.summary}\n\n"
+                    f"{card.body}\n\n`{run.name}`")
 
 
 def _chart(fig, panel: str, **kw):

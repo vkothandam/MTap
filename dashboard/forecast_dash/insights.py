@@ -541,6 +541,7 @@ def compare_insights(summaries: dict[str, dict], calls: dict[str, pd.DataFrame],
     # (label, shown value, format, score: higher is better)
     metrics = [
         ("quantile skill vs naive", "pinball_skill", "{:.1%}", lambda s: s["pinball_skill"]),
+        ("median direction right", "direction", "{:.1%}", lambda s: s.get("direction", np.nan)),
         ("band coverage closest to target", "coverage", "{:.1%}",
          lambda s: -abs(s["coverage"] - s["coverage_nominal"])),
         ("smallest overall lean", "bias", "{:+.3f}", lambda s: -abs(s["bias"])),

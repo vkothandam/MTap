@@ -18,7 +18,8 @@ from forecast_dash.intraday_contract import (
     load_report,
     targets_of,
 )
-from forecast_dash.ui import _chart, _header, _in_short, _pct_cols, _table
+from forecast_dash.contract import run_label
+from forecast_dash.ui import _chart, _header, _in_short, _model_popover, _pct_cols, _table
 
 # columns each page needs, so a big run loads only what it grades
 _NEED = ["symbol", "date", "t_s", "tod_bucket", "sector_code", "actual", "ref_trail",
@@ -61,8 +62,10 @@ def render(root: str):
                 "make one with `tft-intraday`.")
         return
     names = [r.name for r in runs]
-    name = sb.selectbox("Intraday run", names, key="id_run")
+    labels = {r.name: run_label(r) for r in runs}
+    name = sb.selectbox("Intraday run", names, key="id_run", format_func=labels.get)
     path = str(runs[names.index(name)])
+    _model_popover(sb, Path(path))
     cfg = load_config(Path(path))
     targets = targets_of(Path(path))
     target = sb.selectbox("Target", targets, key="id_target", format_func=ic.target_label,

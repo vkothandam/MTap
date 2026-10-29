@@ -11,12 +11,16 @@ PKG = Path(__file__).parents[1] / "forecast_dash"
 def test_app_renders_every_tab(tmp_path, monkeypatch):
     root = tmp_path / "runs"
     write_run(root, "20260101-a")
-    write_run(root, "20260102-b", seed=1)
+    b = write_run(root, "20260102-b", seed=1)
+    (b / "MODEL.md").write_text("---\nlabel: R9\nforecast: night\nsummary: test model\n---\n\nbody\n")
     monkeypatch.setenv("FORECAST_DASH_RUNS", str(root))
     at = AppTest.from_file(str(PKG / "app.py"), default_timeout=120)
     at.query_params["section"] = "cross-day"
     at.run()
     assert not at.exception, [e.value for e in at.exception]
+    cmp = next(t for t in at.tabs if t.label == "Compare runs")
+    assert cmp.dataframe[0].value["model"].tolist() == ["R9", "20260101-a"]
+    assert "R9" in cmp.dataframe[1].value.index
     assert len(at.tabs) == 10  # 8 pages + Forecast's two subtabs
     assert all(len(t.get("plotly_chart")) >= 1 for t in at.tabs), [t.label for t in at.tabs]
     in_short = {t.label: [m.value for m in t.markdown if m.value.startswith("**In short**")]
@@ -183,8 +187,13 @@ def test_intraday_section_renders_six_explained_tabs(tmp_path, monkeypatch):
     write_run(tmp_path / "runs")
     write_intraday_run(tmp_path / "id", "id-a")
     write_intraday_run(tmp_path / "id", "id-b", seed=3)
+    (tmp_path / "id" / "id-b" / "MODEL.md").write_text(
+        "---\nlabel: I1\nforecast: intraday\nsummary: tiny intraday\n---\n\nbody\n")
     at = _section(tmp_path / "runs", "intraday", monkeypatch, intraday=tmp_path / "id")
     assert not at.exception, [e.value for e in at.exception]
+    # the picker shows the card's label, and the sidebar has the card's popover
+    assert at.selectbox(key="id_run").options[0] == "I1 · id-b"
+    assert any(p.proto.popover.label.startswith("ℹ️ I1") for p in at.sidebar.get("popover"))
     assert [t.label for t in at.tabs] == ["Summary", "Calibration", "Time of day",
                                           "Session replay", "Across stocks", "Intraday vs daily"]
     assert at.selectbox(key="id_run").value == "id-b"  # newest first

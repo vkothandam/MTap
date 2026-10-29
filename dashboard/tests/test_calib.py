@@ -97,6 +97,8 @@ def test_daily_and_summary_on_calibrated_data():
     s = calib.summary(r_q, r_act, LEVELS, ev, calib.bucket_edges(0.1))
     assert s["rows"] == 4000 and abs(s["coverage"] - 0.9) < 0.03 and abs(s["bias"]) < 0.02
     assert s["pinball"] < s["naive_pinball"] and s["ece"] < 0.05
+    assert abs(s["coverage80"] - 0.8) < 0.03 and s["q_err_mean"] < 0.02
+    assert s["grade"] in ("excellent", "good", "fair") and 0.4 < s["direction"] < 0.7
     d = calib.daily(calib.pit(r_q, r_act, LEVELS), df["day_idx"], *ev[0.01])
     assert len(d) == 100 and (d["n"] == 40).all() and "deviation" in d
 
@@ -120,3 +122,19 @@ def test_live_grade_coverage_and_direction():
     assert g["direction_hit"] == pytest.approx(2 / 3)  # the 0.0 move is left out
     by = calib.live_by_day(["d2", "d1", "d1", "d2"], r_q, r_act, lv, 0.1, 0.9)
     assert list(by["day"]) == ["d1", "d2"] and list(by["rows"]) == [2, 2]
+
+
+def test_direction_rank_ic_and_grade():
+    lv = [0.1, 0.5, 0.9]
+    r_act = np.array([0.03, -0.01, 0.02, -0.04, 0.005, 0.01])
+    med = np.array([0.01, -0.02, -0.01, -0.01, 0.001, 0.02])  # 5 of 6 signs right
+    r_q = np.column_stack([med - 0.05, med, med + 0.05])
+    s = calib.summary(r_q, r_act, lv)
+    assert s["direction"] == pytest.approx(5 / 6)
+    assert s["direction_big"] == 1.0  # |move| > 2%: 0.03 and -0.04, both right
+    assert calib.calibration_grade(0.004) == "excellent" and calib.calibration_grade(0.009) == "good"
+    assert calib.calibration_grade(0.015) == "fair" and calib.calibration_grade(0.03) == "poor"
+    days = np.zeros(6)
+    assert calib.rank_ic(r_q, r_act, lv, days) == pytest.approx(
+        pd.Series(med).rank().corr(pd.Series(r_act).rank()))
+    assert np.isnan(calib.rank_ic(r_q[:3], r_act[:3], lv, days[:3]))  # under 5 stocks a day

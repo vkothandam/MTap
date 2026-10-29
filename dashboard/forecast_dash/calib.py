@@ -238,10 +238,38 @@ def daily(u: np.ndarray, days, prob: np.ndarray | None = None,
     return out
 
 
+# a "big" move for direction_big: |actual move| above 2%
+BIG_MOVE = 0.02
+# calibration grade by mean |share below a quantile − its level| over the quantiles
+GRADES = ((0.005, "excellent"), (0.01, "good"), (0.02, "fair"))
+
+
+def calibration_grade(q_err_mean: float) -> str:
+    """excellent ≤ 0.5 pts, good ≤ 1, fair ≤ 2, else poor (mean quantile calibration error)."""
+    return next((g for lim, g in GRADES if q_err_mean <= lim), "poor")
+
+
+def rank_ic(r_q: np.ndarray, r_act: np.ndarray, levels, days) -> float:
+    """Mean over days of the Spearman correlation between the forecast median and the actual
+    move across stocks: does the model rank the day's stocks right (0 = no, 1 = perfectly)."""
+    d = pd.DataFrame({"day": np.asarray(days), "m": quantile_at(r_q, levels, 0.5), "r": r_act})
+    d = d[d.groupby("day")["r"].transform("size") >= 5]
+    if d.empty:
+        return np.nan
+    rk = d.groupby("day")[["m", "r"]].rank()
+    c = rk - rk.groupby(d["day"]).transform("mean")
+    by = pd.DataFrame({"xy": c["m"] * c["r"], "xx": c["m"] ** 2, "yy": c["r"] ** 2}
+                      ).groupby(d["day"]).sum()
+    ic = by["xy"] / np.sqrt(by["xx"] * by["yy"])
+    return float(ic.mean())
+
+
 def summary(r_q: np.ndarray, r_act: np.ndarray, levels, events: Events | None = None,
             edges=None) -> dict:
-    """Run-level scores: pinball loss vs naive (move = 0 at every level), outer-interval
-    coverage, mean PIT and the n-weighted mean |deviation| over the grid (ECE)."""
+    """Run-level scores: pinball loss vs naive (move = 0 at every level), outer-interval and
+    P10–P90 coverage, mean PIT, the median's direction (all moves, big moves) and error, the
+    quantile calibration error and its grade, and the n-weighted mean |deviation| over the grid
+    (ECE)."""
     if len(r_act) == 0:
         return {"rows": 0}
     lv = np.asarray(levels, dtype=float)[None, :]
@@ -261,6 +289,21 @@ def summary(r_q: np.ndarray, r_act: np.ndarray, levels, events: Events | None = 
         "bias": float(0.5 - u.mean()),
         "median_width": float(np.median(r_q[:, -1] - r_q[:, 0])),
     }
+    lv = lv[0]
+    if lv[0] <= 0.1 and lv[-1] >= 0.9:
+        q10, q90 = quantile_at(r_q, lv, 0.1), quantile_at(r_q, lv, 0.9)
+        out["coverage80"] = float(((q10 <= r_act) & (r_act <= q90)).mean())
+    med = quantile_at(r_q, lv, 0.5)
+    moved = (r_act != 0) & (med != 0)
+    hit = np.sign(med) == np.sign(r_act)
+    big = moved & (np.abs(r_act) > BIG_MOVE)
+    out["direction"] = float(hit[moved].mean()) if moved.any() else np.nan
+    out["direction_big"] = float(hit[big].mean()) if big.any() else np.nan
+    out["median_abs_err"] = float(np.median(np.abs(r_act - med)))
+    q_err = np.abs((r_act[:, None] <= r_q).mean(axis=0) - lv)
+    out["q_err_mean"] = float(q_err.mean())
+    out["q_err_max"] = float(q_err.max())
+    out["grade"] = calibration_grade(out["q_err_mean"])
     if events and edges is not None:
         g = grid(events, edges)
         out["ece"] = float((g["deviation"].abs() * g["n"]).sum() / g["n"].sum()) if len(g) else np.nan

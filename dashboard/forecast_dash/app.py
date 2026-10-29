@@ -21,12 +21,13 @@ for _name in [m for m in sys.modules if m == "forecast_dash" or m.startswith("fo
     del sys.modules[_name]
 
 from forecast_dash import calib, charts, home, insights, intraday_page, watchlist_page
-from forecast_dash.contract import Run, discover, load_forecast
+from forecast_dash.contract import Run, discover, load_forecast, read_card, run_label
 from forecast_dash.help_text import HELP
 from forecast_dash.ui import (
     _chart,
     _header,
     _in_short,
+    _model_popover,
     _pct_cols,
     _table,
     get_live,
@@ -109,10 +110,14 @@ def sidebar() -> View | None:
         st.warning(f"No runs under `{root}` (looking for fold_*/test_predictions.parquet).")
         return None
     names = [r.name for r in runs]
-    name = sb.selectbox("Run", names, key="run")
+    labels = {r.name: run_label(r) for r in runs}
+    name = sb.selectbox("Run", names, key="run", format_func=labels.get,
+                        help="R0, R1c, ...: the run's label from its MODEL.md; ⓘ below says "
+                             "what the model is")
     path = str(runs[names.index(name)])
     run = get_run(path)
     f = run.frame
+    _model_popover(sb, Path(path))
 
     folds = sorted(f["fold"].unique())
     sel_folds = sb.multiselect("Folds (test blocks)", folds, default=folds,
@@ -701,20 +706,64 @@ def tab_live(v: View):
                               actual=float(t["actual_vwap"].iloc[i])), "lv_range", key="lv_range")
 
 
+def models_table(paths: dict[str, Path]) -> pd.DataFrame:
+    """One row per chosen run: its label, the forecast it gives, what it is, its directory."""
+    rows = []
+    for shown, p in paths.items():
+        card = read_card(p)
+        rows.append({"model": shown, "forecast": card.forecast if card else "",
+                     "what": card.summary if card else "(no MODEL.md)", "run": Path(p).name})
+    return pd.DataFrame(rows)
+
+
+def unique_labels(paths: dict[str, Path]) -> dict[str, str]:
+    """Directory name → the label shown in Compare runs: the card label, or the directory name
+    when there is no card or two chosen runs share a label."""
+    lab = {n: (c.label if (c := read_card(p)) else n) for n, p in paths.items()}
+    dup = {v for v in lab.values() if list(lab.values()).count(v) > 1}
+    return {n: (f"{v} · {n}" if v in dup else v) for n, v in lab.items()}
+
+
+# Compare runs table: accuracy first, then calibration, then the rest
+CMP_ORDER = ["rows", "pinball", "vs_first", "pinball_skill", "direction", "direction_big",
+             "rank_ic", "median_abs_err", "coverage", "coverage80", "q_err_mean", "q_err_max",
+             "grade", "bias", "ece", "median_width", "naive_pinball", "coverage_nominal",
+             "mean_pit"]
+
+
+def compare_table(rows: dict[str, dict]) -> pd.DataFrame:
+    """One row per run, metrics in CMP_ORDER; vs_first = pinball / the first run's − 1."""
+    t = pd.DataFrame(rows).T
+    if "pinball" in t and len(t):
+        t["vs_first"] = t["pinball"].astype(float) / float(t["pinball"].iloc[0]) - 1
+    return t[[c for c in CMP_ORDER if c in t] + [c for c in t if c not in CMP_ORDER]]
+
+
 def tab_compare(v: View, min_n: int):
     _header("compare")
     root = Path(v.path).parent
-    names = [p.name for p in discover(root)] or [v.run.name]
+    found = discover(root)
+    names = [p.name for p in found] or [v.run.name]
+    shown = {p.name: run_label(p) for p in found}
     others = [n for n in names if n != v.run.name]
     chosen = st.multiselect("Runs to compare", names, default=[v.run.name, *others[:1]],
-                            help="Newest first. Each run is scored on all its rows (or the common "
+                            format_func=lambda n: shown.get(n, n),
+                            help="Newest first. The first one picked is the reference for "
+                                 "vs_first. Each run is scored on all its rows (or the common "
                                  "ones); the sidebar's fold/stock/industry/day filters do not "
                                  "apply here, its moves and bucket width do.")
     if not chosen or not v.moves:
         st.info("Pick runs and at least one move size.")
         return
-    paths = {n: str(root / n) if n != v.run.name else v.path for n in chosen}
-    runs = {n: get_run(p) for n, p in paths.items()}
+    full = {n: str(root / n) if n != v.run.name else v.path for n in chosen}
+    lab = unique_labels({n: Path(p) for n, p in full.items()})
+    # everything below is keyed by the short label (R0, R1c, ...)
+    paths = {lab[n]: p for n, p in full.items()}
+    runs = {lab[n]: get_run(p) for n, p in full.items()}
+    _table(models_table({k: Path(p) for k, p in paths.items()}), "cmp_models")
+    cols = st.columns(min(len(paths), 6))
+    for i, (k, p) in enumerate(paths.items()):
+        _model_popover(cols[i % len(cols)], Path(p))
     # real dates line runs up across panels (a 2-year and a 5-year panel number days differently)
     by_date = all(r.has_dates for r in runs.values())
     dkey = "date" if by_date else "day_idx"
@@ -752,6 +801,8 @@ def tab_compare(v: View, min_n: int):
             ev[m] = (p[idx], h[idx])
         grids.append(calib.cells(*ev[move], v.edges).assign(run=n))
         rows[n] = calib.summary(r.r_q[idx], r.r_act[idx], r.levels, ev, v.edges)
+        rows[n]["rank_ic"] = calib.rank_ic(r.r_q[idx], r.r_act[idx], r.levels,
+                                           r.frame[dkey].to_numpy()[idx])
         calls[n] = insights.call_table(ev, CALL_LEVELS)
     _in_short(insights.compare_insights(rows, calls, conf, same_rows=sets is not None
                                         or len(runs) == 1))
@@ -759,9 +810,11 @@ def tab_compare(v: View, min_n: int):
                               f"{calib.event_label(move)}: said vs came true by run",
                               min_n=min_n, group="run"), "cmp_reliability")
     st.caption("pinball: quantile loss on the move (lower is better; naive = 0% move at every "
-               "quantile). coverage: share inside the outer quantiles. ece: n-weighted mean "
-               "|came true − said| over the grid for the selected moves.")
-    _table(pd.DataFrame(rows).T, "cmp_table", hide_index=False)
+               "quantile). vs_first: pinball change against the first chosen run. coverage: "
+               "share inside the outer quantiles. direction: how often the median had the sign "
+               "right. grade: from q_err_mean (≤ 0.5 pts excellent, ≤ 1 good, ≤ 2 fair). ece: "
+               "n-weighted mean |came true − said| over the grid for the selected moves.")
+    _table(compare_table(rows), "cmp_table", hide_index=False)
     roll = pd.concat([insights.side_rollup(c).assign(run=n) for n, c in calls.items()],
                      ignore_index=True)
     _chart(charts.call_chart(roll, "Calls by run and side: came true vs said"),

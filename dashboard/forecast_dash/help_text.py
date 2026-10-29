@@ -586,14 +586,33 @@ The actual should land inside the band about as often as its width says.
 The reliability curve for one event, one line per run. The line closer to the diagonal is better
 calibrated. Bigger markers mean more forecasts, and the error bars are 95% CIs.
 """),
+    "cmp_models": ("The chosen models", """
+One row per chosen run: its short label (R0, R1c, R6f, ...), the forecast it gives and what it
+is. These come from the run's `MODEL.md`; the ⓘ buttons under the table show the whole card
+(purpose, inputs, folds, result). A run without one is shown by its directory name.
+
+- **night**: made the evening before, no pre-market.
+- **09:30**: with the pre-market prices and the open.
+- **09:45**: with the full pre-market (VWAP, volume, range).
+"""),
     "cmp_table": ("Metrics by run", """
 One row per run, scored on the same rows when *Only rows present in every chosen run* is
 ticked. Rows match on (stock, date) when every chosen run has real dates, otherwise on
 (stock, day_idx); the checkbox help says which.
 
-- Lower `pinball` and `ece` are better. Higher `pinball_skill` is better.
-- `coverage` should be near `coverage_nominal`, and `bias` near 0.
+- **Accuracy:** lower `pinball` is better; `vs_first` is the change against the first chosen
+  run. Higher `pinball_skill` is better: 25–30% is good for a night forecast, 35–45% is
+  expected with pre-market, and well above that at night suggests leakage.
+- **Direction and movement:** `direction` and `direction_big` (50% = coin flip), `rank_ic`
+  (above 0.05 is useful) and `median_abs_err` (lower is better).
+- **Calibration:** `coverage` near `coverage_nominal` (90%), `coverage80` near 80%,
+  `q_err_mean` near 0 (its `grade`: ≤ 0.5 pts excellent, ≤ 1 good, ≤ 2 fair), `bias` near 0,
+  lower `ece`.
 - Narrower `median_width` is only better if coverage holds.
+
+Morning forecasts appear as their own runs: `…~px` (09:30) and `…~night` from the masked R4
+run, and `…-overlay-px` / `…-overlay-full` for the overlays. Tick the common-rows box, so every
+run is scored on the same stock-days.
 
 Hover a column header for its meaning.
 """),
@@ -614,6 +633,10 @@ COLUMNS: dict[str, str] = {
     "symbol": "stock ticker",
     "industry_code": "the stock's industry",
     "run": "training run (its directory name)",
+    "model": "the run's short label from its MODEL.md (R0, R1c, ...), else the directory name",
+    "forecast": "when the forecast is made: night (evening before), 09:30 (pre-market prices "
+                "and the open) or 09:45 (full pre-market)",
+    "what": "what the model is, from its MODEL.md",
     "move": "the event's move size as a fraction: +0.01 = VWAP at least 1% above the reference "
             "(upside), −0.01 = at least 1% below (downside)",
     "side": "up: the event is a rise of at least +m. down: a fall of at least −m",
@@ -656,6 +679,23 @@ COLUMNS: dict[str, str] = {
                     "better if coverage holds",
     "ece": "probability error: the n-weighted average |came true − said| over the grid of the "
            "selected moves. Lower is better",
+    "vs_first": "pinball change against the first chosen run: −1.0% = 1% lower loss (better) "
+                "than it. Only fair with the common-rows box ticked",
+    "direction": "how often the median (P50) had the right sign: up vs down from the previous "
+                 "VWAP (rows where either is exactly 0 left out). 50% = coin flip",
+    "direction_big": "direction on big moves only (|actual move| > 2%), the ones that matter "
+                     "most",
+    "rank_ic": "rank IC: per day, the Spearman correlation between the median forecast and the "
+               "actual move across stocks, averaged over days. 0 = no ranking skill, above "
+               "0.05 is useful, 1 = perfect order",
+    "median_abs_err": "typical (median) |actual move − median forecast|, as a move. Lower is "
+                      "better",
+    "q_err_mean": "quantile calibration error: per quantile, |share of actuals at or below it "
+                  "− its level| (P5 should have 5% below), averaged over the quantiles. 0 is "
+                  "ideal",
+    "q_err_max": "the largest of those per-quantile errors: the worst-calibrated quantile",
+    "grade": "calibration grade from q_err_mean: ≤ 0.5 pts excellent, ≤ 1 good, ≤ 2 fair, "
+             "else poor",
     "mean_pit": "the average PIT u = forecast CDF at the actual: where the actual fell in the "
                 "forecast (0 = below all of it, 1 = above). 0.5 is ideal",
     "bias": "0.5 − mean PIT. Positive: optimistic (actuals landed below the forecast). "

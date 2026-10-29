@@ -29,6 +29,41 @@ QCOL = re.compile(r"^q(\d{2})$")
 REQUIRED = ("symbol", "day_idx", "prev_vwap", "actual")
 TEST_GLOB = "fold_*/test_predictions.parquet"
 ACTUALS = "actuals.parquet"
+CARD = "MODEL.md"  # optional model card: front matter (label, forecast, summary) + markdown
+
+
+@dataclass
+class ModelCard:
+    """A run's MODEL.md: a short label (R0, R1c, ...), the forecast it gives (night, 09:30,
+    09:45), a one-line summary, and the markdown body (purpose, inputs, folds, result)."""
+
+    label: str
+    forecast: str = ""
+    summary: str = ""
+    body: str = ""
+
+
+def read_card(run: Path) -> ModelCard | None:
+    """The run's MODEL.md, or None. Front matter is `key: value` lines between `---` lines."""
+    f = Path(run) / CARD
+    if not f.is_file():
+        return None
+    text = f.read_text()
+    meta, body = {}, text
+    if text.startswith("---"):
+        head, sep, rest = text[3:].partition("\n---")
+        if sep:
+            meta = {k.strip(): v.strip() for k, _, v in
+                    (ln.partition(":") for ln in head.splitlines() if ":" in ln)}
+            body = rest.lstrip("-").lstrip("\n")
+    return ModelCard(label=meta.get("label") or Path(run).name, forecast=meta.get("forecast", ""),
+                     summary=meta.get("summary", ""), body=body.strip())
+
+
+def run_label(run: Path) -> str:
+    """How a run is shown: "R1c · <directory>" when it has a card, else the directory name."""
+    card = read_card(run)
+    return f"{card.label} · {Path(run).name}" if card else Path(run).name
 
 
 @dataclass
@@ -46,6 +81,15 @@ class Run:
     @property
     def name(self) -> str:
         return self.path.name
+
+    @property
+    def card(self) -> ModelCard | None:
+        return read_card(self.path)
+
+    @property
+    def label(self) -> str:
+        """The card's short label (R0, R1c, ...), else the directory name."""
+        return self.card.label if self.card else self.name
 
     @property
     def has_dates(self) -> bool:

@@ -134,7 +134,7 @@ the metrics and controls have `?` tooltips. All of this text is in `forecast_das
 | Stock detail | One stock: fan chart (P5–P95 and P25–P75 bands, P50, actual dots; red dots fall outside the outer band), PIT histogram, ladder, that stock's grid | A flat PIT histogram means calibrated. Mass on the left means actuals fell below the forecast (optimistic). A U shape means the bands are too narrow. |
 | Forecast → Price ranges | Pick a forecast day (newest first; *open* = not graded yet, *graded* = actuals in). Screener on that `forecast_<date>.parquet`. Sliders: percentile band (default P10–P90), one-sided confidence (floor/cap $), max band width %, min price, and side / move / P ≥. The table gives each stock's VWAP range in $ (low, median, high, floor, cap, width), P(move) and its historical came-true rate in the same probability bucket. One stock: price-range chart, every percentile in $ and %, the $ ladder and the probability-per-move curve against history. On a graded day the table adds `actual_vwap` and `inside`, and the chart draws the actual. CSV download | The low–high range is where the model expects tomorrow's VWAP with the chosen central probability. Read "model says 72%" next to "this stock came true 58% (n=31) in the 70–80% bucket". That historical rate is the answer to "how far do I trust this number". |
 | Forecast → Forecast vs actual | Defaults to the day picked in Price ranges, if graded. Once a forecast day has happened and `tft-vwap-grade` has run: band coverage vs nominal, misses above/below, direction hit rate, bias, quantile skill vs naive, event calls said vs came true. Median-vs-actual scatter, PIT histogram, coverage and bias by day (with more than one graded day), a graded table with `outside_by`, and one stock's band and actual in $ for each graded day | Coverage near nominal with misses split evenly means the bands are honest. More misses above than below (negative bias) means the model was too pessimistic that day. One day is one market regime, so judge it over several days. |
-| Compare runs | Reliability overlay for one event across runs, a summary table, and calls by run and side at each call level | In short names the winner per metric (or says there is no clear winner), which run's calls held best at the chosen call level, and warns when the rows differ or are too few. By default only (stock, day) rows present in every run are used, so the comparison is fair. Lower pinball and ECE are better. Coverage should be near nominal and bias near 0. |
+| Compare runs | Reliability overlay for one event across runs, a summary table, and calls by run and side at each call level | In short names the winner per metric (or says there is no clear winner), which run's calls held best at the chosen call level, and warns when the rows differ or are too few. By default only (stock, day) rows present in every run are used, so the comparison is fair. Lower pinball and ECE are better. Coverage should be near nominal and bias near 0. The table also has `vs_first` (pinball vs the first chosen run), direction (all moves and \|move\| > 2%), rank IC, median error, P10–P90 coverage, the quantile calibration error and its grade (≤ 0.5 pts excellent, ≤ 1 good, ≤ 2 fair, else poor). A models table and an ⓘ per run show each run's `MODEL.md` card. |
 
 ## Intraday
 
@@ -204,4 +204,25 @@ forecast_dash/
   intraday_calib.py    intraday scores, built on calib.py (pure)
   cli.py        forecast-dash entry point -> streamlit run app.py
 tests/          maths, contract, charts, insights, AppTest smoke over every tab, import boundary
+```
+
+## Model cards (`MODEL.md`)
+
+A run directory may hold a `MODEL.md`. Its front matter gives `label` (R0, R1c, …), `forecast`
+(night, 09:30, 09:45, 09:30/09:45 or intraday) and a one-line `summary`; the markdown below it
+holds the purpose, inputs, folds, result and command. The dashboard then shows the run as
+"R1c · <directory>" in the pickers (the daily run picker and the Intraday run picker), names it by
+its label in Compare runs, lists the chosen models in a table, and opens the card from an ⓘ. A
+run without a card is shown by its directory name. Every trainer (`tft-vwap`, `tft-vwap-gbm`,
+the overlays, `tft-intraday`, `screener-train`) writes the card itself (`--label`, `--about`,
+`--purpose`); `ml/scripts_model_cards.py` adds hand-written verdicts to the research runs.
+
+```markdown
+---
+label: R1c
+forecast: night
+summary: BASE: R0 + session shape + after-hours (no market, no macro)
+---
+
+**Purpose.** ...
 ```

@@ -68,3 +68,16 @@ def test_load_live_joins_forecasts_to_actuals(run_dir):
     assert np.allclose(live.keys["actual_vwap"], 10.0 * (1 + live.r_act))
     (run_dir / "actuals.parquet").unlink()
     assert contract.load_live(run_dir) is None
+
+
+def test_model_card_label_and_fallback(tmp_path):
+    a = write_run(tmp_path / "runs", "20260101-a")
+    assert contract.read_card(a) is None and contract.run_label(a) == "20260101-a"
+    (a / "MODEL.md").write_text("---\nlabel: R1c\nforecast: night\nsummary: the base: R0 + shape\n"
+                                "---\n\n**Purpose.** test\n")
+    card = contract.read_card(a)
+    assert (card.label, card.forecast, card.summary) == ("R1c", "night", "the base: R0 + shape")
+    assert card.body == "**Purpose.** test" and contract.run_label(a) == "R1c · 20260101-a"
+    assert contract.load_run(a).label == "R1c"
+    (a / "MODEL.md").write_text("just text, no front matter")
+    assert contract.read_card(a).label == "20260101-a"

@@ -5,7 +5,7 @@ A hand-maintained reference for the modelling choices behind `ml/`.
 - **Q&A log** keeps every question and its answer, newest last. Numbers and facts are as of each entry's date.
 - **Glossary** explains the terms the answers use.
 
-## Scoreboard: model choices and results now (2026-10-29, 11:40 PT)
+## Scoreboard: model choices and results now (2026-10-29, 14:30 PT)
 
 The one place for "which model, and how good". Updated whenever a run finishes or a choice
 changes; details and CIs are in [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-ml-daily`, terms in
@@ -19,7 +19,34 @@ changes; details and CIs are in [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-m
 | research base (TFT) | **R1c** `20261028-233305Z-return-4438sym` | R0 + session shape + after-hours | skill 27.0%, P5–P95 88.4%; 0.58% better than R0 (CI clear), most on earnings days; R7 (HGB) now beats it at night |
 | intraday handoff | R0 `20261028-030847Z-return-4438sym/handoff.parquet` | | to rebuild from R1c |
 
-**Per forecast** (the pre-market bake-off, 7 odd folds; Q12)
+**Goal (user, 10-29, Q35):** one model for every forecast at and after 09:30, with full
+pre-market; **the night forecast is dropped**. Ranked first by how well the quantiles hit their
+probabilities (dashboard mean/max |q err|, grade, ECE, coverage, bias), then by pinball loss.
+
+**Calibration first** (6 odd folds 3–13, the 716,862 rows with full pre-market every run has;
+walk-forward recalibration `-cal` = `tft-vwap-recal --by pm,width --window 4`):
+
+| model | forecast | pinball | mean / max \|q err\| (pts) | ECE | P5–P95 / P10–P90 | bias | grade |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **R7f-cal** | 09:45 | 0.007901 | **0.10 / 0.22** | **0.97** | 90.0 / 80.0 | +0.05 | excellent |
+| R7f | 09:45 | 0.007902 | 0.78 / 1.08 | 1.17 | 89.4 / 79.3 | −0.72 | good |
+| R6f-cal | 09:45 | 0.007908 | 0.16 / 0.37 | 1.31 | 90.0 / 80.1 | +0.15 | excellent |
+| R6f | 09:45 | 0.007907 | 0.94 / 1.55 | 1.61 | 90.7 / 80.9 | −0.86 | good |
+| R4f-cal | 09:45 | 0.007950 | 0.87 / 1.55 | 1.45 | 90.8 / 81.5 | −0.57 | good |
+| R7f+R4f-cal (average) | 09:45 | **0.007846** | 0.46 / 0.83 | 1.08 | 90.3 / 80.7 | −0.29 | excellent |
+| R6p-cal | 09:30 | 0.007967 | 0.16 / 0.40 | 1.30 | 90.0 / 80.0 | +0.16 | excellent |
+| R6p | 09:30 | 0.007965 | 0.91 / 1.51 | 1.58 | 90.6 / 80.9 | −0.84 | good |
+| R4p-cal | 09:30 | 0.007971 | 0.89 / 1.94 | 1.59 | 91.0 / 82.1 | +0.70 | good |
+
+- **Recalibration removes most of the calibration error at no pinball cost** (R7f: 0.78 → 0.10
+  pts). R7f-cal is the best-calibrated model so far. Averaging R7f with R4f lowers the loss 0.7%
+  but stays worse calibrated even after recal, and it needs a TFT: not chosen.
+- **R5 is running** (queued 14:10 PT, `runs/queue-r5.sh`, log `runs/queue-r5.log`): one HGB for
+  09:30 and 09:45 (`--premarket optional`), + the open for every stock, past volatility, 600
+  iterations for the tails; folds 0–14; then `-cal` for both states, the calibration table
+  against R7f-cal/R6f-cal/R6p-cal, and R8 (screener) on R5~px-cal. Then the NAS backup.
+
+**Per forecast** (the pre-market bake-off, 7 odd folds; Q12; pinball first, before Q35)
 
 | forecast | candidates | chosen |
 | --- | --- | --- |
@@ -43,9 +70,8 @@ changes; details and CIs are in [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-m
 | R7 | plain HGB per quantile, R1c's inputs, no TFT | 1.3% better than R1c (CI clear); skill 28.0%, calibration good (0.80 pts) | **leads at night**; gains largest in early folds |
 | R7f | R7 + full pre-market always on, 7 odd folds | ties R6f; 0.76% better than R4f, 1.6% better than R4 | **tied lead at 09:45** |
 
-**Running and queued:** nothing (the overnight queue finished 10:53 PT). Next to decide:
-whether R5 (the final model per forecast) is HGB-based, now that R7/R7f match or beat the TFT
-routes; an HGB at 09:30 (R7p, prices only) would close the bake-off grid. R8 (screener) follows R5.
+**Running and queued:** R5 → R5-cal, R5~px-cal → calibration tables → R8 → NAS backup
+(`runs/queue-r5.sh`, 14:10 PT). R5 replaces the planned R7p: one model covers 09:30 too.
 
 **Run labels:** every run directory has a `MODEL.md` card (label R0, R1c, …, forecast, one-line
 summary, purpose, result). Every trainer writes it (`--label R7f --about "…" --purpose "…"`;
@@ -62,7 +88,12 @@ dashboard's **Compare runs** tab (Q30).
 Every TFT run started from 10-28 22:30 drops it automatically (Q27): R4p, R4f, R5 on. So R4 vs
 R4p/R4f also differs in that input, expected to be inside the noise (Q23).
 
-## Current position (2026-10-28, 22:00 PT)
+## Current position (2026-10-29, 14:30 PT)
+
+**Direction (user, 2026-10-29, Q35):** one daily model for every forecast at and after 09:30,
+using full pre-market; **no night forecast**; quantile calibration (the dashboard's q err, grade,
+coverage) ranks first, pinball loss second. Candidate: R5 (one HGB, 09:30 + 09:45) with
+walk-forward recalibration.
 
 **Design**
 - **Two models, trained separately.**
@@ -107,7 +138,7 @@ R4p/R4f also differs in that input, expected to be inside the noise (Q23).
 3. ~~**Benzinga partner data:** whether the Massive plan includes it.~~ User, 10-28: not important now.
 4. **Production run:** keep `20261005-025909Z-return-3712sym --fold 3`, or switch. The 10-11 retrain `20261011-173109Z-return-3785sym` tests 2.7% better; the 5-year **R0** `20261028-030847Z-return-4438sym` tests **6.2% better** on 756k shared forecasts, CI clear of 0 in every shared fold (Q17). R1c `20261028-233305Z` beats R0 by a further 0.58% (Q21). **User, 10-28: production switches only after all models (R4–R8) are evaluated.**
 5. ~~**Resuming a stopped training run (`--resume`):** not built.~~ Done 2026-10-27 (Q13): runs pause and resume, and `tft-vwap-status` shows the time left.
-6. **Pre-market approach per forecast** (night, 09:30, 09:45): one masked TFT, separate TFTs, or overlays on the base (R1c). Decided by the R4/R4p/R4f/R6p/R6f bake-off on the 7 odd folds (Q12); R4 running, the rest queued overnight.
+6. ~~**Pre-market approach per forecast** (night, 09:30, 09:45).~~ Bake-off done 10-29 (Scoreboard); then the user chose one model for 09:30 and after, no night (Q35): R5.
 
 **5-year retrain (decided 2026-10-27)**
 - **Testing:** 15 walk-forward folds of 63 sessions (2023-01-20 → 2026-10-26), 21-session early stop, at least 252 training sessions (Q11). Bake-off runs use the 7 odd folds 1, 3, …, 13.
@@ -1094,3 +1125,59 @@ The data volume comes mostly from the third, not the first. Sampling decisions s
 6. **Later experiments:** volume bars (Q32), Chronos-2 zero-shot on the 1-minute series, a jump/burst probability output (Q7), live predict.
 
 Each step reports skill vs the volatility-scaled climatology per horizon, by time of day and by regime, in LEARNINGS under `tag-ml-intraday`.
+
+### Q35 (2026-10-29): My goal is accurate quantiles, with full pre-market. I don't care for lesser models. Prioritise accuracy of the probabilities/percentiles in the dashboard. I prefer one model: the night forecast won't help, since predictions and stock filtering are needed only at and after 09:30 for intraday. Plan and run whatever helps.
+
+**What changes.**
+- The ranking metric is now **calibration**: does P_tau have tau of the actuals below it? On the
+  dashboard that is mean/max |q err| (and its grade), ECE, P5–P95/P10–P90 coverage and bias.
+  Pinball loss comes second, as a tie-breaker and a sanity check (a model can be calibrated and
+  still wide).
+- **The night forecast is dropped.** No R7/R1c night model is kept for production; the TFT
+  routes stay as references only.
+- **One model for 09:30 and 09:45.** Needed because 09:30 has only the prices (last pre-market
+  trade and the open), 09:45 has the full pre-market (VWAP, volume, range).
+
+**What was found today** (common rows, the dashboard's own `calib.summary`):
+1. **Every model so far is a little pessimistic** (bias −0.7 to −1.2 pts: actuals land above the
+   median more often than half the time) and the bands a little narrow. That is a level error,
+   the same in most folds, so it can be learned from earlier folds.
+2. **Walk-forward recalibration fixes it** (`tft-vwap-recal`, new): for test fold k, each
+   quantile moves by the tau-quantile of (actual − P_tau) over the 4 folds before k, never k
+   itself. Shifts are learned per group: with or without full pre-market × forecast width
+   terciles. R7f's mean |q err| drops 0.78 → 0.10 pts (max 1.08 → 0.22), ECE 1.17 → 0.97,
+   coverage 90.0/80.0, bias +0.05, with the pinball loss unchanged. R6f/R6p go to 0.16 pts, the
+   TFTs R4f/R4p only to 0.87–0.89 (their errors change between folds).
+   - The pre-market group matters: rows without pre-market are biased differently (R7f without it:
+     1.05 → 0.45 pts with pm×width groups and window 2). Window 4 is best on the pre-market rows,
+     2 on the others; 4 is kept (it is steadier).
+3. **Inputs, probed on folds 5 and 13 (P5, P50, P95):**
+   - **The open for every stock** (`--open`): the panel sets `open_pct_prev_vwap` to 0 when there
+     were no pre-market trades, although the open is known at 09:30 for every stock. Adding it
+     gives the stocks with no pre-market **7–13% lower loss** (P50 9.5–9.9%), and 0.2–0.7% for the
+     others.
+   - **Past volatility** (`--vol`: std of the move over 5/20/60 sessions, mean |move| and mean
+     spread over 20): **1.5–2.4% better tails** (P5, P95), no change at P50.
+   - Together: P5 4.8–5.5% better, P95 3.9–7.8%, P50 2.5–4.8% over all rows.
+   - **More iterations help only the tails:** P50 is best at 200–400 iterations and overfits by
+     1,000; P5/P95 keep improving to 1,000 (0.6–1.1%). So `--tail-iter 600` for P15 and below,
+     P85 and above. 63 leaves or learning rate 0.1: no better.
+4. **Averaging two models** (R7f with R4f) lowers the loss 0.7% but needs a TFT and stays worse
+   calibrated; not used.
+
+**The plan (running, `ml/runs/queue-r5.sh`):**
+- **R5** = one HGB per quantile, `--premarket optional`: every training row with full
+  pre-market appears twice, as it is and with the full group blank (as at 09:30). Scored in both
+  states: `runs/<R5>` (09:45) and `runs/<R5>~px` (09:30). + `--open --vol --tail-iter 600`.
+  Folds 0–14 (it is the final model; the odd folds compare with the bake-off).
+- **R5-cal and R5~px-cal**: recalibration by pm × width on 4 earlier folds. Live, the shifts
+  come from the latest 4 test blocks (later: from graded live forecasts).
+- **Judged** on the calibration table against R7f-cal (09:45) and R6p-cal (09:30), same rows,
+  plus `tft-vwap-compare` for the pinball CI.
+- **R8** (the screener) on R5~px-cal's out-of-fold 09:30 forecasts.
+- Production switches only after this is evaluated (user rule, 10-28).
+
+**Why one HGB can serve both times.** The trees see the full group's flag; training on both
+views of every pre-market row teaches them what to do when it is blank, as the TFT's masking
+did (R4), but without the TFT's cost. If R5~px loses clearly to a dedicated 09:30 model, the
+fallback is two HGBs from the same features (minutes to train).

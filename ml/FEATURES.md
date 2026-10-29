@@ -743,7 +743,7 @@ their start time). All from Massive minute bars in training; never ChartIQ or th
 | group | column | formula |
 | --- | --- | --- |
 | prices (09:30) | `pm_last_pct_prev_vwap` | last pre-market trade before 09:30 / previous session's VWAP − 1, clipped ±30% |
-| | `open_pct_prev_vwap` | day d's open / previous VWAP − 1, clipped ±30% |
+| | `open_pct_prev_vwap` | day d's open / previous VWAP − 1, clipped ±30%; 0 when `pm_px_known` is 0 (also for stocks with no pre-market trades; the GBM's `--open` fills that gap, below) |
 | | `pm_px_known` | 1 when the last price, the open and the previous VWAP all exist |
 | full (09:45) | `pm_vwap_pct_prev_vwap` | pre-market VWAP (minute `vw`) / previous VWAP − 1, clipped ±30% |
 | | `pm_vol_pct_10d` | log(1 + 100 × pre-market volume / `vol_10d_mean`), clipped [0, 6] |
@@ -775,7 +775,22 @@ their start time). All from Massive minute bars in training; never ChartIQ or th
 gradient-boosted adjustment per quantile on R1's out-of-fold test quantiles plus the pre-market
 group, for test fold k from folds before k only. `tft-vwap-gbm` (R7) is a plain HGB per quantile
 on the last-day inputs plus lags 1, 2, 5 and 20 of `vwap_pct_prev_day`, sorted so quantiles never
-cross; fixed `--max-iter`, no early stop.
+cross; fixed `--max-iter`, no early stop. GBM-only inputs (added 2026-10-29, R5):
+
+| flag | column | formula |
+| --- | --- | --- |
+| `--open` | `f_open_all` | day d's `gap_open_vs_prev_vwap_pct` (open / previous VWAP − 1), clipped ±30%, 0 if missing. Unlike `open_pct_prev_vwap` it is set for stocks with no pre-market trades too (the open is known at 09:30 for every stock) |
+| `--vol` | `f_vol5`, `f_vol20`, `f_vol60` | std of `vwap_pct_prev_day` over the last 5 / 20 / 60 sessions up to the last one (at least 3 / 10 / 20) |
+| | `f_absmove20` | mean \|`vwap_pct_prev_day`\| over the last 20 sessions (at least 10) |
+| | `f_spread20` | mean `intraday_spread_pct` over the last 20 sessions (at least 10) |
+
+- `--premarket optional` in the GBM: every training row with `pm_full_known = 1` appears twice, as
+  it is and with the full group set to 0 (flag 0), and the test rows are scored both ways: the
+  run dir is 09:45 (full), `<run>~px` is 09:30. No random masking, no `~night` state.
+- `--tail-iter N`: N iterations for P15 and below and P85 and above (the tails keep improving
+  past 200 iterations, the median does not).
+- Probe (folds 5 and 13): `--open` + `--vol` gave 4.8–5.5% at P5, 2.5–4.8% at P50 and 3.9–7.8%
+  at P95, 9–15% on the stocks with no pre-market (LEARNINGS `tag-ml-daily`, 2026-10-29).
 
 ## 19. Screener features (`ml/screener`, added 2026-10-27)
 

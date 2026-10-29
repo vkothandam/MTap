@@ -229,7 +229,7 @@ Tags: `guide-compare`
 
 Tags: `guide-runs`
 
-Status 2026-10-29 11:40 PT. This section explains the series; the **current** choices and
+Status 2026-10-29 14:30 PT. This section explains the series; the **current** choices and
 results are kept in the Scoreboard at the top of [MODEL-STRATEGY.md](MODEL-STRATEGY.md). Results
 in detail: [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-ml-daily`.
 
@@ -245,8 +245,9 @@ in detail: [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-ml-daily`.
 | R4p, R4f | R1c + pre-market always on (prices; everything) (B) | odd | second at 09:30 and 09:45 |
 | R7 `20261029-153450Z-gbm` | HGB on R1c's inputs, no TFT | 0–14 | **leads at night:** 1.3% better than R1c, CI clear |
 | R7f `20261029-170229Z-gbm` | R7 + full pre-market | odd | **leads at 09:45:** ties R6f (CI spans 0), fewer models wins |
-| R5 | the final model(s) | 0–14 | after the bake-off |
-| R8 | screener | odd | after R5 |
+| R7f-cal, R6f-cal, R6p-cal … | walk-forward recalibration (`tft-vwap-recal --by pm,width --window 4`) of each run | odd 3–13 | **R7f-cal best calibrated:** mean \|q err\| 0.78 → 0.10 pts, same pinball; R6f-cal, R6p-cal 0.16; the TFTs only to ~0.9 |
+| R5 | **one HGB for 09:30 and 09:45** (`--premarket optional`), + the open for every stock, past volatility, 600 tail iterations; then R5-cal, R5~px-cal | 0–14 | training (from 10-29 14:10, `runs/queue-r5.sh`) |
+| R8 | screener on R5~px-cal | odd | after R5 |
 | R2 | + fundamentals | | phase 2 (needs dated EPS) |
 
 **R1c vs R0** (3,169,270 forecasts, 945 days; `compare_vs_r0.json`):
@@ -285,7 +286,17 @@ Choices made while building or running, not put to the user first. Status as of 
 | 7 | **The R4 queue picks the base itself** by Q21 rule 1 and runs R6p/R6f on that base (R1c), not on R4's night state. | So the bake-off could run unattended. | The user set the rule; the script applied it (R1c). |
 | 8 | **The intraday handoff table is still R0's** (`handoff.parquet`). | Q19 said use R0 until a run beats it; R1c now does. | To rebuild from R1c (`tft-vwap-handoff runs/20261028-233305Z-return-4438sym`) when the intraday work resumes. |
 
-User decisions on record (MODEL-STRATEGY Current position): news backfill and Benzinga are not
+Added 10-29 (MODEL-STRATEGY Q35):
+
+| # | decision | why | status |
+| --- | --- | --- | --- |
+| 9 | **Recalibration settings:** groups pm × width tercile, window 4 folds. | Best on the pre-market rows (R7f 0.10 pts); window 2 is better on rows without pre-market (0.45 vs 0.86), but those are not the 09:45 case. | Kept for R5; to re-check on R5. |
+| 10 | **`--tail-iter 600`** for P15 and below, P85 and above; 200 for the rest. | The probe: tails improve to ~1,000 iterations, the median is best at 200–400. 600 is the middle. | In R5. |
+| 11 | **`--open` and `--vol` both in R5,** with no separate run each. | The probe on folds 5 and 13 showed each helps (the open at every level, volatility in the tails) and they add up. | In R5. |
+| 12 | **No averaging of models** (R7f + R4f had 0.7% lower loss). | The user wants one model, calibration first; the average needs a TFT and was worse calibrated after recal (0.46 vs 0.10). | Not used. |
+
+User decisions on record (MODEL-STRATEGY Current position): **one model for 09:30 and after, the
+night forecast dropped, calibration ranked first (10-29);** news backfill and Benzinga are not
 important now; production switches only after all models are evaluated; drop ADRs; never stop a
 queued training run without asking.
 

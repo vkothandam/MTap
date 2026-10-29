@@ -1203,6 +1203,91 @@ What it shows:
   late folds.
 - R7 (HGB, night) and R7f (HGB + pre-market) came next: see the R7 entry above.
 
+### 2026-10-29 Calibration first: walk-forward recalibration, averaging, open and volatility inputs (R5 queued)
+
+Tags: `tag-ml-daily`
+
+**Why.** The user set the goal (10-29): quantiles whose probabilities hold, as the dashboard
+reports them (mean/max |q err|, grade, ECE, coverage, bias), from one model for 09:30 and after;
+the night forecast is dropped. All figures are the dashboard's own `calib.summary` on rows every
+compared run has. Scripts: `/tmp/mtap/calib_table.py`, `ens_run.py`, `feat_probe.py` (scratch,
+not in the repo).
+
+**1. Every model is slightly pessimistic, the same way in most folds.** Bias −0.7 to −1.2 pts
+(the actual lands above P50 more often than half the time), P5–P95 a little under 90%. A steady
+error can be learned from earlier folds.
+
+**2. Walk-forward recalibration** (`tft-vwap-recal`, new). For test fold k each quantile moves by
+the tau-quantile of (actual − P_tau) over the `window` folds before k (never fold k), per group:
+with or without full pre-market × P5–P95 width tercile. Folds 3–13, the 716,862 rows with full
+pre-market:
+
+| run | pinball | mean / max \|q err\| | ECE | P5–P95 / P10–P90 | bias | grade |
+| --- | --- | --- | --- | --- | --- | --- |
+| R7f | 0.007902 | 0.78 / 1.08 | 1.17 | 89.4 / 79.3 | −0.72 | good |
+| **R7f-cal** | 0.007901 | **0.10 / 0.22** | **0.97** | 90.0 / 80.0 | +0.05 | excellent |
+| R6f | 0.007907 | 0.94 / 1.55 | 1.61 | 90.7 / 80.9 | −0.86 | good |
+| R6f-cal | 0.007908 | 0.16 / 0.37 | 1.31 | 90.0 / 80.1 | +0.15 | excellent |
+| R4f | 0.007941 | 1.24 / 2.17 | 1.45 | 89.9 / 80.2 | −1.15 | fair |
+| R4f-cal | 0.007950 | 0.87 / 1.55 | 1.45 | 90.8 / 81.5 | −0.57 | good |
+| R6p | 0.007965 | 0.91 / 1.51 | 1.58 | 90.6 / 80.9 | −0.84 | good |
+| R6p-cal | 0.007967 | 0.16 / 0.40 | 1.30 | 90.0 / 80.0 | +0.16 | excellent |
+| R4p | 0.007962 | 1.10 / 1.89 | 1.28 | 88.3 / 78.3 | −0.89 | fair |
+| R4p-cal | 0.007971 | 0.89 / 1.94 | 1.59 | 91.0 / 82.1 | +0.70 | good |
+
+- Pinball loss is unchanged (±0.1%): the shift moves the bands, not their information.
+- It works on the HGB and the overlays, much less on the TFTs (R4f/R4p): their errors change sign
+  from fold to fold, so the last 4 folds don't predict the next.
+- **Variants on R7f** (mean / max |q err|):
+
+  | variant | all 1.27M rows | rows without pre-market | rows with it |
+  | --- | --- | --- | --- |
+  | none | 0.89 / 1.11 | 1.05 | 0.77 |
+  | one group, window 4 | 0.39 / 0.59 | 0.46 | 0.36 |
+  | width only, window 4 | 0.41 / 0.58 | 0.42 | 0.49 |
+  | pm, window 2 | 0.25 / 0.40 | 0.51 | 0.10 |
+  | pm × width, window 2 | 0.26 / 0.41 | 0.45 | 0.13 |
+  | **pm × width, window 4** | | 0.86 | **0.10 / 0.21** |
+  | pm × width, window 6 | 0.41 | 0.86 | 0.13 |
+
+  The pre-market group is needed (the two kinds of rows are biased differently). Window 4 is best
+  on the pre-market rows, the ones that matter at 09:45; window 2 on the rest.
+
+**3. Averaging two models** (quantile by quantile, then recal):
+
+| run | pinball | mean / max \|q err\| | ECE | grade |
+| --- | --- | --- | --- | --- |
+| R7f+R6f | 0.007878 | 0.87 / 1.33 | 1.45 | good |
+| R7f+R6f-cal | 0.007877 | 0.12 / 0.21 | 1.21 | excellent |
+| R7f+R4f | **0.007845** | 1.03 / 1.69 | 1.38 | fair |
+| R7f+R4f-cal | 0.007846 | 0.46 / 0.83 | 1.08 | excellent |
+
+Averaging with the TFT lowers the loss 0.7%, but it is two models (one a TFT) and less well
+calibrated than R7f-cal. Not used: the user wants one model, calibration first.
+
+**4. Inputs and iterations for the HGB** (`/tmp/mtap/feat_probe.log`, folds 13 and 5, one HGB per
+level, 200 iterations; gain in pinball vs the R7f inputs):
+
+| added | P5 | P50 | P95 | on rows without pre-market |
+| --- | --- | --- | --- | --- |
+| past volatility (`--vol`) | 1.9–2.2% | 0% | 1.5–1.9% | 0.8–2.4% |
+| the open, every stock (`--open`) | 2.8–3.4% | 2.5–4.8% | 2.0–6.3% | 6.9–13.3% |
+| both | **4.8–5.5%** | 2.5–4.8% | **3.9–7.8%** | 9.3–14.6% |
+
+- **The open:** the panel's `open_pct_prev_vwap` is 0 when a stock had no pre-market trades,
+  although the open is known at 09:30 for every stock. `--open` adds the panel's
+  `gap_open_vs_prev_vwap_pct` of day d (clipped ±30%). On rows with pre-market it adds little
+  (0.2–0.7%), since `open_pct_prev_vwap` already has it.
+- **Iterations:** P50 is best at 200–400 and gets worse by 1,000; P5/P95 keep improving to
+  1,000 (0.6–1.1% over 200). Hence `--tail-iter 600` for P15 and below and P85 and above.
+  63 leaves or learning rate 0.1: no gain.
+
+**5. R5, queued** (`ml/runs/queue-r5.sh`, 14:10 PT). One HGB, `--premarket optional`: every
+training row with full pre-market appears twice, as it is and with the full group blank, so one
+fit serves 09:45 (run dir) and 09:30 (`~px`). Plus `--open --vol --tail-iter 600`, folds 0–14.
+Then recal of both states, the calibration tables vs R7f-cal / R6f-cal / R6p-cal, compare, and R8
+(screener) on R5~px-cal. Results: the next entry.
+
 ### 2026-10 R7 and R7f, plain gradient boosting (no TFT), vs R1c and the 09:45 models
 
 Tags: `tag-ml-daily`

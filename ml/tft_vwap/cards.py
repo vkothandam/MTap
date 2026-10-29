@@ -12,14 +12,15 @@ def state_of(cfg: TrainConfig) -> str:
     return "night" if cfg.premarket == "off" else cfg.pm_group_names[-1]
 
 
-def inputs_text(cfg: TrainConfig, model: str) -> str:
+def inputs_text(cfg: TrainConfig, model: str, masks: bool = True) -> str:
+    """`masks`: an optional run's random mask rates apply (TFT); the HGB doubles rows instead."""
     on = [name for flag, name in ((cfg.market, "market/sector"), (cfg.macro, "macro"),
                                   (cfg.session_shape, "session shape"),
                                   (cfg.after_hours, "after-hours")) if flag]
     if cfg.premarket != "off":
         on.append(f"pre-market {cfg.pm_groups} ({cfg.premarket}"
                   + (f", masks full {cfg.pm_mask_full:g} px {cfg.pm_mask_px:g})"
-                     if cfg.premarket == "optional" else ")"))
+                     if cfg.premarket == "optional" and masks else ")"))
     return (f"{model}, target {cfg.target}, the stock's history + earnings {cfg.earnings}"
             + (" + " + ", ".join(on) if on else ", no added groups")
             + f". Panel `{cfg.panel}`" + (f", {cfg.symbols} random symbols" if cfg.symbols else "")

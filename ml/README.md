@@ -194,6 +194,10 @@ uv run tft-vwap $C $G $ODD --premarket on --pm-groups px,full   # R4f B: everyth
 uv run tft-vwap-overlay $B --panel $P --inputs px   $ODD   # R6p C -> $B-overlay-px
 uv run tft-vwap-overlay $B --panel $P --inputs full $ODD   # R6f C -> $B-overlay-full
 uv run tft-vwap-gbm $C $G                             # R7  plain HGB per quantile
+uv run tft-vwap-gbm $C $G --premarket on --pm-groups px,full $ODD   # R7f HGB + full pre-market
+uv run tft-vwap-gbm $C $G --premarket optional --pm-groups px,full --open --vol --tail-iter 600 \
+    --label R5   # R5: one HGB for 09:30 (runs/<id>~px) and 09:45 (runs/<id>); runs/queue-r5.sh
+uv run tft-vwap-recal runs/<id> --by pm,width --window 4 --label R5-cal   # -> runs/<id>-cal
 uv run tft-vwap-event-overlay runs/<R0> --panel $P    # R6c band scale on event days -> runs/<R0>-event
 ```
 
@@ -232,7 +236,17 @@ uv run tft-vwap-event-overlay runs/<R0> --panel $P    # R6c band scale on event 
   only; folds with fewer than 2 earlier folds are marked `thin` (metrics.json, summary.json).
 - **GBM (R7):** one sample per (symbol, day), last-session inputs plus `vwap_pct_prev_day` lags
   0, 1, 2, 5, 20; one `HistGradientBoostingRegressor(loss="quantile")` per quantile, sorted; fixed
-  `--max-iter` (no early stop); pre-market only as `on`.
+  `--max-iter` (no early stop). `--premarket on` (groups as features) or `optional` (pre-market
+  training rows also seen with the full group blank; scored as 09:45 in the run dir and as 09:30 in
+  `<id>~px`). `--open` (the open for every stock), `--vol` (past volatility) and `--tail-iter N`
+  (N iterations for P15 and below and P85 and above): FEATURES.md section 18.
+- **Recalibration:** `uv run tft-vwap-recal runs/<id> [--window 4] [--by pm,width] [--folds …]
+  [--label …]` writes `runs/<id>-cal`, the same run with each quantile shifted, for test fold k,
+  by the tau-quantile of (actual − P_tau) over the `window` test folds before k (never k itself),
+  per group: `pm` = with or without full pre-market, `width` = P5–P95 width tercile (cut on the
+  earlier folds). Folds with no earlier fold are skipped. Live, the shifts come from the
+  latest test blocks. It fixes the steady pessimism (R7f mean |q err| 0.78 → 0.10 pts) at no
+  pinball cost; MODEL-STRATEGY Q35.
 - **Handoff to intraday:** `uv run tft-vwap-handoff runs/<id> [--live] [--state night|px|full]`
   writes `runs/<id>/handoff.parquet` + `handoff.meta.json`: the out-of-fold daily quantiles (one
   row per symbol and forecast date) and their summaries, past-only record and day context.

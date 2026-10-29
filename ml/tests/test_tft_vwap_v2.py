@@ -539,6 +539,59 @@ def test_overlay_never_crosses_and_never_uses_its_own_fold(tmp_path, panel4_path
     assert not np.allclose(first["q50"], pd.read_parquet(moved / "fold_1" / "test_predictions.parquet")["q50"])
 
 
+def test_recal_fixes_biased_levels_without_seeing_its_own_fold(tmp_path, panel4_path):
+    from tft_vwap import recal
+    folds = {k: range(1100 + 40 * k, 1140 + 40 * k) for k in range(3)}
+    syms = tuple(f"S{i}" for i in range(6))
+    # every quantile 1% too high: about 69% of actuals fall below q50, not 50%
+    base = _fake_run(tmp_path, "base", folds, shift=0.01, symbols=syms, panel=panel4_path)
+    raw = pd.read_parquet(base / "fold_2" / "test_predictions.parquet")
+    out = recal.run(base, window=2, by=(), card={"purpose": "test"})
+    assert out.name == "base-cal" and not (out / "fold_0").exists()
+    cal = pd.read_parquet(out / "fold_2" / "test_predictions.parquet")
+    below = lambda f, c: (f["actual"] <= f[c]).mean()
+    assert abs(below(raw, "q50") - 0.5) > 0.1 and abs(below(cal, "q50") - 0.5) < 0.08
+    assert (cal["q10"] <= cal["q50"]).all() and (cal["q50"] <= cal["q90"]).all()
+    assert (cal[["symbol", "day_idx", "actual"]].values == raw[["symbol", "day_idx", "actual"]].values).all()
+    m = json.loads((out / "fold_1" / "metrics.json").read_text())
+    assert m["calibrated_on_folds"] == [0] and m["thin"] is True
+    assert json.loads((out / "fold_2" / "metrics.json").read_text())["calibrated_on_folds"] == [0, 1]
+    card = model_card.read(out)
+    assert card["label"] == "base-cal" and card["kind"] == "Recal" and card["status"] == "done"
+    # fold 2's own actuals never move its shifts
+    p2 = base / "fold_2" / "test_predictions.parquet"
+    f2 = raw.copy()
+    f2["actual"] *= 1.5
+    f2.to_parquet(p2, index=False)
+    again = recal.run(base, window=2, by=(), out=tmp_path / "again")
+    assert np.allclose(cal["q50"], pd.read_parquet(again / "fold_2" / "test_predictions.parquet")["q50"])
+    # by pm and width: groups below MIN_ROWS fall back to the all-rows shift, so it still runs
+    grouped = recal.run(base, window=2, by=("pm", "width"), out=tmp_path / "grouped")
+    g = pd.read_parquet(grouped / "fold_2" / "test_predictions.parquet")
+    assert np.allclose(g["q50"], pd.read_parquet(again / "fold_2" / "test_predictions.parquet")["q50"])
+
+
+def test_recal_groups_get_their_own_shift(monkeypatch):
+    from tft_vwap import recal
+    monkeypatch.setattr(recal, "MIN_ROWS", 10)
+    rng = np.random.default_rng(0)
+    frames, pm = {}, {}
+    for k in range(3):
+        n = 400
+        flag = np.arange(n) % 2 == 0
+        prev = np.full(n, 100.0)
+        # pm rows run 2% above their forecast, the others 2% below
+        act = prev * (1 + np.where(flag, 0.02, -0.02) + rng.normal(0, 0.005, n))
+        f = pd.DataFrame({"symbol": [f"S{i}" for i in range(n)], "day_idx": k,
+                          "prev_vwap": prev, "actual": act, "q50": prev})
+        frames[k], pm[k] = f, flag
+    out, used = recal.recalibrate(frames, [0.5], ["q50"], window=2, by=("pm",), pm=pm)
+    f = out[2]
+    assert used[2] == [0, 1]
+    assert np.allclose(f.loc[pm[2], "q50"], 102, atol=0.2)
+    assert np.allclose(f.loc[~pm[2], "q50"], 98, atol=0.2)
+
+
 def test_gbm_runs_the_contract_and_loads_in_compare(tmp_path, panel4_path):
     from tft_vwap import gbm
     cfg = _cfg(panel4_path, tmp_path, n_folds=2, fold_len=10, early_stop_len=5,
@@ -571,6 +624,72 @@ def test_gbm_runs_the_contract_and_loads_in_compare(tmp_path, panel4_path):
     if (d - 2) in s.index:
         assert row["f_ret_lag1"] == s.loc[d - 2, "vwap_pct_prev_day"] or np.isnan(row["f_ret_lag1"])
     assert row["actual"] == s.loc[d - 1, "target_tomorrow_vwap"]
+
+
+def test_gbm_optional_scores_both_states_from_one_model(tmp_path, panel4_path):
+    from tft_vwap import gbm
+    cfg = _cfg(panel4_path, tmp_path, n_folds=2, fold_len=10, early_stop_len=5,
+               premarket="optional", pm_groups="px,full", after_hours=True)
+    out = gbm.run(cfg, max_iter=10, tail_iter=15, open_all=True, vol=True,
+                  card={"label": "R7o"})
+    px = out.with_name(out.name + "~px")
+    assert (model_card.read(out)["label"], model_card.read(out)["forecast"]) == ("R7o", "09:45")
+    assert (model_card.read(px)["label"], model_card.read(px)["forecast"]) == ("R7o~px", "09:30")
+    assert compare.state_dir(out, "px") == px and (px / "summary.json").exists()
+    cj = json.loads((out / "config.json").read_text())
+    assert (cj["tail_iter"], cj["open_all"], cj["vol"]) == (15, True, True)
+    full = pd.read_parquet(out / "fold_1" / "test_predictions.parquet")
+    pxf = pd.read_parquet(px / "fold_1" / "test_predictions.parquet")
+    assert full[["symbol", "day_idx"]].equals(pxf[["symbol", "day_idx"]])
+
+    # one fit per fold: pre-market training rows twice (as is + full blank), scored twice
+    df = dataset.prepare(pd.read_parquet(panel4_path), extra=cfg.extra_reals)
+    feat = gbm.build_features(df, cfg, open_all=True, vol=True)
+    calls = []
+    real = gbm.fit_predict
+    gbm.fit_predict = lambda tr, tg, *a, **k: calls.append((tr, tg)) or real(tr, tg, *a, **k)
+    try:
+        fold = dataset.make_folds(df, cfg)[1]
+        gbm.run_fold(feat, df, cfg, fold, 5, None)
+    finally:
+        gbm.fit_predict = real
+    (tr, (t_full, t_px)), = calls
+    n_train = (feat["day_idx"] < fold.es_start).sum()
+    n_pm = ((feat["day_idx"] < fold.es_start) & (feat["f_pm_full_known"] == 1)).sum()
+    assert n_pm > 0 and len(tr) == n_train + n_pm
+    assert (t_px[gbm.FULL_COLS] == 0).all().all() and t_full["f_pm_full_known"].sum() > 0
+
+    # the 09:30 view blanks the full group only; the open and vol features are past/09:30 info
+    blank = gbm.blank_full(feat)
+    assert (blank[gbm.FULL_COLS] == 0).all().all()
+    assert blank["f_pm_last_pct_prev_vwap"].equals(feat["f_pm_last_pct_prev_vwap"])
+    row = feat.iloc[200]
+    s = df[df["symbol"] == row["symbol"]].set_index("day_idx")
+    d = int(row["day_idx"])
+    assert row["f_open_all"] == pytest.approx(
+        np.clip(s.loc[d, "gap_open_vs_prev_vwap_pct"], -0.3, 0.3))
+    past = s.loc[:d - 1, "vwap_pct_prev_day"].tail(5)
+    assert row["f_vol5"] == pytest.approx(past.std())  # through d-1 only
+
+
+def test_gbm_tail_iter_only_for_outer_levels(monkeypatch):
+    from tft_vwap import gbm
+    seen = {}
+
+    class Fake:
+        def __init__(self, loss, quantile, max_iter, **kw):
+            seen[quantile] = max_iter
+
+        def fit(self, x, y):
+            return self
+
+        def predict(self, x):
+            return np.zeros(len(x))
+
+    monkeypatch.setattr(gbm, "HistGradientBoostingRegressor", Fake)
+    t = pd.DataFrame({"f_a": [1.0, 2.0], "actual": [1.0, 1.0], "prev_vwap": [1.0, 1.0]})
+    gbm.fit_predict(t, t, [0.05, 0.15, 0.2, 0.5, 0.8, 0.85, 0.95], max_iter=200, tail_iter=600)
+    assert seen == {0.05: 600, 0.15: 600, 0.2: 200, 0.5: 200, 0.8: 200, 0.85: 600, 0.95: 600}
 
 
 def test_write_panel_helper_schema4_meta(tmp_path, panel_df):

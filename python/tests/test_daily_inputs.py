@@ -142,6 +142,27 @@ def test_quarters_split_and_chunk_runs_each_as_its_own_job(roots, monkeypatch):
         ext.fetch(date(2026, 2, 10), date(2026, 8, 5), chunk="year")
 
 
+def test_chunk_skips_finished_quarters_and_runs_quarters_in_parallel(roots, monkeypatch):
+    monkeypatch.setattr(ext, "fetch_ticker", lambda c, cfg, t, a, b, sink=None:
+                        ext.summarize(t, [[_bar(a.isoformat(), "08:00", 1, 1, 1, 1, 5)]], "f", sink))
+    d0, d1 = date(2026, 2, 10), date(2026, 8, 5)
+    dest = roots / "bars_1m"
+    # a quarter published by a run from before the done marker counts as done
+    (dest / "month=2026-02").mkdir(parents=True)
+    (dest / "month=2026-02" / "bars-2026-02-10_2026-03-31.parquet").write_bytes(b"")
+    # spawned processes would not see the monkeypatch: threads stand in for them
+    import concurrent.futures
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", concurrent.futures.ThreadPoolExecutor)
+    assert ext.fetch(d0, d1, tickers=["AAA"], workers=1, chunk="quarter", save_bars=dest, parallel=2) == 0
+    assert not ext.out_path(date(2026, 2, 10)).exists()  # skipped, not refetched
+    assert ext.out_path(date(2026, 4, 1)).exists() and ext.out_path(date(2026, 7, 1)).exists()
+    assert ext.done_marker(date(2026, 4, 1), date(2026, 6, 30)).exists()
+    calls = []
+    monkeypatch.setattr(ext, "_fetch_one", lambda q0, q1, **kw: calls.append(q0) or 0)
+    assert ext.fetch(d0, d1, tickers=["AAA"], chunk="quarter", save_bars=dest) == 0
+    assert calls == []  # every quarter done: a rerun fetches nothing
+
+
 def test_save_bars_writes_monthly_parquet(roots, monkeypatch):
     bars = {"AAA": [_bar("2026-09-30", "10:00", 1, 2, 1, 2, 10, vw=1.5), _bar("2026-10-01", "10:00", 2, 3, 2, 3, 20)],
             "BBB": [_bar("2026-10-01", "11:00", 5, 5, 5, 5, 7, vw=5.0)]}
@@ -462,6 +483,21 @@ def test_cpi_is_absent_before_month_plus_two():
     assert out[sessions[0]]["cpi_yoy"] is None  # January is not usable in February
     assert out[sessions[1]]["cpi_yoy"] == pytest.approx(0.10)
     assert out[sessions[1]]["ust_10y_chg_bp"] is None  # no yields table rows
+
+
+def test_cpi_missing_month_carries_the_previous_one():
+    # October 2025 was never published: December sessions (month-2 = October) use September,
+    # and January's core MoM vs September is the per-month rate over the 2-month gap
+    sessions = [date(2025, 12, 1), date(2026, 1, 2)]
+    infl = [(date(2024, 9, 1), 100.0, 200.0, None), (date(2024, 11, 1), 101.0, 201.0, None),
+            (date(2025, 9, 1), 103.0, 206.0, None), (date(2025, 11, 1), 104.0, 210.12, None)]
+    out = features.macro_series(sessions, [], infl)
+    assert out[sessions[0]]["cpi_yoy"] == pytest.approx(0.03)
+    assert out[sessions[1]]["cpi_yoy"] == pytest.approx(104.0 / 101.0 - 1)
+    assert out[sessions[1]]["core_cpi_mom"] == pytest.approx((210.12 / 206.0) ** 0.5 - 1)
+    far = features.macro_series([date(2026, 3, 2)], [], infl)  # January: 2 months past November
+    assert far[date(2026, 3, 2)]["cpi_yoy"] == pytest.approx(104.0 / 101.0 - 1)
+    assert features.macro_series([date(2026, 4, 1)], [], infl)[date(2026, 4, 1)]["cpi_yoy"] is None
 
 
 def test_macro_z252_is_past_only():

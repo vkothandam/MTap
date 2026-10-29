@@ -25,7 +25,9 @@
 #             across hosts; refused before 20:20 ET)
 #   inputs-backfill  the 5-year inputs, resumable and idempotent: back up out/extended_hours
 #             once, massive-ext refetch from MTAP_BACKFILL_FROM with minute bars, tickers_cs
-#             refresh, quarter-end shares, the economy series. Queue it after the evening job
+#             refresh, quarter-end shares, the economy series. Queue it after the evening job.
+#             Finished quarters are skipped; MTAP_BACKFILL_PARALLEL=N fetches N quarters at once;
+#             MTAP_BACKFILL_TO (default yesterday) leaves the later quarters to another host
 #   run ARGS  sourcing-py ARGS in a one-off py container
 #   queue     run the job named in STATE/run-next (one of build start daily evening stop
 #             status ws-test selftest morning night inputs-backfill; no arguments), then delete the file; nothing if it
@@ -228,7 +230,7 @@ inputs_backfill() {
     blog="$LOGS/inputs-backfill-$(date +%F).log"
     edge="${MTAP_BACKFILL_FROM:-}"
     [ -n "$edge" ] || { log "inputs-backfill: MTAP_BACKFILL_FROM (the first date with minute aggs) is not set in host.env"; return 1; }
-    yday="$(date -d yesterday +%F)"
+    yday="${MTAP_BACKFILL_TO:-$(date -d yesterday +%F)}"
     log "inputs-backfill: from $edge to $yday (log $blog)"
     src="$MTAP_DATA_DIR/out/extended_hours"; dst="$MTAP_DATA_DIR/backup/extended_hours-pre-vwap"
     if [ -d "$dst" ]; then
@@ -242,7 +244,7 @@ inputs_backfill() {
         fi
     fi
     for step in \
-        "massive-ext fetch --chunk quarter --allow-failures 50 --save-bars /data/bars_1m${MTAP_BARS_UNIVERSE:+ --bars-universe $MTAP_BARS_UNIVERSE} --fromdate $edge --todate $yday" \
+        "massive-ext fetch --chunk quarter --parallel ${MTAP_BACKFILL_PARALLEL:-1} --allow-failures 50 --save-bars /data/bars_1m${MTAP_BARS_UNIVERSE:+ --bars-universe $MTAP_BARS_UNIVERSE} --fromdate $edge --todate $yday" \
         "run massive_tickers_cs" \
         "run massive_shares" \
         "run massive_treasury_yields" \

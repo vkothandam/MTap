@@ -260,7 +260,7 @@ def quarters(d0: date, d1: date) -> list[tuple[date, date]]:
 def fetch(d0: date, d1: date, *, tickers: list[str] | None = None, workers: int | None = None,
           only_dates: set[date] | None = None, keep: bool = False, allow_failures: int = 0,
           chunk: str | None = None, save_bars: Path | str | None = None,
-          bars_universe: set[str] | None = None) -> int:
+          bars_universe: set[str] | None = None, parallel: int = 1) -> int:
     """Fetch every ticker for [d0, d1], then write the per-date files. 0 when complete.
 
     chunk="quarter" runs each calendar quarter as its own job (so a backfill resumes at the
@@ -268,16 +268,51 @@ def fetch(d0: date, d1: date, *, tickers: list[str] | None = None, workers: int 
     (failures.jsonl and the job folder are left; rerun to retry them). save_bars=DIR also
     keeps the raw minute bars as DIR/month=YYYY-MM/*.parquet (month in New York time),
     only for bars_universe when given (the panel's symbols; the other tickers still get their
-    summaries)."""
+    summaries).
+
+    With chunk="quarter", a quarter that already finished (its done marker, or its published
+    bars file) is skipped, so a rerun of the whole range only fetches what is left, and
+    parallel=N runs N quarters at a time, each in its own process (one process is CPU-bound
+    on one core)."""
     if chunk not in (None, "quarter"):
         raise ValueError(f"unknown --chunk {chunk!r} (only: quarter)")
     pieces = quarters(d0, d1) if chunk == "quarter" else [(d0, d1)]
-    rc = 0
-    for q0, q1 in pieces:
-        rc = max(rc, _fetch_one(q0, q1, tickers=tickers, workers=workers, only_dates=only_dates,
-                                keep=keep, allow_failures=allow_failures, save_bars=save_bars,
-                                bars_universe=bars_universe))
-    return rc
+    if chunk == "quarter":
+        done = [p for p in pieces if _quarter_done(*p, save_bars)]
+        if done:
+            print(f"massive-ext: {len(done)} quarter(s) already done, skipped: "
+                  f"{' '.join(f'{a}_{b}' for a, b in done)}", flush=True)
+        pieces = [p for p in pieces if p not in done]
+    kw = dict(tickers=tickers, workers=workers, only_dates=only_dates, keep=keep,
+              allow_failures=allow_failures, save_bars=save_bars, bars_universe=bars_universe)
+    run = _fetch_quarter if chunk == "quarter" else _fetch_one
+    if parallel <= 1 or len(pieces) <= 1:
+        return max([run(q0, q1, **kw) for q0, q1 in pieces], default=0)
+    from concurrent.futures import ProcessPoolExecutor
+
+    with ProcessPoolExecutor(max_workers=min(parallel, len(pieces))) as procs:
+        return max(f.result() for f in [procs.submit(run, q0, q1, **kw) for q0, q1 in pieces])
+
+
+def _fetch_quarter(d0: date, d1: date, **kw) -> int:
+    """_fetch_one, unless the quarter was finished meanwhile (by another host sharing the
+    backfill: its published bars file is on the share)."""
+    if _quarter_done(d0, d1, kw.get("save_bars")):
+        print(f"massive-ext {d0}..{d1}: finished meanwhile, skipped", flush=True)
+        return 0
+    return _fetch_one(d0, d1, **kw)
+
+
+def done_marker(d0: date, d1: date) -> Path:
+    return config.state_root() / "massive_ext" / "done" / f"{d0}_{d1}"
+
+
+def _quarter_done(d0: date, d1: date, save_bars) -> bool:
+    """Finished before: the done marker, or (runs from before the marker) the quarter's
+    published bars file, which is written only after its date files."""
+    if done_marker(d0, d1).exists():
+        return True
+    return bool(save_bars) and any(Path(save_bars).glob(f"month=*/bars-{d0}_{d1}.parquet"))
 
 
 _BAR_COLS = ("ticker", "t", "o", "h", "l", "c", "v", "vw", "n")
@@ -298,8 +333,11 @@ def _write_bars_stage(path: Path, rows: list[tuple]) -> None:
 
 def _publish_bars(job: Path, dest: Path, d0: date, d1: date) -> int:
     """Combine the staged per-ticker bars into one parquet file per New York month under
-    dest/month=YYYY-MM/ (written next to the target, then moved). epoch_ms is a naive UTC
+    dest/month=YYYY-MM/. DuckDB writes to a local temp dir (it can't lock files on an SMB
+    share), then each file is copied next to the target and moved. epoch_ms is a naive UTC
     timestamp: timezone('UTC', ..) makes it an instant, then New York local time gives the month. Returns files written."""
+    import tempfile
+
     import duckdb
 
     files = [str(p) for p in (job / "bars").glob("*.parquet") if p.stat().st_size]
@@ -310,15 +348,20 @@ def _publish_bars(job: Path, dest: Path, d0: date, d1: date) -> int:
     con.execute("CREATE TABLE m AS SELECT *, strftime(timezone('America/New_York', timezone('UTC', epoch_ms(t))), '%Y-%m') AS mo "
                 "FROM read_parquet(?)", [files])
     n = 0
-    for (mo,) in con.execute("SELECT DISTINCT mo FROM m ORDER BY 1").fetchall():
-        d = dest / f"month={mo}"
-        d.mkdir(parents=True, exist_ok=True)
-        final = d / f"bars-{d0}_{d1}.parquet"
-        tmp = d / f".{final.name}.tmp"
-        con.execute(f"COPY (SELECT {', '.join(_BAR_COLS)} FROM m WHERE mo = ? ORDER BY ticker, t) "
-                    f"TO '{tmp}' (FORMAT parquet, COMPRESSION zstd)", [mo])
-        os.replace(tmp, final)
-        n += 1
+    with tempfile.TemporaryDirectory(prefix="mtap-bars-") as local:
+        for (mo,) in con.execute("SELECT DISTINCT mo FROM m ORDER BY 1").fetchall():
+            d = dest / f"month={mo}"
+            d.mkdir(parents=True, exist_ok=True)
+            final = d / f"bars-{d0}_{d1}.parquet"
+            tmp = d / f".{final.name}.tmp"
+            src = Path(local) / final.name
+            con.execute(f"COPY (SELECT {', '.join(_BAR_COLS)} FROM m WHERE mo = ? ORDER BY ticker, t) "
+                        f"TO '{src}' (FORMAT parquet, COMPRESSION zstd)", [mo])
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, final)
+            src.unlink()
+            n += 1
+    con.close()
     return n
 
 
@@ -373,7 +416,7 @@ def _fetch_one(d0: date, d1: date, *, tickers, workers, only_dates, keep, allow_
                     _write_atomic(staging / f"{name}.jsonl", [json.dumps(r) + "\n" for r in rows])
                     ok += 1
                 if processed % 250 == 0:
-                    print(f"  {processed}/{len(todo)} fetched ({len(failed)} failed)", flush=True)
+                    print(f"  {d0}: {processed}/{len(todo)} fetched ({len(failed)} failed)", flush=True)
                 submit_next()
 
     _write_atomic(job / "failures.jsonl", [json.dumps({"ticker": t, "error": e}) + "\n" for t, e in failed.items()])
@@ -389,8 +432,11 @@ def _fetch_one(d0: date, d1: date, *, tickers, workers, only_dates, keep, allow_
     written = finalize(job, only_dates=only_dates)
     bars = _publish_bars(job, Path(save_bars), d0, d1) if save_bars else 0
     print(f"done: {ok} fetched now, {written} date file(s) written" + (f", {bars} bars file(s)" if save_bars else ""))
-    if not keep and not failed:
-        shutil.rmtree(job)
+    if not failed:
+        done_marker(d0, d1).parent.mkdir(parents=True, exist_ok=True)
+        done_marker(d0, d1).touch()
+        if not keep:
+            shutil.rmtree(job)
     return 0
 
 

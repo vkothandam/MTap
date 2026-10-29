@@ -556,6 +556,7 @@ def _build_market_daily(con) -> tuple[int, str]:
 
 Z_WINDOW = 252
 Z_MIN = 126  # fewest past sessions for a z-score
+CPI_CARRY = 2  # months a missing CPI release carries the previous one
 
 
 def _month_idx(d: date) -> int:
@@ -581,7 +582,9 @@ def macro_series(sessions: list[date], yields: list[tuple], infl: list[tuple], *
     session's used value, in bp; slopes in % points; z252 is the 10y level vs the mean/std of
     the previous Z_WINDOW used values (today excluded; NULL under Z_MIN).
     infl: (month_start, cpi, cpi_core, cpi_yoy_field) rows. Month M is known from the first
-    session of month M+2, i.e. on session d the latest month is month(d)-2."""
+    session of month M+2, i.e. on session d the latest month is month(d)-2; a month that was
+    never published carries the one before (up to CPI_CARRY months), and core_cpi_mom across
+    such a gap is the per-month rate."""
     ys = sorted((_as_date(r[0]), *r[1:4]) for r in yields if r[0] is not None)
     used: list[tuple | None] = []
     j, cur = 0, None
@@ -592,6 +595,11 @@ def macro_series(sessions: list[date], yields: list[tuple], infl: list[tuple], *
             j += 1
         used.append(cur if cutoff is not None else None)
     cpi = {_month_idx(_as_date(r[0])): r for r in infl if r[0] is not None}
+
+    def latest(m: int):
+        """The newest published month at or before m, at most CPI_CARRY months back (a
+        release that never came, e.g. October 2025 in the shutdown, carries the last one)."""
+        return next((x for x in range(m, m - CPI_CARRY - 1, -1) if x in cpi), None)
 
     def level(m: int, k: int):  # k: 1 = cpi, 2 = core
         r = cpi.get(m)
@@ -626,14 +634,16 @@ def macro_series(sessions: list[date], yields: list[tuple], infl: list[tuple], *
                 mu = sum(hist) / len(hist)
                 sd = math.sqrt(sum((h - mu) ** 2 for h in hist) / len(hist))
                 row["ust_10y_z252"] = (y10 - mu) / sd if sd > 0 else None
-        m = _month_idx(d) - 2
-        row["cpi_yoy"], row["core_cpi_yoy"] = yoy(m, 1), yoy(m, 2)
-        prev_yoy = yoy(m - 1, 1)
-        if row["cpi_yoy"] is not None and prev_yoy is not None:
-            row["cpi_yoy_chg"] = row["cpi_yoy"] - prev_yoy
-        c0, c1 = level(m, 2), level(m - 1, 2)
-        if c0 is not None and c1:
-            row["core_cpi_mom"] = c0 / c1 - 1
+        m = latest(_month_idx(d) - 2)
+        if m is not None:
+            row["cpi_yoy"], row["core_cpi_yoy"] = yoy(m, 1), yoy(m, 2)
+            p = latest(m - 1)
+            prev_yoy = yoy(p, 1) if p is not None else None
+            if row["cpi_yoy"] is not None and prev_yoy is not None:
+                row["cpi_yoy_chg"] = row["cpi_yoy"] - prev_yoy
+            c0, c1 = level(m, 2), level(p, 2) if p is not None else None
+            if c0 is not None and c1:
+                row["core_cpi_mom"] = (c0 / c1) ** (1.0 / (m - p)) - 1  # per month over a gap
         out[d] = row
     return out
 

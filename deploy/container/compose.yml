@@ -39,10 +39,10 @@ services:
   redis:
     image: redis:7-alpine
     profiles: [etrade]
-    # Memory only, 2 GB, noeviction (as scripts/schedule/redis-mtap.conf). Flags, not a
+    # Memory only, 4 GB, noeviction (the iMac's redis-mtap.conf says 2 GB; 4000 entries of up to ~490 KB is ~1.95 GB). Flags, not a
     # mounted file: the redis user could not read a file on the NAS's ACL share.
     command: ["redis-server", "--bind", "0.0.0.0", "--protected-mode", "no", "--save", "",
-              "--appendonly", "no", "--dir", "/tmp", "--maxmemory", "2gb",
+              "--appendonly", "no", "--dir", "/tmp", "--maxmemory", "4gb",
               "--maxmemory-policy", "noeviction"]
     restart: unless-stopped
     logging: *logging

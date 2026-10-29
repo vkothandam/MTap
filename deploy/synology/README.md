@@ -120,7 +120,12 @@ idempotent, so after a failure or a stop, queue it again.
 1. Put the first date with minute aggs (spike S5) in `host.env`: `MTAP_BACKFILL_FROM=YYYY-MM-DD`.
    To keep minute bars only for the panel's stocks (~25–65 GB instead of up to 145 GB), also set
    `MTAP_BARS_UNIVERSE=/data/out/tft/panel.parquet` (a panel copied to the share); unset, every
-   ticker's bars are kept. Check the free space on volume2 first.
+   ticker's bars are kept. Check the free space on volume2 first. `MTAP_BACKFILL_PARALLEL=4`
+   fetches 4 quarters at once, one process each (one process keeps a single core busy; the
+   DS925+ has 8). A rerun skips the quarters already finished. To share the load with the Mac,
+   set `MTAP_BACKFILL_TO` (e.g. 2023-12-31) and run the later quarters there with the same
+   `massive-ext fetch` command and `MTAP_DATA_ROOT=/Volumes/Backups/MTap-Data`; a quarter
+   either host finished (its `bars_1m` file) is skipped by the other.
 2. After `push.sh`, queue `build` once (the new sources need the new image).
 3. Queue it **after the 13:15 `evening` job** (all jobs share one lock; the queue skips
    a run while another job holds it and takes the file on a later 5-minute tick):
@@ -128,7 +133,7 @@ idempotent, so after a failure or a stop, queue it again.
    ssh vijayan.synology@192.168.1.100 'echo inputs-backfill > /volume2/Backups/MTap-State/run-next'
    ```
 4. It copies `out/extended_hours` to `MTap-Data/backup/extended_hours-pre-vwap` (once), runs
-   `massive-ext fetch --chunk quarter --allow-failures 50 --save-bars /data/bars_1m`, refreshes
+   `massive-ext fetch --chunk quarter --parallel N --allow-failures 50 --save-bars /data/bars_1m`, refreshes
    `tickers_cs`, fetches the quarter-end share snapshots, then the economy series.
    The log is `MTap-State/logs/inputs-backfill-<date>.log`.
 

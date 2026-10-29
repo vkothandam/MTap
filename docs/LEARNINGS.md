@@ -22,6 +22,7 @@ Every section carries a `Tags:` line. To find every section on a subject, search
 | `tag-sourcing-host` | **Topic: Where the sourcing runs.** The iMac, the NAS containers, later a VM: what differs between hosts |
 | `tag-ml-daily` | **Topic: Daily model experiments.** Training runs of the daily model (`ml/tft_vwap`) compared on the same test days |
 | `tag-chartiq` | **Topic: Live pre-market sources.** E*TRADE ChartIQ, the watchlist feed and Massive's snapshot before the open: what each gives, how fast |
+| `tag-edgar-results` | **Topic: Results release dates (SEC EDGAR).** Which 8-Ks are earnings releases, which session they date, and how that was checked |
 
 ## Adding a learning
 
@@ -673,6 +674,131 @@ new container finds one. Then the production `daily` wrote 10-23 (12,557 rows; 1
 evening compact on real data. The Monday 10-26 checks in the runbook cover them.
 
 
+## Results release dates (SEC EDGAR)
+
+Tags: `tag-edgar-results`
+
+Earnings windows in the daily panel (`is_earnings_day`, `sessions_to_earnings`, the 8-K windows of
+[ml/FEATURES.md](../ml/FEATURES.md)) are dated by the company's **results announcement**, not the
+quarter end and not the 10-Q/10-K filing. The source is `sourcing-py etrade fetch-edgar` →
+`sec_edgar_filings` and `results_announcements` in `state/etrade/fundamentals.duckdb`. Checks
+were inline DuckDB queries (commit 13dc536, 2026-10-10); the quarter-end lag was added on
+2026-10-27.
+
+### 2026-10 Which 8-Ks are releases, and which session they date (EDGAR 2021-10 → 2026-10)
+
+Tags: `tag-edgar-results` `tag-timestamps`
+
+**Short answers:**
+- **Only 8-K item 2.02 ("Results of Operations and Financial Condition") is used.** The filer ticks
+  it, and it covers quarterly and annual results alike (there is no separate annual item). Every
+  other 8-K item (9.01 exhibits, 7.01 Reg FD, 8.01 other events, 5.02 officers, 1.01 agreements …)
+  is ignored. 8-K/A amendments are not releases.
+- **The date is the announcement:** the EDGAR acceptance time, mapped to the first session that
+  can trade on it (accepted before 16:00 ET → that session; at or after 16:00 → the next one). It
+  is **not** the quarter end, which is 4–7 weeks earlier, and not the 10-Q/10-K filing, which is
+  later for 30–40% of quarters.
+- The price check confirms it: the move peaks on the mapped session t0, 66% of the time.
+
+**Selection.** Snapshot of 148,765 8-Ks; 30.5% carry item 2.02.
+
+| item | 8-Ks | | item | 8-Ks |
+|---|---|---|---|---|
+| 9.01 exhibits | 119,354 | | 5.02 officers | 26,419 |
+| **2.02 results** | **45,443** | | 1.01 agreements | 22,079 |
+| 7.01 Reg FD | 39,656 | | 5.07 votes | 12,459 |
+| 8.01 other | 35,153 | | 2.03 debt | 8,192 |
+
+- 2.02 comes with 9.01 (the press release exhibit) in 67.5%, with 7.01 + 9.01 in 18.4%, with 8.01 +
+  9.01 in 4.5%, alone in 1.7%.
+- 2.02s per company per year: 4 for 2,475 companies; 5 for 442 (a prelim or update); 0–3 for 584
+  (new listings, delistings, or foreign filers); 6+ for ~170.
+- **Scheduled vs unscheduled.** The scheduled release of a quarter is the last 2.02 before the
+  first 10-Q/10-K within −1…+50 sessions (`REPORT_MAX`). The rest (prelims, guidance updates) are
+  **unscheduled** and get post-event windows only, because they can't be known in advance. Counts:
+  42,726 scheduled (3,720 symbols), 2,835 unscheduled.
+- Timing of the releases: after the close 26,074, before the open 17,686, during market hours 1,801.
+
+**Release vs quarter end vs filing** (2.02 matched to the first 10-Q/10-K filed −1…+75 days after it
+with a period end before it; releases since 2024-01; added 2026-10-27):
+
+| days after the quarter end | n | P5 | P25 | median | P75 | P95 |
+|---|---|---|---|---|---|---|
+| 2.02 release, quarterly (10-Q) | 27,311 | 18 | 29 | **36** | 38 | 45 |
+| 2.02 release, annual (10-K) | 10,702 | 13 | 34 | **51** | 63 | 88 |
+| 10-Q filed | 27,311 | 25 | 32 | 37 | 40 | 45 |
+| 10-K filed | 10,702 | 41 | 52 | 58 | 72 | 90 |
+
+- The 8-K's own `report_date` is the event date (= the filing date in 88–91%), not the period end
+  (0.2–0.3%). The period end comes only from the 10-Q/10-K.
+- 10-Q/10-K filing date minus the latest 2.02 (E*TRADE's filing dates match EDGAR's in 99.88%,
+  n = 32,069): 10-Q same day 57.8%, 1–7 days 12%, 8–30 days 12.1%, 31–100 days 4.0%, no 2.02 13.8%;
+  10-K same day 42.9%, 8–30 days 23.7%, no 2.02 16.2%. **So the old filing-dated windows were
+  wrong for ~30–40% of quarters**, which is why the panel switched to 2.02.
+
+Examples (ET):
+
+| stock | quarter end | 2.02 accepted | t0 session | 10-Q/10-K filed |
+|---|---|---|---|---|
+| AAPL | 2025-09-27 | 2025-10-30 16:30 | 10-31 | 10-K 2025-10-31 |
+| AAPL | 2025-12-27 | 2026-01-29 16:30 | 01-30 | 10-Q 2026-01-30 |
+| JPM | 2025-09-30 | 2025-10-14 06:30 | 10-14 | 10-Q 2025-11-04 (3 weeks later) |
+| JPM | 2025-12-31 | 2026-01-13 06:41 | 01-13 | 10-K 2026-02-13 (a month later) |
+| MSFT | 2025-12-31 | 2026-01-28 16:04 | 01-29 | 10-Q 2026-01-28 (same day) |
+| NVDA | 2026-01-25 | 2026-02-25 16:31 | 02-26 | 10-K 2026-02-25 |
+| WMT | 2026-01-31 | 2026-02-19 06:59 | 02-19 | 10-K 2026-03-13 (3 weeks later) |
+
+**Validation against price moves.** Median |close-to-close move| by session offset from t0,
+scheduled releases with an acceptance time (n ≈ 10,250):
+
+| offset | t−3 | t−2 | t−1 | **t0** | t+1 | t+2 | t+3 |
+|---|---|---|---|---|---|---|---|
+| median move | 1.63% | 1.65% | 1.81% | **4.86%** | 2.38% | 2.00% | 1.79% |
+
+- t0 is 5.6× a normal day, and 49% of t0 moves are over 5%.
+- The same after-close releases dated by their filing date instead: t0 1.93%, t+1 5.13%. That is
+  the one-session error the acceptance-time rule fixes.
+- Unscheduled releases: t0 3.68%. Old E*TRADE 10-Q dates: t0 2.71%, t+1 2.69% (the move smeared
+  over two days).
+- Which of t−1/t0/t+1 has the biggest move (liquid stocks, > $20M/day, n = 4,814): t0 66.0%, t−1
+  14.5%, t+1 19.4%. Before the open 67.0%; after the close 65.6%; market hours (n = 75) 53.3%.
+
+**Acceptance time: use the header page, not the JSON.** The submissions JSON
+`acceptanceDateTime` is unreliable and depends on the filer agent: AAPL 16:30:28 ET on 2026-07-30
+reads `2026-07-31T00:30:28Z` (+8 h, not +4), AAPL 2026-01-29 +10 h, JPM 06:30:38 reads 14:30:38Z;
+Alphabet 21:15:54 reads 01:15:54Z (right). AAPL's own-prefix filings give an impossible time in 399
+of 459. The `<ACCEPTANCE-DATETIME>` in `-index-headers.html` is ET and right in every spot check, so
+that is what is stored (`accepted_at`, ET).
+
+**Coverage** (3,763 panel symbols): 79% have 2.02s, 3% only partly, 18% none.
+- ADRs (DR): 252 of 265 have none. Foreign private issuers file 6-K, not 8-K. (ADRs are out of
+  the panel since 2026-10-27.)
+- Common stocks: 422 of 3,498 have none: 323 companies file 10-Qs but never tick 2.02, 35 tickers
+  aren't in SEC's ticker list (BK → BNY), 7 are banks that file elsewhere (OZK, PFBC). These
+  have no earnings windows (every day is Normal).
+- **Point-in-time estimate** (`days_to_results_est`, `--earnings pit`): the next release is
+  expected at the year-ago release + 364 days (same weekday), counted as Eve while up to
+  `OVERDUE_MAX` = 10 sessions overdue. It uses only releases made by the day. Against the real
+  dates it is exact 37.5%, within ±1 session 53.4%, within ±5 83.6% (n = 23,781).
+- Wider CS universe: 5,056 symbols, 71.1% with a 2.02.
+
+**Fetch cost.** EDGAR allows 10 requests/s. A first run is ~2 h at 8/s (5,358 CIK submissions ~11
+min, then one header page per 2.02, 45k pages ~95 min); a daily run only fetches new filings. The
+2026-10-27 5-year load (51,115 pages) ran with `EDGAR_WORKERS=16 EDGAR_REQUESTS_PER_SEC=9`.
+
+**How to run it again.**
+```sql
+-- releases per session offset: results_announcements joined to daily_bars on (symbol, t0 ± k)
+SELECT kind, timing, count(*) FROM results_announcements GROUP BY ALL;
+-- release vs quarter end: 8-Ks with list_contains(string_split(items, ','), '2.02'), joined to the
+-- first 10-Q/10-K of the same cik filed −1…+75 days later with report_date < the 8-K's filing_date
+```
+
+**Caveats and follow-ups.**
+- Releases on the item 2.02 checkbox only: a company that announces in a 7.01/8.01 8-K without
+  ticking 2.02 is missed.
+- Incremental daily-index fetch (instead of per-CIK submissions) is still open.
+
 ## Live pre-market sources
 
 Tags: `tag-chartiq`
@@ -773,29 +899,46 @@ Training runs of the daily model (`ml/tft_vwap`) compared with each other. The s
 parameters and the candidate inputs are in [ml/FEATURES.md](../ml/FEATURES.md), sections 12–17.
 This topic keeps what each comparison found.
 
-### 2026-10 5-year retrain series R0–R8 (planned; results to be added here)
+### 2026-10 5-year retrain series R0–R8 (R0, R1, R1a, R1c, R6c done; R1c is the base; R4 running)
 
 Tags: `tag-ml-daily`
 
 The series that tests the new inputs and the same-morning forecasts on 5 years. The reasons are
-in [ml/MODEL-STRATEGY.md](../ml/MODEL-STRATEGY.md) Q11–Q16; the inputs in
+in [ml/MODEL-STRATEGY.md](../ml/MODEL-STRATEGY.md) Q11–Q17; the inputs in
 [ml/FEATURES.md](../ml/FEATURES.md).
-- **Panel:** `out/tft/exp5y/panel.parquet` (schema 4), frozen for the whole series.
-- **Testing:** 16 walk-forward folds of 63 sessions (about 2022-11 → 2026-10), each with a
-  21-session early-stop block in front; fold 0 trains on about 1 year, fold 15 on about 4.6.
-  Ablations use the 8 odd folds.
+- **Panels** (schema 4, 4,279,044 rows, 4,356 CS stocks, 2021-10-21 → 2026-10-26):
+  - R0: `out/tft/exp5y/panel.parquet` (exported 10-28 03:08Z, `1c55e0b`).
+  - R1 on: `out/tft/exp5y-r1/panel.parquet` (10-28 17:20Z). Same rows, and every column R0
+    uses is identical; only the new groups differ. **The R0 panel's macro and after-hours
+    inputs were all 0**: the yields, inflation and refetched extended-hours files were on the
+    NAS but had not been loaded into the DuckDB before the export (`ingest-reference`,
+    `ingest-eod --extended-only`, `derive-features` fixed it). R0 doesn't use them, so R0 is
+    unaffected.
+  - Also fixed on the way: CPI for 2025-10 was never published (shutdown), so every December
+    2025 session had `cpi_yoy` = 0. A missing month now carries the previous one for up to 2
+    months (`CPI_CARRY`), and `core_cpi_mom` across the gap is the per-month rate.
+- **Testing:** 15 walk-forward folds of 63 sessions, 2023-01-20 → 2026-10-26, each with a
+  21-session early-stop block in front and at least 252 training sessions before fold 0
+  (`--n-folds 15 --fold-len 63 --early-stop-len 21 --min-train-sessions 252 --test-end 1713`).
+  Fold 0 trains on about 1.2 years, fold 14 on about 4.7. Ablations and the pre-market bake-off
+  use the 7 odd folds (1, 3, …, 13).
+- **Trained models** are not in git (`ml/runs/` holds 3 GB of checkpoints and predictions);
+  they are copied to the NAS at `PProjects/MTap/ml/runs/`.
 
 | run | inputs | folds | result |
 | --- | --- | --- | --- |
-| R0 | 5-year baseline, no new groups | 0–15 | |
-| R1 | R0 + market/sector + macro + after-hours + session shape | 0–15 | |
-| R4 | A: R1 + pre-market `optional` (full off 50%, prices off 25%) | 8 odd | |
-| R4p | B: R1 + prices always on | 8 odd | |
-| R4f | B: R1 + prices and full always on | 8 odd | |
-| R6p, R6f | C: HGB overlays on R1 (prices; everything) | 8 odd | |
-| R7 | plain HGB per quantile, R1 inputs | 0–15 | |
-| R5 | the final model(s), the winning way per forecast | 0–15 | |
-| R8 | screener on R5's out-of-fold forecasts vs naive ATR and others | 8 odd | |
+| R0 `20261028-030847Z-return-4438sym` | 5-year baseline, no new groups | 0–14 | skill vs naive 26.6%; beats production by 6.2% on shared days (CI clear of 0) |
+| R1 `20261028-172535Z-return-4438sym` | R0 + market/sector + macro + after-hours + session shape | 0–14 | worse than R0: loss +2.5% (CI clear of 0), worse in 7 folds, better in none (section below) |
+| R1a `20261028-214331Z-return-4438sym` | R1 − macro | 0–6 (paused after fold 6, 10-28 16:32, to start R1c) | worse than R0: +0.000209 (+0.000116 … +0.000318), worse in folds 1 and 5, better in none; no clear difference from R1; P10–P90 74.9% vs 79.6%; market's encoder weight rises to 17–49% |
+| R1c `20261028-233305Z-return-4438sym` | R1 − macro − market (after-hours, session shape) | 0–14 | **better than R0:** −0.58%, R0 − R1c +0.000046 (+0.000021 … +0.000071); earnings days +0.000339 (+0.000287 … +0.000387); better in 7 folds, worse in none; skill 27.0%. **The base** for R4 on (section below) |
+| R6c `20261028-030847Z-return-4438sym-event` | event overlay on R0: band scale from yesterday's market, sector-vs-market and 2y/10y yield moves beyond 2σ | 1–14 | no gain: −0.000002 (−0.000004 … −0.000000), R0 slightly better; coefficients flip sign between folds (section below) |
+| R4 `20261029-040858Z-return-4438sym` | A: R1c + pre-market `optional` (25% night, 25% prices only, 50% everything) | 7 odd | done 10-29 00:06. Night state ties R1c (+0.10%, CI spans 0; earnings days worse); 09:30 and 09:45 states lose to R6p/R6f (section below) |
+| R4p `20261029-090243Z-return-4438sym` | B: R1c + prices always on, no `issue_type` | 7 odd | 0.70% better than R4~px (CI clear), 0.35% worse than R6p (CI clear) |
+| R4f `20261029-122046Z-return-4438sym` | B: R1c + prices and full always on, no `issue_type` | 7 odd | done 10-29 08:17 PT: 09:45 loss 0.007938, 1.0% better than R4, 0.55% worse than R6f (both CIs clear); P5–P95 89.8% |
+| R6p, R6f `20261028-233305Z-return-4438sym-overlay-px`, `-overlay-full` | C: HGB overlays on R1c (prices; everything) | 7 odd | **leading**: R6p 1.05% better than R4~px, R6f 1.55% better than R4 (CIs clear) |
+| R7, R7f | plain HGB per quantile, R1c inputs; R7f + pre-market | 0–14; 7 odd | queued |
+| R5 | the final model(s), the winning way per forecast | 0–14 | |
+| R8 | screener on R5's out-of-fold forecasts vs naive ATR and others | 7 odd | |
 
 **How each is judged:**
 - `tft-vwap-compare` against R0, and against production `20261005-025909Z` on the shared dates
@@ -803,10 +946,435 @@ in [ml/MODEL-STRATEGY.md](../ml/MODEL-STRATEGY.md) Q11–Q16; the inputs in
   fold, earnings vs other days, coverage per quantile.
 - **R1's groups:** variable-selection weights per group and fold, and R1 vs R0 per fold. A
   drop-one run only if R1 loses somewhere or a group has near-zero weight (macro first).
-- **Pre-market, per forecast** (night, 09:30, 09:45), on the 8 odd folds and rows with pre-market
-  data: night R4 vs R1; 09:30 R4 vs R4p vs R6p; 09:45 R4 vs R4f vs R6f. Lowest pinball wins
+- **Pre-market, per forecast** (night, 09:30, 09:45), on the 7 odd folds and rows with pre-market
+  data: night R4 vs the base (R1c); 09:30 R4 vs R4p vs R6p; 09:45 R4 vs R4f vs R6f. Lowest pinball wins
   when its CI is clear; otherwise fewer models (A, then C, then B).
 - **Screener (R8):** kept only if its top 20 beat the naive ATR top 20 with a CI clear of 0.
+
+### 2026-10 R0, the 5-year baseline (test sessions 2023-01-20 to 2026-10-26)
+
+Tags: `tag-ml-daily`
+
+**The run.** `20261028-030847Z-return-4438sym`, from `uv run tft-vwap --panel
+../out/tft/exp5y/panel.parquet --earnings exact --n-folds 15 --test-end 1713` (folds 63/21/252).
+- Stock inputs, plus exact earnings windows and series breaks; no market, macro, after-hours,
+  session-shape or pre-market inputs.
+- 15 folds, 4–13 epochs each (early stop, patience 3), 3.9 h of training in all. Paused
+  twice and resumed (`--resume ... --num-workers 8`); resumed folds match the others.
+
+**Pooled test** (3,169,270 forecasts, 4,218 stocks):
+
+| measure | R0 |
+| --- | --- |
+| pinball loss | 0.007884 (naive 0.010738): skill 26.6% |
+| P5–P95 coverage (aim 90%) | 88.9% (5.5% below P5, 5.6% above P95) |
+| direction of `q50` | 59.1% |
+| MAPE skill vs naive | 5.1% |
+
+**By fold.** Skill is steady across regimes, from 24.4% to 28.4%. The 2023 folds are the
+weakest: they train on only 1.2–1.7 years.
+
+| fold | test sessions | skill | P5–P95 | direction |
+| --- | --- | --- | --- | --- |
+| 0 | 2023-01-20 → 04-20 | 26.4% | 90.8% | 60.4% |
+| 1 | 2023-04-21 → 07-21 | 24.4% | 89.9% | 57.0% |
+| 2 | 2023-07-24 → 10-19 | 24.4% | 88.2% | 56.8% |
+| 3 | 2023-10-20 → 2024-01-22 | 26.5% | 88.7% | 59.5% |
+| 4 | 2024-01-23 → 04-22 | 26.2% | 87.8% | 59.3% |
+| 5 | 2024-04-23 → 07-23 | 27.5% | 89.2% | 59.4% |
+| 6 | 2024-07-24 → 10-21 | 26.1% | 90.0% | 57.8% |
+| 7 | 2024-10-22 → 2025-01-23 | 27.3% | 87.6% | 60.2% |
+| 8 | 2025-01-24 → 04-24 (April sell-off) | 26.8% | 88.0% | 60.5% |
+| 9 | 2025-04-25 → 07-25 | 25.5% | 92.6% | 58.5% |
+| 10 | 2025-07-28 → 10-23 | 26.8% | 87.1% | 59.0% |
+| 11 | 2025-10-24 → 2026-01-26 | 28.4% | 90.7% | 60.8% |
+| 12 | 2026-01-27 → 04-27 | 27.4% | 87.0% | 59.3% |
+| 13 | 2026-04-28 → 07-28 | 27.6% | 88.1% | 59.0% |
+| 14 | 2026-07-29 → 10-26 | 26.8% | 87.5% | 58.8% |
+
+**Variable importance** (encoder, mean over folds): stock inputs 0.81, earnings 0.19 (from 0.12
+in fold 0 to 0.31 in fold 3).
+
+**R0 vs production** `20261005-025909Z-return-3712sym` (`tft-vwap-compare`, matched on
+(symbol, date): 756,726 forecasts on 240 days, 2025-09 → 2026-08):
+
+| | rows | R0 | production | difference (95% CI) |
+| --- | --- | --- | --- | --- |
+| all | 756,726 | 0.008292 | 0.008845 | −0.000550 (−0.000754 … −0.000389), −6.2% |
+| earnings days | 58,370 | | | −0.001420 (−0.001799 … −0.001122) |
+| other days | 698,356 | | | −0.000484 (−0.000685 … −0.000325) |
+
+| R0 fold | rows | R0 | production | difference (95% CI) |
+| --- | --- | --- | --- | --- |
+| 10 | 116,961 | 0.007468 | 0.007591 | −0.000123 (−0.000216 … −0.000023) |
+| 11 | 197,023 | 0.007569 | 0.007911 | −0.000342 (−0.000511 … −0.000206) |
+| 12 | 200,340 | 0.008798 | 0.010068 | −0.001269 (−0.001985 … −0.000731) |
+| 13 | 200,951 | 0.008800 | 0.009132 | −0.000332 (−0.000492 … −0.000191) |
+| 14 | 41,451 | 0.009140 | 0.009510 | −0.000370 (−0.000481 … −0.000257) |
+
+- Coverage on the shared rows: R0 P10–P90 77.8%, P5–P95 88.3%; production 74.6%, 86.6%.
+
+**What it shows:**
+- R0 beats production in every shared fold, with every CI clear of 0. The gain is largest on
+  earnings days (2.6× the other days' gain per forecast), where production has no earnings inputs.
+- R0 is also better calibrated (P5–P95 88.3% vs 86.6%), though still a little narrow against 90%.
+- R0 is the reference for R1 and the rest of the series. A switch of production to R0 is open
+  (MODEL-STRATEGY open decision 4).
+- `ml/runs/20261028-030847Z-return-4438sym/compare.json` holds the full comparison.
+
+### 2026-10 R1, all always-available inputs, vs R0 (test sessions 2023-01-20 to 2026-10-26)
+
+Tags: `tag-ml-daily`
+
+**Run:** `20261028-172535Z-return-4438sym`. Same panel rows and folds as R0, plus
+`--market --macro --session-shape --after-hours`, 8 workers. 10-28 10:25 → 14:43 PT.
+
+**Overall** (3,169,270 forecasts matched on (symbol, date), 945 days):
+
+| | rows | R1 | R0 | difference (95% CI) |
+| --- | --- | --- | --- | --- |
+| all | 3,169,270 | 0.008086 | 0.007884 | +0.000200 (+0.000142 … +0.000262) |
+| earnings days | 238,489 | | | +0.000192 (+0.000120 … +0.000262) |
+| other days | 2,930,781 | | | +0.000198 (+0.000138 … +0.000260) |
+
+- **Coverage:** R1 P10–P90 75.7%, P5–P95 87.2%; R0 78.9%, 88.9%. R1's bands are too narrow.
+- **Per fold:**
+  - R1 is worse in folds 0, 1, 5, 11, 12, 13 and 14, by the most in fold 0 (+0.0011) and fold 12
+    (+0.0006, the April 2026 regime).
+  - No fold is clearly better. Fold 3 is the only one that leans R1's way, and its CI spans 0.
+- **Early stopping:** R1 stops at 4–6 epochs in every fold. R0 used the same 4–6 in folds 0–8 but
+  7–13 in folds 9–14. With more training years R0 keeps improving; R1 does not.
+- **Encoder weight per group (%), per fold:**
+
+  | fold | base | earnings | market | macro | session shape | after-hours |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 0 | 18 | 7 | 32 | 32 | 4 | 7 |
+  | 1 | 20 | 9 | 43 | 12 | 5 | 12 |
+  | 5 | 10 | 6 | 22 | 14 | 2 | 46 |
+  | 7 | 23 | 6 | 18 | 19 | 4 | 30 |
+  | 12 | 30 | 12 | 31 | 14 | 6 | 7 |
+  | 14 | 27 | 10 | 27 | 11 | 10 | 15 |
+  | range, all 15 | 10–58 | 4–17 | 15–43 | 7–32 | 2–16 | 5–46 |
+
+**What it shows:**
+- The inputs are correct (market return vs SPY correlation 0.945; CPI and yields filled). The loss
+  comes from how the model uses them.
+- Market and macro take a third to two-thirds of the encoder weight. Each has one value per day,
+  shared by every stock, so the model can use them to tell training days apart (memorising
+  dates) rather than learning something that carries to new days. The weight is largest in
+  fold 0, which has the least training data, and that is R1's worst fold.
+- After-hours swings from 5% to 46% between folds, so it is not a stable signal either.
+- Next: the drop-one runs **R1a** (R1 − macro) and **R1c** (R1 − macro − market), same folds,
+  queued on this Mac (`logs/r1-variants.sh`). R0 stays the reference and the source of the
+  intraday handoff table until one of them beats it.
+- `ml/runs/20261028-172535Z-return-4438sym/compare.json` holds the full comparison.
+
+### 2026-10-29 Direction and move accuracy per model, vs one-input rules
+
+Same common rows as the section below. Direction = sign of P50 vs the actual move (rows where both
+are nonzero). Big moves = |actual| > 2%. Confident calls = forecast P(up) ≥ 65% or ≤ 35%.
+Rank IC = Spearman correlation per day between P50 and the actual move across stocks, averaged over
+days (1 = perfect ordering, 0 = none). Scripts: `ml/scripts_direction.py`, `ml/scripts_direction_naive.py`.
+
+| model | rows | direction | big moves | confident calls (share / hit) | median \|P50 err\| | rank IC |
+| --- | --- | --- | --- | --- | --- | --- |
+| R0 | night, folds 1–14 | 59.0% | 65.6% | 30% / 68.2% | 1.26% | 0.30 |
+| R1 | night, folds 1–14 | 58.7% | 65.5% | 38% / 65.4% | 1.29% | 0.30 |
+| R1c | night, folds 1–14 | 59.6% | 66.7% | 32% / 68.3% | 1.26% | 0.31 |
+| R6c | night, folds 1–14 | 59.0% | 65.6% | 30% / 68.2% | 1.26% | 0.30 |
+| R0 | pre-market rows, odd folds | 60.1% | 66.4% | 31% / 70.3% | 1.48% | 0.31 |
+| R1c | pre-market rows | 60.7% | 67.6% | 35% / 70.0% | 1.48% | 0.33 |
+| R4~night | pre-market rows | 60.4% | 67.0% | 31% / 70.2% | 1.48% | 0.32 |
+| R4~px 09:30 | pre-market rows | 70.1% | 80.5% | 58% / 78.7% | 1.26% | 0.53 |
+| R4p 09:30 | pre-market rows | 69.9% | 80.3% | 61% / 78.1% | 1.26% | 0.53 |
+| R6p 09:30 | pre-market rows | 70.8% | 81.1% | 60% / 79.3% | 1.24% | 0.54 |
+| R4 09:45 | pre-market rows | 70.1% | 80.5% | 58% / 78.6% | 1.26% | 0.53 |
+| R4f 09:45 | pre-market rows | 70.3% | 80.7% | 60% / 78.8% | 1.26% | 0.53 |
+| R6f 09:45 | pre-market rows | 70.8% | 81.1% | 60% / 79.4% | 1.24% | 0.54 |
+
+**One-input rules on the pre-market rows** (forecast direction = sign of that input):
+
+| rule | known at | direction | big moves | rank IC |
+| --- | --- | --- | --- | --- |
+| open vs previous VWAP | 09:30 | 70.7% | 81.0% | 0.53 |
+| last pre-market trade vs previous VWAP | 09:30 | 67.1% | 76.8% | 0.44 |
+| pre-market VWAP vs previous VWAP | 09:30 | 66.5% | 76.0% | 0.43 |
+| yesterday's close vs its VWAP | night | 61.3% | 67.7% | 0.33 |
+| yesterday's after-hours VWAP vs its VWAP | night | 61.2% | 67.7% | 0.32 |
+
+What it shows:
+- **No model beats the simplest rule on direction.** At 09:30 "today moves the way the open moved"
+  scores 70.7% (models 69.9–70.8%), rank IC 0.53 (models 0.53–0.54). At night "today moves the
+  way yesterday closed vs its VWAP" scores 61.3%, above every night model (59.0–60.7%).
+- So the models' gain over R0 (skill 27% → 40%) is mostly **band width and calibration** (how far,
+  with what uncertainty), not a better direction call. Pinball rewards both; direction ignores size.
+- The direction a model is "sure" about is better: 68–70% at night, 78–79% in the morning, on
+  30–60% of the rows.
+- For the screener (R8) the relevant measure is rank IC and the realised range of the top 20, not
+  the direction hit rate.
+
+### 2026-10-29 All models so far vs R0: skill, coverage, calibration (common rows)
+
+Each table scores every model on the same (symbol, date) rows. Skill = 1 − pinball / naive (naive =
+every quantile at a 0 move). "vs R0" = pinball change against R0, CI = 95% bootstrap over days.
+Bias = 0.5 − mean PIT in points (> 0 optimistic). |q err| = |observed share below quantile − level|
+over the 19 quantiles, in points. Script: `ml/scripts_compare_vs_r0.py night|bake`.
+
+**Night forecasts, folds 1–14** (2.95M rows, 882 days; fold 0 left out because R6c starts at fold 1,
+so R1c reads −0.79% here vs −0.58% on folds 0–14):
+
+| model | skill | vs R0 (CI) | P5–P95 | P10–P90 | direction | bias (z) | mean / max \|q err\| | grade |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| R0 | 26.6% | — | 88.7% | 78.7% | 59.0% | −0.25 (−15) | 0.40 / 0.97 | excellent |
+| R1 | 25.3% | +1.72% (+1.12 … +2.39) | 87.5% | 76.1% | 58.7% | −0.75 (−45) | 1.41 / 2.84 | fair |
+| R1c | 27.2% | −0.79% (−1.10 … −0.49) | 88.6% | 78.6% | 59.6% | +0.14 (+8) | 0.57 / 0.95 | good |
+| R6c | 26.6% | +0.02% (+0.00 … +0.05) | 88.8% | 78.8% | 59.0% | −0.26 (−16) | 0.39 / 0.94 | excellent |
+| R1a (folds 1–6 only; R0 there: 25.8%, 1.68) | 23.6% | +2.97% (+1.51 … +4.50) | 86.5% | 75.4% | 57.4% | −1.94 (−76) | 2.29 / 3.95 | poor |
+
+**Pre-market bake-off, odd folds, rows with full pre-market data** (812k rows, 441 days; more active
+stocks, so the losses are higher than above):
+
+| model | forecast | skill | vs R0 (CI) | P5–P95 | P10–P90 | direction | bias (z) | mean / max \|q err\| | grade |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| R0 | night | 26.8% | — | 88.0% | 77.9% | 60.1% | −1.33 (−42) | 1.46 / 2.59 | fair |
+| R1c | night | 27.6% | −1.07% (−1.43 … −0.75) | 87.9% | 77.8% | 60.7% | −0.64 (−20) | 0.82 / 2.01 | good |
+| R4~night | night | 27.4% | −0.83% (−1.36 … −0.45) | 86.9% | 76.7% | 60.4% | −1.55 (−48) | 1.79 / 3.14 | fair |
+| R4~px | 09:30 | 39.2% | −16.9% (−17.7 … −15.6) | 89.0% | 79.5% | 70.1% | −1.25 (−39) | 1.35 / 2.08 | fair |
+| R4p | 09:30 | 39.6% | −17.5% (−18.4 … −16.1) | 88.0% | 77.4% | 69.9% | −0.87 (−27) | 1.18 / 2.08 | fair |
+| R6p | 09:30 | 39.8% | −17.8% (−18.8 … −16.6) | 90.8% | 81.0% | 70.8% | −0.91 (−28) | 0.99 / 1.72 | good |
+| R4 | 09:45 | 39.3% | −17.1% (−17.9 … −15.8) | 88.8% | 79.2% | 70.1% | −1.36 (−42) | 1.47 / 2.20 | fair |
+| R4f | 09:45 | 39.9% | −17.9% (−18.8 … −16.6) | 89.8% | 79.9% | 70.3% | −1.00 (−31) | 1.09 / 2.04 | fair |
+| R6f | 09:45 | 40.3% | −18.4% (−19.4 … −17.2) | 90.8% | 81.1% | 70.8% | −0.92 (−29) | 1.00 / 1.74 | good |
+
+Grade (proposed 10-29, not in the code): mean |q err| ≤ 0.5 pts excellent, ≤ 1.0 good, ≤ 2.0 fair,
+> 2.0 poor. The code's own label (`calibrated` when |bias z| < 2) marks every model optimistic or
+pessimistic here: with 0.8–3M rows, a bias of 0.03 points is already "significant".
+
+What it shows:
+- **Pre-market is the big lever:** skill 27% → 39–40%, 17–18% lower loss than R0, direction
+  60% → 70%. The choice between R4, R4p and R6p/R6f is worth 0.3–1.5% on top of that.
+- **All models are slightly pessimistic** (the actual lands a little above the forecast) except
+  R1c overall, which is slightly optimistic (+0.14 points).
+- **The overlays are the best calibrated** of the morning models, and the only ones near 90% P5–P95.
+- On the active-stock rows R0 is only "fair"; R1c is the better-calibrated night model there.
+
+### 2026-10 Pre-market bake-off, first results: R4, R4p, R4f, R6p, R6f (7 odd folds, test sessions in folds 1–13)
+
+Rows with that pre-market data, matched on (symbol, date); 441 test days. Diff = A − B pinball per
+day (negative: A better), 95% bootstrap CI over days.
+
+| forecast | A | B | loss A | loss B | A − B (95% CI) | earnings days A − B (CI) | P5–P95 A / B |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| night | R1c | R4~night | 0.007863 | 0.007871 | −0.000008 (−0.000049 … +0.000031) | +0.000097 (+0.000031 … +0.000164), R4~night better | 89.2 / 88.5% |
+| 09:30 | R6p | R4~px | 0.007953 | 0.008037 | −0.000105 (−0.000134 … −0.000077) | −0.000418 | 90.8 / 89.0% |
+| 09:30 | R4~px | R4p | 0.008037 | 0.007981 | +0.000065 (+0.000029 … +0.000103), R4p better | +0.000319 | 89.0 / 88.0% |
+| 09:30 | R6p | R4p | 0.007953 | 0.007981 | −0.000040 (−0.000072 … −0.000009) | −0.000099 (−0.000221 … +0.000045) | 90.8 / 88.0% |
+| 09:45 | R6f | R4 | 0.007894 | 0.008019 | −0.000144 (−0.000173 … −0.000118) | −0.000578 | 90.8 / 88.8% |
+| 09:45 | R4f | R4 | 0.007938 | 0.008019 | −0.000089 (−0.000120 … −0.000058) | −0.000330 (−0.000412 … −0.000250) | 89.8 / 88.8% |
+| 09:45 | R6f | R4f | 0.007894 | 0.007938 | −0.000056 (−0.000080 … −0.000033) | −0.000248 (−0.000357 … −0.000140) | 90.8 / 89.8% |
+
+Per fold (A − B):
+
+| fold | night R1c − R4~night | 09:30 R6p − R4~px | 09:30 R6p − R4p | 09:45 R6f − R4 | 09:45 R6f − R4f |
+| --- | --- | --- | --- | --- | --- |
+| 1 | +0.000021 | −0.000476 | −0.000271 | −0.000512 | −0.000112 |
+| 3 | +0.000165 | −0.000214 | −0.000046 | −0.000253 | −0.000155 |
+| 5 | −0.000105 | −0.000083 | −0.000010 | −0.000113 | −0.000084 |
+| 7 | +0.000013 | −0.000001 | +0.000046 | −0.000078 | −0.000043 |
+| 9 | −0.000128 | +0.000087 | −0.000060 | +0.000052 | −0.000086 |
+| 11 | −0.000038 | −0.000031 | +0.000068 | −0.000059 | +0.000022 |
+| 13 | +0.000014 | −0.000014 | −0.000005 | −0.000049 | +0.000069 (R4f better, CI clear) |
+
+What it shows:
+- **Masking costs nothing at night.** R4's night state ties R1c overall and is slightly better on
+  earnings days. One masked TFT could serve the night forecast, but R1c stays (no clear gain).
+- **The overlays win the morning forecasts.** R6p and R6f beat the masked TFT by 1.0–1.5%. Most of
+  the gain is in the early folds (fold 1: about 6%), where a TFT trained on ~1 year has seen
+  little pre-market. The gap narrows with more training data, and in folds 7–13 R6p vs R4p is mixed
+  (R4p better in folds 7 and 11). The overlays also widen the bands: P5–P95 90.8% vs 88–89%,
+  closer to the 90% target.
+- **A dedicated TFT (R4p) beats the masked one at 09:30** by 0.70%, so masking costs the
+  morning states. R4p runs without `issue_type` and R4 with it (Q27), which Q23 expects to be
+  inside the noise.
+- **R4f (dedicated 09:45 TFT, 10-29) is second at 09:45.** It beats R4 by 1.0% (CI clear; worse
+  only in fold 9) and loses to R6f by 0.55% (CI clear), more on earnings days (−0.000248 vs −0.000036 on other days). The same
+  pattern as 09:30: R6f's lead is in folds 1–9; in folds 11–13 R4f is level or better (fold 13 CI
+  clear). With more training years the dedicated TFT catches up, so R5's choice should weigh the
+  late folds.
+- R7 (HGB, night) and R7f (HGB + pre-market) came next: see the R7 entry above.
+
+### 2026-10 R7 and R7f, plain gradient boosting (no TFT), vs R1c and the 09:45 models
+
+Tags: `tag-ml-daily`
+
+**Runs.** R7 `ml/runs/20261029-153450Z-gbm-4438sym` (folds 0–14, R1c's inputs, no pre-market) and
+R7f `ml/runs/20261029-170229Z-gbm-4438sym` (7 odd folds, + the full pre-market group always on).
+`tft-vwap-gbm`: one sklearn `HistGradientBoostingRegressor(loss="quantile")` per quantile, 200
+iterations, on the last-session inputs plus lags 1, 2, 5 and 20 of the move; quantiles sorted.
+R7 08:34 → ~10:00 PT, R7f → 10:52 PT, on the CPU.
+
+**R7 vs R1c (night)**, 3,169,270 forecasts on (symbol, date), 945 days:
+
+| | R1c | R7 |
+| --- | --- | --- |
+| pinball loss | 0.0078386 | 0.0077343 (−1.3%) |
+| skill vs naive | 27.2% | 28.0% |
+| P5–P95 coverage | 88.4% | 88.8% |
+| direction of P50 | 59.5% | 60.1% |
+| mean \|q err\| (calibration) | 0.67 pts | 0.80 pts |
+
+- Paired R1c − R7: +0.0001036 (+0.0000735 … +0.0001334), R7 better. Earnings days +0.000534,
+  other days +0.0000711, both CIs clear.
+- Per fold, R7's gain (%): 5.46, 1.39, 2.0, 3.3, 1.39, 2.59, −0.21, 0.52, −0.13, 1.03, 0.99, 0.36,
+  0.74, 0.43, 0.47 (folds 0–14). The gain is largest where the TFT has the least training data
+  and shrinks to about 0.4–1% in the late folds.
+
+**R7f on the bake-off rows** (812,131 rows with full pre-market, 441 days; diff = rival − R7f,
+positive = R7f better):
+
+| vs | rival loss | R7f loss | diff (95% CI) | gain |
+| --- | --- | --- | --- | --- |
+| R4 | 0.0080187 | 0.0078916 | +0.000149 (+0.00012 … +0.00018) | 1.6% |
+| R4f | 0.0079383 | 0.0078916 | +0.000060 (+0.000037 … +0.000087) | 0.76% |
+| R6f | 0.0078944 | 0.0078916 | +0.0000048 (−0.0000099 … +0.000019) | tie |
+
+- vs R4: earnings days +0.000629.
+- vs R4f, per fold (×1e-6): f1 +103, f3 +168, f5 +87, f7 +39 (CI spans 0), f9 +119, f11 −18
+  (spans 0), f13 −76 (CI clear, R4f better). The same pattern as R6f vs R4f: the dedicated TFT
+  catches up in the late folds.
+- vs R6f: no fold is clear either way. R7f is better on earnings days (+0.000050, +0.000021 …
+  +0.000079) and level on other days (−0.0000023, CI spans 0). P5–P95 R6f 90.8%, R7f 89.3%.
+- R7f's own rows (1,486,039, every odd-fold row): skill 36.2%, P5–P95 89.4%, direction 65.6%.
+- Files: `compare_vs_r4full.json`, `compare_vs_r4f.json` and `compare_vs_r6f.json` in R7f's run.
+
+**What it shows:**
+- **On these inputs the TFT is not worth its cost.** A model that trains in minutes on the CPU
+  beats R1c at night by 1.3% and ties TFT + overlay at 09:45. Most of the TFT's input is the
+  sequence of past days, and lags 1, 2, 5 and 20 of the move carry most of what it learns from it.
+- **The early folds favour HGB most** (fold 0: 5.5%): trees need less data. Over 4+ years of
+  training the gap narrows, so R5 should weigh the late folds, as at 09:45.
+- **Fewer models wins the tie at 09:45:** R7f is one model, R6f is R1c plus an overlay. R6f's
+  bands sit closer to the 90% target; R7f is better on earnings days. R5 decides between them.
+- Open: an HGB at 09:30 (R7p) to settle 09:30, and whether R5 is HGB-based. (Scoreboard,
+  ml/MODEL-STRATEGY.md.)
+
+### 2026-10 R1c, R0 + session shape + after-hours, vs R0 (test sessions 2023-01-20 to 2026-10-26)
+
+Tags: `tag-ml-daily`
+
+**Run:** `20261028-233305Z-return-4438sym`. R1's panel and folds with `--session-shape
+--after-hours` only (no market, no macro), 8 workers. 10-28 16:33 → 21:08 PT.
+
+**Overall** (3,169,270 forecasts matched on (symbol, date), 945 days; R0 − R1c, positive = R1c
+better):
+
+| | rows | R0 | R1c | difference (95% CI) |
+| --- | --- | --- | --- | --- |
+| all | 3,169,270 | 0.007884 | 0.007839 | +0.000046 (+0.000021 … +0.000071), −0.58% |
+| earnings days | 238,489 | | | +0.000339 (+0.000287 … +0.000387) |
+| other days | 2,930,781 | | | +0.000020 (−0.000005 … +0.000046) |
+
+| measure | R0 | R1c |
+| --- | --- | --- |
+| skill vs naive | 26.6% | 27.0% |
+| P5–P95 / P10–P90 coverage | 88.9% / 78.9% | 88.4% / 78.4% |
+| median P10–P90 width | 5.11% | 5.04% |
+| median \|P50 error\| | 1.262% | 1.262% |
+| direction of P50 | 59.1% | 59.5% |
+| epochs per fold | 4–13 | 4–10 |
+
+- **Per fold:** R1c is clearly better in folds 1, 2, 7, 9, 10, 12 and 14 and clearly worse in none.
+  Fold 0 (2023-Q1, the least training data) leans R0's way: −0.000188 (−0.000399 … +0.0000002).
+- **Encoder weight per group (%):** after-hours 6–44, session shape 5–24, earnings 10–44, base
+  29–68. After-hours is highest in folds 2, 6, 8, 13 and 14 (32–44).
+
+**What it shows:**
+- R1c passed Q21 rule 1 outright (overall CI clear of 0), so it is the base for R4 onward
+  (`logs/r4-queue.log`, `logs/r4-base.txt`).
+- **The gain is on earnings days:** 17× the other days' gain per forecast, where the other days'
+  CI spans 0. The after-hours inputs see the reaction to results released after the close,
+  which R0 only sees a day later.
+- The median error is unchanged; the gain is in the shape of the band. The bands are 1.4%
+  narrower and coverage is 0.5 points lower, so R1c is a little more overconfident than R0.
+- Without the day-level groups, there is no sign of memorising: R1c trains about as long as R0
+  (mean 6.4 vs 6.8 epochs), where R1 stopped at 4–6 in every fold. Its after-hours weight still
+  swings between folds, but no fold is worse for it.
+- `ml/runs/20261028-233305Z-return-4438sym/compare_vs_r0.json` holds the full comparison.
+
+### 2026-10 R6c, a market/macro event overlay on R0 (test folds 1–14)
+
+Tags: `tag-ml-daily`
+
+**What it is** (`tft-vwap-event-overlay`, `ml/tft_vwap/event_overlay.py`, ml/MODEL-STRATEGY.md
+Q22, Q24). It keeps R0's median and scales its band: `P50 + s × (q − P50)`, with
+`s = exp(Σ b_i f_i)`.
+- Each `f_i` is how far one of yesterday's day-level moves went beyond 2 standard deviations of
+  its past 63 sessions. The moves are the market, the stock's sector vs the market, and the 10y
+  and 2y yields. On ordinary days f = 0, so s = 1 and R0 passes through unchanged.
+- Fitted per fold on R0's out-of-fold forecasts of the earlier folds only (400 rows per day,
+  pinball loss). Fitting takes 12 s for all folds.
+- 16% of rows have an event; the market feature fires on 53 test days.
+
+**Results vs R0** (2.95M forecasts, 882 days; negative = R0 better):
+
+| variant | A − B per day (95% CI) | folds R0 better / R6c better | P10–P90 coverage |
+| --- | --- | --- | --- |
+| event only | −0.000002 (−0.000004 … −0.000000) | 1 / 0 | 78.8% (R0 78.7%) |
+| + one band scale for all days (`--calibrate`) | −0.000004 (−0.000007 … −0.000002) | 5 / 2 | 77.8% |
+| + calibrate + median shift (`--shift`) | −0.000011 (−0.000020 … −0.000004) | 3 / 1 | 77.7% |
+
+On the event rows themselves (event-only variant):
+
+| feature | rows | days | coverage R0 → R6c | loss R0 → R6c |
+| --- | --- | --- | --- | --- |
+| market | 178k | 53 | 75.8% → 76.4% | 0.008843 → 0.008852 |
+| sector vs market | 145k | 303 | 77.1% → 78.3% | 0.008252 → 0.008250 |
+| 10y yield | 137k | 41 | 79.0% → 79.3% | 0.008134 → 0.008165 |
+| 2y yield | 150k | 45 | 78.2% → 78.8% | 0.008101 → 0.008125 |
+| any (16% of rows) | | | 77.3% → 77.8% (quiet rows 78.9%) | 0.008330 → 0.008341 |
+
+**What it shows:**
+- **The coefficients are not stable.** The market coefficient is −0.73 in fold 1 and −0.63 in
+  fold 2, then +0.01 … +0.10 from fold 5 on. Yields flip sign between folds. With 40–50 event
+  days per series in the training folds, there is no repeatable effect to learn.
+- **R0 already reacts to yesterday's big days** through the stocks' own moves (Q22: its band is
+  11% wider after a big market day). Widening it further gains a little coverage but loses
+  pinball, so the extra width lands on the wrong rows.
+- **Calibration and shift make it worse.** One scale for all days is fitted to the earlier folds,
+  which were wider than the later ones. The median shift overfits fold 0–2's few big days.
+- **What's left.** The misses are on the days the market itself moves (64.7% coverage, Q22),
+  which aren't in yesterday's data. Scheduled release days (CPI, jobs, FOMC) are the only
+  known-ahead stand-in. They need the release calendar (Q24), not yet fetched.
+- Kept as a tool, not as a model. R0 stays the base.
+
+### 2026-10 Release days in R0 (CPI, jobs report, FOMC), test folds 0–14
+
+Tags: `tag-ml-daily`
+
+A pre-check for the release-calendar overlay (ml/MODEL-STRATEGY.md Q25). It uses dates typed in
+by hand (FOMC and jobs 2023–2026, CPI 2023–2025); there is no fetched calendar yet.
+
+| day type | days | R0 P10–P90 coverage | loss | mean \|market move\| | top-10% market days |
+| --- | --- | --- | --- | --- | --- |
+| CPI | 34 | 74.3% | 0.008716 | 0.88% | 5 of 95 |
+| jobs report | 41 | 73.8% | 0.008775 | 1.08% | 11 of 95 |
+| FOMC day | 30 | 78.3% | 0.007804 | 0.84% | 4 of 95 |
+| day after FOMC | 30 | 74.8% | 0.008977 | 0.88% | 6 of 95 |
+| other days | 811 | 79.5% | 0.007768 | 0.65% | |
+
+**Band scale on release days only** (folds 5–14, the same scale for every stock):
+
+| release | days | ×1.0 (R0) | ×1.1 | ×1.15 | ×1.2 | ×1.3 |
+| --- | --- | --- | --- | --- | --- | --- |
+| jobs: coverage / loss (bp) | 27 | 74.6% / 88.42 | 78.4% / 88.17 | 80.2% / 88.15 | 81.7% / 88.19 | 84.5% / 88.46 |
+| CPI: coverage / loss (bp) | 19 | 75.7% / 86.64 | 79.6% / 86.51 | 81.3% / 86.55 | 82.9% / 86.65 | 85.7% / 87.05 |
+
+- **Walk-forward fit** (one scale per type, earlier folds only): stable from fold 4. Jobs about
+  +16%, CPI +10–15%, day after FOMC +9–20%, FOMC day about 0.
+- **Overall vs R0:** +0.0000001 per day, CI (−0.0000029 … +0.0000034). No measurable change.
+- **The misses.** 26% of rows miss the band on release days, against 21% on other days, and they
+  overshoot it by more (median 22% of the band width, against 18%). They are big moves in either
+  direction, so a wider band fixes coverage but barely changes the pinball loss.
 
 ### 2026-10 pit earnings and series breaks vs production (test sessions 2025-09-02 to 2026-08-14)
 
@@ -903,3 +1471,28 @@ Production `20261005-025909Z-return-3712sym --fold 3`, 3,679 stocks each day, gr
 - Two days are not a sample: the next grades decide whether the lean is real.
 - No grades after 10-06: the panel on this Mac ends there, so the 10-07 forecast is not graded
   yet.
+
+## First live morning on the NAS (2026-10-26, 06:10–08:00 PT)
+
+Tags: `tag-sourcing-host`
+
+A read-only check of the feed, the NAS load and dropped data, against the iMac's 10-23.
+
+- **Dropped data: none found.**
+  - massive-ws: 0 dropped frames, 0 bad messages, 0 disconnects; 21 five-minute files.
+  - E*TRADE store: 0 bad entries, 0 trimmed entries, lag 0.
+- **Poll cadence matches the iMac.**
+
+  | list | NAS 10-26 h10 | iMac 10-23 h10 |
+  | --- | --- | --- |
+  | Experimental: median gap, max gap | 2.1 s, 5.0 s | 2.0 s, 6.0 s |
+  | MidCap: median gap, max gap | 22.2 s, 39.7 s | 21.3 s, 43.0 s |
+  | polls per hour (Experimental) | 1,629 | 1,696 |
+
+  No gap over 120 s on either day. Rows per full hour: 1.05M (NAS) against 1.09M (iMac).
+- **NAS load:** CPU busy about 1% of 8 threads, no iowait or pressure stalls, 2.5 GB memory
+  used, network 149 KB/s in. Redis holds about 918 MB at 3,253 stream entries (282 KB each),
+  so the 4,000-entry cap is about 1.1 GB, under the 2 GB limit.
+- **Login:** the first attempt at 06:10 was refused (session restore redirected to the login
+  page); the retry succeeded with no code. The `/login/sar` lines every 30 s are the
+  session's keepalive, not errors.

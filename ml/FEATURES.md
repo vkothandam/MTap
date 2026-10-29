@@ -193,7 +193,7 @@ move left is +529%. Runs saved before the setting existed load with it off.
 | `symbol` | 16 | ticker |
 | `industry_code` | 4 | lowest code in `symbol_industry` (E*TRADE/MBin), `unknown` if none |
 | `exchange` | 2 | `symbols.exchange` |
-| `issue_type` | 1 | `CS` common stock, `DR` depositary receipt (ADR). The 5-year panel is `CS` only, so the input is constant there |
+| `issue_type` | 1 | `CS` common stock, `DR` depositary receipt (ADR). The 5-year panel is `CS` only, so the input is constant there and training leaves it out (`drop_constant_statics`, from 2026-10-28; runs before that kept it) |
 
 ## 3. Known-future reals (calendar, also on the decoder step t+1)
 
@@ -378,14 +378,14 @@ by `--test-end 1663`:
 Encoders may read back across these boundaries; targets never do. Without `--test-end` the folds
 end at the panel's last session.
 
-**5-year folds (from 2026-10-27).** `--n-folds 0 --min-train-sessions 252 --fold-len 63
---early-stop-len 21` makes as many 63-session test blocks as fit after a year of training: 16 on
-the 5-year panel, about 2022-11 → 2026-10 (the 2022 bear market, the 2023 rally, the April 2025
-sell-off). Each has a 21-session early-stop block before it. Fold 0 trains on about 1 year, fold
-15 on about 4.6. Training samples are one per (stock, day) (`dedupe_train`), so a stock's last
+**5-year folds (from 2026-10-27).** `--n-folds 15 --min-train-sessions 252 --fold-len 63
+--early-stop-len 21 --test-end 1713` (what the series runs use; `--n-folds 0` makes as many as
+fit, also 15): 15 test blocks of 63 sessions, 2023-01-20 → 2026-10-26 (the 2023 rally, the April
+2025 sell-off, 2026). Each has a 21-session early-stop block before it. Fold 0 trains on about
+1.2 years, fold 14 on about 4.7. Training samples are one per (stock, day) (`dedupe_train`), so a stock's last
 training day no longer appears in ~41 samples. Runs can pause and resume (`touch runs/<id>/STOP`,
-`--resume runs/<id>`, `tft-vwap-status`). The pre-market bake-off uses the 8 odd folds
-(`--folds 1,3,...,15`) on rows where the pre-market data exists.
+`--resume runs/<id>`, `tft-vwap-status`). The pre-market bake-off uses the 7 odd folds
+(`--folds 1,3,5,7,9,11,13`) on rows where the pre-market data exists.
 
 **Training.**
 - The loss is the quantile loss over the 19 levels (section 1), with Adam at learning rate 1e-3
@@ -649,10 +649,12 @@ live grades so far are in [docs/LEARNINGS.md](../docs/LEARNINGS.md) (`tag-ml-dai
 | --- | --- | --- |
 | `20261005-025909Z-return-3712sym` | 230M | yes: production, live forecasts and `actuals.parquet` |
 | `20261011-173109Z-return-3785sym` | 208M | yes: the candidate, and the intraday model reads its fold 1 (`daily_run` in [tft_intraday/config.py](tft_intraday/config.py)) |
-| `20261004-231546Z-return-3712sym` | 117M | the first full run (one `forecast_2026-08-17`); can go |
-| `20261004-*-200sym`, `20261005-025856Z-return-10sym` | 2–4M each | smoke tests; can go |
-| `pit-test1663.log` | 3M | the 10-11 run's log |
-| `intraday/` | 1.7G | the intraday model ([FEATURES-intraday.md](FEATURES-intraday.md)) |
+| `20261028-*`, `20261029-*` | 0.3–1.1G each | the 5-year research runs R0–R7f; labels in each `MODEL.md` |
+| `intraday/` | 1.7G | the intraday model I1 ([FEATURES-intraday.md](FEATURES-intraday.md)) |
+
+The first full run (`20261004-231546Z`), the 10-04/05 smoke runs and the run logs
+(`pit-test1663.log`, `intraday/full-run.log`) were deleted locally on 10-29; the NAS copy under
+`PProjects/MTap/ml/runs/` keeps them.
 
 Re-check the intraday model whenever the daily model it reads changes (MODEL-STRATEGY.md Q5).
 Backups from before the EDGAR change: `state/etrade/fundamentals.pre-edgar.duckdb` and

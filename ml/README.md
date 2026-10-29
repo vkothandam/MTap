@@ -37,7 +37,9 @@ last session can serve as a forecast target.
   pytorch-forecasting scores the loss in target units, so price-target samples are weighted by 1 / the symbol's median price. That
   makes the loss roughly a % loss instead of being dominated by $300 stocks.
 - **Inputs** (every field, by category: [FEATURES.md](FEATURES.md)):
-  - statics: `symbol` (16-D embedding), `industry_code` (4-D), `exchange`, `issue_type`
+  - statics: `symbol` (16-D embedding), `industry_code` (4-D), `exchange`, `issue_type`; a static
+    with one value in a fold's training rows is left out (`--no-drop-constant-statics` keeps it),
+    so on the CS-only panel `issue_type` is dropped
   - known: the calendar features
   - observed: price/volume ratios and 10-K/10-Q flags, with `volume_velocity` log1p'd
   - earnings calendar, dated from the 8-K results releases: sessions since the last release
@@ -178,19 +180,21 @@ The design and reasons: [MODEL-STRATEGY.md](MODEL-STRATEGY.md) Q11–Q16; the in
 (FEATURES.md section 12).
 
 ```bash
-P=../out/tft/exp5y/panel.parquet          # schema 4, export-tft --include-inference, frozen
-C="--panel $P --n-folds 0 --min-train-sessions 252 --fold-len 63 --early-stop-len 21"  # 16 folds
-G="--market --macro --after-hours --session-shape"                                    # R1 groups
-ODD="--folds 1,3,5,7,9,11,13,15"
+P=../out/tft/exp5y-r1/panel.parquet       # schema 4, export-tft --include-inference, frozen
+C="--panel $P --earnings exact --n-folds 15 --min-train-sessions 252 --fold-len 63 --early-stop-len 21 --test-end 1713"  # 15 folds
+G="--session-shape --after-hours"         # the base's groups (R1c); R1 was --market --macro --after-hours --session-shape
+ODD="--folds 1,3,5,7,9,11,13"
+B=runs/20261028-233305Z-return-4438sym    # the base, R1c (it beat R0; MODEL-STRATEGY Q21)
 
 uv run tft-vwap $C                                    # R0  baseline
-uv run tft-vwap $C $G                                 # R1  all always-available groups
-uv run tft-vwap $C $G $ODD --premarket optional       # R4  A: masks, full off 50%, prices off 25%
+uv run tft-vwap $C $G                                 # R1c the base (R1: all four groups)
+uv run tft-vwap $C $G $ODD --premarket optional       # R4  A: 25% night, 25% prices only, 50% everything
 uv run tft-vwap $C $G $ODD --premarket on --pm-groups px        # R4p B: prices always on
 uv run tft-vwap $C $G $ODD --premarket on --pm-groups px,full   # R4f B: everything on
-uv run tft-vwap-overlay runs/<R1> --panel $P --inputs px   $ODD   # R6p C -> runs/<R1>-overlay-px
-uv run tft-vwap-overlay runs/<R1> --panel $P --inputs full $ODD   # R6f C -> runs/<R1>-overlay-full
+uv run tft-vwap-overlay $B --panel $P --inputs px   $ODD   # R6p C -> $B-overlay-px
+uv run tft-vwap-overlay $B --panel $P --inputs full $ODD   # R6f C -> $B-overlay-full
 uv run tft-vwap-gbm $C $G                             # R7  plain HGB per quantile
+uv run tft-vwap-event-overlay runs/<R0> --panel $P    # R6c band scale on event days -> runs/<R0>-event
 ```
 
 - **Pause and resume.** `touch runs/<id>/STOP` stops at the next epoch end (or `--max-hours H`);
@@ -212,11 +216,27 @@ uv run tft-vwap-gbm $C $G                             # R7  plain HGB per quanti
   - night: `runs/R4 runs/R1 --state night --only-pm full`
   - 09:30: `runs/R4 runs/R4p --state px --only-pm px`, and R4 vs `runs/R1-overlay-px`
   - 09:45: `runs/R4 runs/R4f --state full --only-pm full`, and R4 vs `runs/R1-overlay-full`
+- **Model cards:** every training command writes `runs/<id>/MODEL.md` (`model_card/`): front
+  matter `label`, `forecast` (night, 09:30, 09:45, 09:30/09:45, intraday), `summary`, `kind`,
+  `status`; then purpose, inputs, folds, result and the command. It is written when the run starts
+  (status running), on a budget pause (paused) and at the end (done, with the pooled test result).
+  `tft-vwap`, `tft-vwap-gbm`, `tft-vwap-overlay`, `tft-vwap-event-overlay`, `tft-intraday` and
+  `screener-train` take `--label R7f --about "one line" --purpose "the question"`; without
+  `--label` the label is `<kind> <MMDD-HHMM>`. A rewrite keeps the label, summary and purpose
+  already in the card, so `--resume` keeps them (the card flags may also be given on resume).
+  A `--premarket optional` run also writes cards for its `~night` and `~px` siblings. The dashboard
+  shows the label and the card. `uv run python scripts_model_cards.py` replaces the cards of the
+  known research runs with hand-written verdicts; re-run it when a verdict changes. `runs/` is
+  gitignored, so the script is the record and the NAS backup holds the files.
 - **Overlays** train for test fold k on the base run's out-of-fold forecasts of earlier folds
   only; folds with fewer than 2 earlier folds are marked `thin` (metrics.json, summary.json).
 - **GBM (R7):** one sample per (symbol, day), last-session inputs plus `vwap_pct_prev_day` lags
   0, 1, 2, 5, 20; one `HistGradientBoostingRegressor(loss="quantile")` per quantile, sorted; fixed
   `--max-iter` (no early stop); pre-market only as `on`.
+- **Handoff to intraday:** `uv run tft-vwap-handoff runs/<id> [--live] [--state night|px|full]`
+  writes `runs/<id>/handoff.parquet` + `handoff.meta.json`: the out-of-fold daily quantiles (one
+  row per symbol and forecast date) and their summaries, past-only record and day context.
+  Columns and rules: [docs/intraday-model.md](../docs/intraday-model.md) §1.
 - **Variable importance:** each fold writes `fold_k/importance.json` (variable-selection weights
   over ≤ 20 test batches); `summary.json` has `importance_by_group` (base, earnings, market,
   macro, session_shape, after_hours, premarket_px, premarket_full).

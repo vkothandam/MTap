@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 import torch
 
+import model_card
 from tft_intraday import baselines, daily_join, report, train
 from tft_intraday import dataset as ds
 from tft_intraday.config import QUANTILES, TARGETS, IntradayConfig
@@ -277,7 +278,11 @@ def test_tiny_run_writes_the_dashboard_contract(tmp_path, panel):
                          hidden_size=8, attention_head_size=1, hidden_continuous_size=4,
                          batch_size=64, max_epochs=1, limit_train_batches=2,
                          accelerator="cpu", test_stride_s=60)
-    run = train.run(cfg)
+    run = train.run(cfg, card={"label": "I1"})
+    card = model_card.read(run)
+    assert (card["label"], card["forecast"], card["kind"], card["status"]) == (
+        "I1", "intraday", "Intraday", "done")
+    assert card["result"].startswith("Skill vs climatology") and "r_close" in card["result"]
     conf = json.loads((run / "config.json").read_text())
     assert conf["model"] == "tft_intraday" and conf["folds"][0]["test_dates"] == [DATES[3]]
     fold = run / "fold_0"
@@ -315,6 +320,7 @@ def test_baselines_only_run(tmp_path, panel):
                          test_blocks=[[DATES[3]]], es_min_rows=1, baselines_only=True)
     run = train.run(cfg)
     assert run.name.endswith("-baselines")
+    assert model_card.read(run)["result"].startswith("Baselines only")
     p = pd.read_parquet(run / "fold_0" / "intraday_r_5m.parquet")
     np.testing.assert_allclose(p[report.QCOLS].to_numpy(), p[report.MODELS["momentum"]].to_numpy())
     assert (p["t_s"] >= 7 + 15 * (cfg.min_encoder_steps - 1)).all()

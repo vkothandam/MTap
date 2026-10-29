@@ -16,7 +16,8 @@ than MIN_TRAIN_FOLDS (2) earlier ones are flagged `thin` in config.json and summ
 should be reported separately (the plan: odd folds only, so fold 1 trains on fold 0 alone).
 "Earlier" means earlier in the base run's own folds, which are the odd ones only when the base
 was run on them: a base on all 16 folds trains fold 9 on 0-8.
-Writes runs/<BASE>-overlay-<inputs>/ in the run contract (price units: prev_vwap, actual, qNN).
+Writes runs/<BASE>-overlay-<inputs>/ in the run contract (price units: prev_vwap, actual, qNN),
+with a MODEL.md card (`--label`, `--about`, `--purpose`; model_card).
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
+
+import model_card
 
 from .compare import qlevels
 from .config import PM_FULL_REALS, PM_PX_REALS
@@ -71,7 +74,7 @@ def fit_predict(train: pd.DataFrame, target: pd.DataFrame, cols: list[str], leve
 
 
 def overlay(base: Path, panel_path: Path, folds: list[int] | None = None,
-            out: Path | None = None, inputs: str = "full") -> Path:
+            out: Path | None = None, inputs: str = "full", card: dict | None = None) -> Path:
     base = Path(base)
     pm = INPUTS[inputs]
     by_fold = load_folds(base)
@@ -110,6 +113,13 @@ def overlay(base: Path, panel_path: Path, folds: list[int] | None = None,
          "config": saved.get("config", {})}, indent=2, default=str))
     if scored:
         write_summary(out, scored, {"thin_folds": thin})
+    model_card.write(
+        out, kind="Overlay", forecast={"px": "09:30", "full": "09:45"}[inputs],
+        inputs=f"HGB overlay on {model_card.label_of(base)}'s quantiles (`{base.name}`) + "
+               f"pre-market {', '.join(pm)}.",
+        folds=f"Folds {done}, each trained on the base's earlier folds only"
+              + (f"; thin (fewer than {MIN_TRAIN_FOLDS} earlier): {thin}." if thin else "."),
+        status="done", result=model_card.contract_result(out), **(card or {}))
     return out
 
 
@@ -121,9 +131,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="px = prices group (R6p), full = prices + full (R6f)")
     p.add_argument("--folds", help="comma list of target folds (default: all with an earlier one)")
     p.add_argument("--out", type=Path, help="output run dir (default: <base>-overlay-<inputs>)")
+    model_card.add_args(p)
     a = p.parse_args(argv)
     folds = [int(x) for x in a.folds.split(",")] if a.folds else None
-    print(f"wrote {overlay(a.base_run, a.panel, folds, a.out, a.inputs)}")
+    card = model_card.from_args(a, "tft-vwap-overlay", argv)
+    print(f"wrote {overlay(a.base_run, a.panel, folds, a.out, a.inputs, card)}")
     return 0
 
 

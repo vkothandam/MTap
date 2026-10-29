@@ -11,6 +11,10 @@ file, Ctrl-C or SIGTERM), writes state.json {"status": "paused"} and exits witho
 half-trained fold; `--resume runs/<id> [--max-hours H]` continues it where it stopped.
 Each epoch prints a `[progress]` line with the time left, also kept in runs/<id>/progress.json
 and shown by `tft-vwap-status` (progress.py).
+
+Every run (and each `~night`/`~px` sibling) gets a MODEL.md card (model_card): the label from
+`--label` (siblings add their suffix), the forecast it gives, its inputs and folds, and at the
+end the pooled result.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import argparse
 import json
 import os
 import time
+import warnings
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,6 +36,9 @@ from lightning.pytorch.loggers import CSVLogger
 from pytorch_forecasting import TemporalFusionTransformer
 from pytorch_forecasting.metrics import QuantileLoss
 
+import model_card
+
+from . import cards
 from .config import (
     EARNINGS_MODES,
     PM_GROUP_CHOICES,
@@ -49,6 +57,8 @@ from .report import build_report
 def _embedding_sizes(train_ds, cfg: TrainConfig) -> dict[str, tuple[int, int]]:
     sizes = {}
     for name, dim in cfg.embedding_sizes.items():
+        if name not in train_ds.static_categoricals:  # dropped (cfg.drop_constant_statics)
+            continue
         n = len(train_ds._categorical_encoders[name].classes_)
         sizes[name] = (n, max(1, min(dim, n)))
     return sizes
@@ -109,12 +119,14 @@ def train_fold(df: pd.DataFrame, cfg: TrainConfig, fold: Fold, fold_dir: Path,
     t0 = time.time()
     train_ds, es_ds, test_ds = build_datasets(df, cfg, fold)
     masked = cfg.premarket == "optional"
+    # macOS spawns workers, each unpickling the dataset: keep them across epochs
+    workers = {"num_workers": cfg.num_workers, "persistent_workers": cfg.num_workers > 0}
     train_dl = train_ds.to_dataloader(
-        train=True, batch_size=cfg.batch_size, num_workers=cfg.num_workers,
+        train=True, batch_size=cfg.batch_size, **workers,
         **({"collate_fn": PmMaskCollate.for_dataset(
             train_ds, {"px": cfg.pm_mask_px, "full": cfg.pm_mask_full})} if masked else {}))
     es_dl = es_ds.to_dataloader(
-        train=False, batch_size=cfg.batch_size * 2, num_workers=cfg.num_workers,
+        train=False, batch_size=cfg.batch_size * 2, **workers,
         # the same samples blank every epoch (the training rates, by a hash of symbol and day)
         **({"collate_fn": PmMaskCollate.for_dataset(
             es_ds, {"px": cfg.pm_mask_px, "full": cfg.pm_mask_full}, deterministic=True)}
@@ -149,6 +161,7 @@ def train_fold(df: pd.DataFrame, cfg: TrainConfig, fold: Fold, fold_dir: Path,
                    *([progress] if progress else [])],
         logger=CSVLogger(fold_dir, name="logs", version=""),
         enable_model_summary=False,
+        enable_progress_bar=False,  # the [progress] line per epoch; a bar fills logs by GBs
         deterministic=False,
     )
     trainer.fit(model, train_dataloaders=train_dl, val_dataloaders=es_dl,
@@ -223,10 +236,35 @@ def _set_state(run_dir: Path, status: str, **extra) -> None:
     path.write_text(json.dumps(state, indent=2))
 
 
-def run(cfg: TrainConfig, *, max_hours: float | None = None, resume: Path | None = None) -> Path:
+def _write_cards(run_dir: Path, cfg: TrainConfig, folds: list, status: str,
+                 card: dict | None = None) -> None:
+    """MODEL.md for the run and, in optional mode, each sibling state."""
+    card = dict(card or {})
+    inputs = (cards.inputs_text(cfg, "TFT")
+              + f" Hidden {cfg.hidden_size}, up to {cfg.max_epochs} epochs.")
+    views = [(run_dir, cards.state_of(cfg), "")]
+    if cfg.premarket == "optional":
+        views += [(run_dir.with_name(run_dir.name + STATE_SUFFIX[s]), s, STATE_SUFFIX[s])
+                  for s in cfg.scoring_states[:-1]]
+    label = (card.pop("label", None) or model_card.read(run_dir).get("label")
+             or model_card.default_label("TFT", run_dir))
+    for path, state, suffix in views:
+        forecast = cards.FORECAST[state]
+        model_card.write(
+            path, kind="TFT", forecast=forecast, inputs=inputs,
+            folds=cards.folds_text(cfg, len(folds)) + (
+                f" Scored in the {state} state ({forecast}): the same checkpoint as "
+                f"`{run_dir.name}`." if suffix else ""),
+            status=status, label=label + suffix,
+            result=model_card.contract_result(path) if status == "done" else None, **card)
+
+
+def run(cfg: TrainConfig, *, max_hours: float | None = None, resume: Path | None = None,
+        card: dict | None = None) -> Path:
     """Train every selected fold. With `resume` (a run dir) continue that run: cfg must come
     from from_run, finished folds are skipped and the paused fold continues from resume.ckpt.
-    Returns the run dir; its state.json says paused or done."""
+    `card`: MODEL.md fields (model_card.from_args). Returns the run dir; its state.json says
+    paused or done."""
     df, meta = load_panel(cfg)
     if resume is not None:
         run_dir = Path(resume)
@@ -261,6 +299,7 @@ def run(cfg: TrainConfig, *, max_hours: float | None = None, resume: Path | None
                     {"view_of": run_dir.name, "state": state, **info}, indent=2, default=str))
     print(f"run {run_dir.name}: {len(df):,} rows, {df['symbol'].nunique():,} symbols, "
           f"day_idx {df['day_idx'].min()}-{df['day_idx'].max()}")
+    _write_cards(run_dir, cfg, folds, "running", card)
 
     budget = TimeBudget(max_hours, run_dir / "STOP", run_dir / "resume.ckpt")
     _set_state(run_dir, "running", path=os.path.realpath(run_dir))
@@ -289,6 +328,7 @@ def run(cfg: TrainConfig, *, max_hours: float | None = None, resume: Path | None
                 raise
         if result is None:
             _set_state(run_dir, "paused", fold=k)
+            _write_cards(run_dir, cfg, folds, "paused")
             print(f"paused in fold {k}; continue with: tft-vwap --resume {run_dir}")
             return run_dir
         results.append((k, result))
@@ -317,6 +357,7 @@ def run(cfg: TrainConfig, *, max_hours: float | None = None, resume: Path | None
     build_report(run_dir)  # per-stock / per-day calibration grid, bias and ladder hits
     (run_dir / "progress.json").unlink(missing_ok=True)
     _set_state(run_dir, "done")
+    _write_cards(run_dir, cfg, folds, "done")
     print(f"results: {run_dir} (calibration report: {run_dir / 'report'})")
     return run_dir
 
@@ -399,19 +440,33 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dedupe-train", action=argparse.BooleanOptionalAction,
                    default=d.dedupe_train,
                    help="one training sample per (symbol, day) instead of per encoder length")
+    p.add_argument("--drop-constant-statics", action=argparse.BooleanOptionalAction,
+                   default=d.drop_constant_statics,
+                   help="leave out static inputs with one value in a fold's training rows "
+                        "(issue_type on a common-stocks-only panel)")
     p.add_argument("--seed", type=int, default=d.seed)
     p.add_argument("--max-hours", type=float, default=None,
                    help="pause at an epoch end after this long (continue with --resume)")
     p.add_argument("--resume", type=Path, default=None,
-                   help="continue a paused run dir; only --max-hours may be given with it")
+                   help="continue a paused run dir; only --max-hours, --num-workers and the "
+                        "card flags may be given with it")
+    model_card.add_args(p)
     a = p.parse_args(argv)
     torch.set_float32_matmul_precision("medium")
+    # pytorch_forecasting scales numpy arrays with frame-fitted scalers: one warning per batch
+    warnings.filterwarnings("ignore", message="X does not have valid feature names")
+    card = model_card.from_args(a, "tft-vwap", argv)
     if a.resume:
-        given = {k for k, v in vars(a).items() if v != p.get_default(k)} - {"resume", "max_hours"}
+        # data loading only: the samples, batches and model are the same with any worker count
+        runtime = {"resume", "max_hours", "num_workers", "label", "about", "purpose"}
+        given = {k for k, v in vars(a).items() if v != p.get_default(k)} - runtime
         if given:
-            p.error("--resume reuses the run's saved settings; only --max-hours may be given "
-                    f"with it (got {sorted(given)})")
-        run(from_run(a.resume), max_hours=a.max_hours, resume=a.resume)
+            p.error("--resume reuses the run's saved settings; only --max-hours, --num-workers "
+                    f"and the card flags may be given with it (got {sorted(given)})")
+        workers = a.num_workers if a.num_workers != p.get_default("num_workers") else None
+        card.pop("command")  # keep the command that started the run
+        run(from_run(a.resume, num_workers=workers), max_hours=a.max_hours, resume=a.resume,
+            card=card)
         return 0
     n_folds = a.n_folds if a.n_folds is not None else (0 if a.min_train_sessions else d.n_folds)
     run(TrainConfig(
@@ -426,8 +481,8 @@ def main(argv: list[str] | None = None) -> int:
         earnings=a.earnings, market=a.market, macro=a.macro, session_shape=a.session_shape,
         after_hours=a.after_hours, premarket=a.premarket, pm_groups=a.pm_groups,
         pm_mask_full=a.pm_mask_full, pm_mask_px=a.pm_mask_px,
-        dedupe_train=a.dedupe_train, seed=a.seed,
-    ), max_hours=a.max_hours)
+        dedupe_train=a.dedupe_train, drop_constant_statics=a.drop_constant_statics, seed=a.seed,
+    ), max_hours=a.max_hours, card=card)
     return 0
 
 

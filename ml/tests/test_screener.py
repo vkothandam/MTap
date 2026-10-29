@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 from conftest import synthetic_panel
 
+import model_card
 from screener.evaluate import daily_picks, paired_bootstrap
 from screener.features import (
     COMMON_FEATURES,
@@ -185,6 +186,8 @@ def test_train_and_score(world, tmp_path):
                       Rules(min_price=0, min_dollar_volume=0, top_n=3))
     summary = json.loads((model_dir / "summary.json").read_text())
     assert summary["folds"] == [0, 1, 2]
+    card = model_card.read(model_dir)
+    assert card["kind"] == "Screener" and card["status"] == "done" and "px: top-3" in card["result"]
     px = summary["states"]["px"]
     assert px["days"] > 0 and "screener_minus_naive_atr" in px
     # the persistent per-symbol range signal must beat a random pick

@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import model_card
 from tft_vwap import calibration, dataset, evaluate, grade, predict, report, train
 from tft_vwap.config import TrainConfig, from_run
 
@@ -123,6 +124,9 @@ def test_train_smoke_writes_results(panel_path, tmp_path, target, normalizer):
     signals = pd.read_csv(run_dir / "calibration_signals.csv")
     assert len(signals) == 12 * 4  # default moves x confidences
     assert (run_dir / "report" / "grid_by_symbol.csv").exists()  # run() builds the report
+    card = model_card.read(run_dir)
+    assert card["kind"] == "TFT" and card["forecast"] == "night" and card["status"] == "done"
+    assert card["label"].startswith("TFT ") and card["result"].startswith("Skill ")
 
     # frozen-model forecast for the session after the panel: checkpoint is only read
     ckpt = run_dir / "fold_1" / "best.ckpt"

@@ -119,6 +119,9 @@ class TrainConfig:
     premarket_cutoff: str | None = None  # from the panel meta at train time; predict checks it
     # one training sample per (symbol, target day) instead of one per encoder length
     dedupe_train: bool = True
+    # leave out static categoricals with one value in the training rows (issue_type on a
+    # common-stocks-only panel): a constant input the model cannot learn from
+    drop_constant_statics: bool = True
 
     # walk-forward: `n_folds` test blocks of `fold_len` sessions ending at the last session
     # (or at `test_end`, a day_idx, to repeat an earlier run's folds on a longer panel); the
@@ -232,7 +235,8 @@ REPORT_FIELDS = frozenset({"moves", "confidences", "prob_buckets"})
 # trained without them
 ADDED_INPUTS = {"earnings": "off", "series_breaks": False, "market": False, "macro": False,
                 "session_shape": False, "after_hours": False, "premarket": "off",
-                "dedupe_train": False, "pm_groups": "px,full"}
+                "dedupe_train": False, "pm_groups": "px,full",
+                "drop_constant_statics": False}
 
 
 def from_run(run_dir: Path, **overrides) -> TrainConfig:

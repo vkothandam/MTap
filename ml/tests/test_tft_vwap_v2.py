@@ -11,6 +11,7 @@ from conftest import SCHEMA4_COLUMNS, make_next, write_panel
 from lightning.pytorch.callbacks import EarlyStopping
 from pytorch_forecasting import TemporalFusionTransformer
 
+import model_card
 from tft_vwap import compare, dataset, grade, overlay, predict, train
 from tft_vwap.config import (
     AFTER_HOURS_REALS,
@@ -92,6 +93,21 @@ def test_train_dedupe_keeps_one_sample_per_symbol_day(panel_df, tmp_path):
         zip(full.decoded_index["symbol"], full.decoded_index["time_idx_first_prediction"]))
 
 
+def test_longest_encoder_drops_repeated_samples():
+    # pytorch-forecasting emitted WALD's (691..750) sample twice next to missing days on the
+    # 5-year panel, which broke the one-to-one merge in score_frame
+    class Stub:
+        decoded_index = pd.DataFrame({
+            "symbol": ["A", "A", "A", "B"], "time_idx_first": [691, 700, 691, 5],
+            "time_idx_last": [750] * 3 + [30], "time_idx_first_prediction": [750] * 3 + [30]})
+
+        def filter(self, f, copy=True):
+            return self.decoded_index[f(self.decoded_index)]
+
+    kept = dataset.longest_encoder(Stub())
+    assert list(kept.index) == [0, 3]
+
+
 def _batch(panel_df, tmp_path, **kw):
     cfg = _cfg(tmp_path, tmp_path, premarket="optional", **kw)
     df = dataset.prepare(panel_df, extra=cfg.extra_reals)
@@ -148,9 +164,15 @@ def test_pm_mask_collate_blanks_groups_decoder_only(panel_df, tmp_path):
 
 def test_optional_run_pm_in_decoder_scores_per_state(panel4_path, tmp_path):
     cfg = _cfg(panel4_path, tmp_path, premarket="optional", only_folds=[1], max_epochs=2)
-    run_dir = train.run(cfg)
+    run_dir = train.run(cfg, card={"label": "R4x", "purpose": "masking test"})
     cj = json.loads((run_dir / "config.json").read_text())
     assert cj["config"]["premarket_cutoff"] == "09:25" and cj["config"]["test_end"] == 1149
+    # one card per state: the main run is the 09:45 forecast, siblings carry the suffix
+    for suffix, label, forecast in (("", "R4x", "09:45"), ("~px", "R4x~px", "09:30"),
+                                    ("~night", "R4x~night", "night")):
+        card = model_card.read(run_dir.with_name(run_dir.name + suffix))
+        assert (card["label"], card["forecast"], card["status"]) == (label, forecast, "done")
+        assert card["purpose"] == "masking test" and card["result"].startswith("Skill ")
     model = TemporalFusionTransformer.load_from_checkpoint(run_dir / "fold_1" / "best.ckpt")
     assert set(PREMARKET_REALS) <= set(model.hparams.time_varying_reals_decoder)
     assert set(PREMARKET_REALS) <= set(model.dataset_parameters["time_varying_known_reals"])
@@ -235,8 +257,9 @@ def test_prices_only_model_has_no_full_group(panel4_path, tmp_path):
 
 def test_resume_continues_the_paused_fold(panel4_path, tmp_path, monkeypatch):
     cfg = _cfg(panel4_path, tmp_path, only_folds=[1], max_epochs=4, patience=3, premarket="on")
-    run_dir = train.run(cfg, max_hours=1e-9)  # one epoch, then the budget is gone
+    run_dir = train.run(cfg, max_hours=1e-9, card={"label": "R9"})  # one epoch, then paused
     assert json.loads((run_dir / "state.json").read_text())["status"] == "paused"
+    assert model_card.read(run_dir)["status"] == "paused"
     fold = run_dir / "fold_1"
     assert (fold / "resume.ckpt").exists() and not (fold / "test_predictions.parquet").exists()
     assert not (run_dir / "summary.json").exists()  # a half-trained fold is never scored
@@ -250,6 +273,8 @@ def test_resume_continues_the_paused_fold(panel4_path, tmp_path, monkeypatch):
                         lambda self, sd: (seen.append(dict(sd)), orig(self, sd))[1])
     done = train.run(from_run(run_dir), resume=run_dir)
     assert done == run_dir and json.loads((run_dir / "state.json").read_text())["status"] == "done"
+    card = model_card.read(run_dir)
+    assert card["label"] == "R9" and card["status"] == "done" and card["forecast"] == "09:45"
     assert seen and seen[0]["wait_count"] == es_state["wait_count"]
     assert seen[0]["best_score"] == es_state["best_score"]
     assert not list(fold.glob("best-v*.ckpt")) and (fold / "best.ckpt").exists()
@@ -270,6 +295,28 @@ def test_resume_cli_refuses_model_overrides(tmp_path, capsys):
     with pytest.raises(SystemExit):
         train.main(["--resume", str(tmp_path), "--hidden-size", "64"])
     assert "only --max-hours" in capsys.readouterr().err
+
+
+def test_resume_cli_takes_num_workers(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(train, "from_run", lambda d, **kw: seen.setdefault("kw", kw))
+    monkeypatch.setattr(train, "run", lambda cfg, **kw: None)
+    assert train.main(["--resume", str(tmp_path), "--num-workers", "4"]) == 0
+    assert seen.pop("kw") == {"num_workers": 4}
+    assert train.main(["--resume", str(tmp_path)]) == 0
+    assert seen["kw"] == {"num_workers": None}  # the run's saved count
+    assert train.main(["--resume", str(tmp_path), "--label", "R9"]) == 0  # card flags are fine
+
+
+def test_paused_run_resumes_with_workers(panel_path, tmp_path):
+    cfg = _cfg(panel_path, tmp_path, only_folds=[1], max_epochs=2, patience=3)
+    run_dir = train.run(cfg, max_hours=1e-9)
+    assert json.loads((run_dir / "state.json").read_text())["status"] == "paused"
+    resumed = from_run(run_dir, num_workers=2)
+    assert resumed.num_workers == 2
+    assert train.run(resumed, resume=run_dir) == run_dir
+    assert json.loads((run_dir / "state.json").read_text())["status"] == "done"
+    assert json.loads((run_dir / "fold_1" / "metrics.json").read_text())["test"]["rows"] > 0
 
 
 def test_stop_file_pauses(panel_path, tmp_path):
@@ -469,8 +516,11 @@ def test_overlay_never_crosses_and_never_uses_its_own_fold(tmp_path, panel4_path
         assert (o[["symbol", "day_idx", "prev_vwap", "actual"]].values == b[
             ["symbol", "day_idx", "prev_vwap", "actual"]].values).all()
     # R6f uses more columns than R6p, writes elsewhere
-    f = overlay.overlay(base, panel4_path, inputs="full")
+    f = overlay.overlay(base, panel4_path, inputs="full", card={"label": "R6f"})
     assert f.name == "base-overlay-full" and overlay.INPUTS["px"] == PM_PX_REALS
+    card = model_card.read(f)
+    assert (card["label"], card["forecast"], card["kind"]) == ("R6f", "09:45", "Overlay")
+    assert model_card.read(out)["forecast"] == "09:30" and "thin" in model_card.read(out)["folds"]
 
     # fold 1 is scored by a model fitted on fold 0 alone: corrupting fold 2 changes nothing
     # for fold 1, while corrupting fold 0 does
@@ -493,7 +543,11 @@ def test_gbm_runs_the_contract_and_loads_in_compare(tmp_path, panel4_path):
     from tft_vwap import gbm
     cfg = _cfg(panel4_path, tmp_path, n_folds=2, fold_len=10, early_stop_len=5,
                premarket="on", market=True, after_hours=True)
-    out = gbm.run(cfg, max_iter=10)
+    out = gbm.run(cfg, max_iter=10, card={"label": "R7f", "summary": "HGB + full pre-market"})
+    card = model_card.read(out)
+    assert (card["label"], card["forecast"], card["kind"], card["status"]) == (
+        "R7f", "09:45", "GBM", "done")
+    assert card["summary"] == "HGB + full pre-market" and card["result"].startswith("Skill ")
     cj = json.loads((out / "config.json").read_text())
     assert cj["model"] == "gbm" and len(cj["folds"]) == 2 and (out / "summary.json").exists()
     for k in (0, 1):
@@ -563,3 +617,19 @@ def test_progress_written_and_status(panel_path, tmp_path, capsys):
     train.run(from_run(run_dir), resume=run_dir)
     assert not (run_dir / "progress.json").exists()
     assert progress.status(run_dir).endswith(": done")
+
+
+def test_constant_statics_dropped(panel_df, tmp_path):
+    df = dataset.prepare(panel_df)  # conftest: every stock is issue_type CS
+    cfg = _cfg(tmp_path, tmp_path)
+    fold = dataset.make_folds(df, cfg)[0]
+    train = dataset.build_datasets(df, cfg, fold)[0]
+    assert "issue_type" not in train.static_categoricals and "symbol" in train.static_categoricals
+    kept = dataset.build_datasets(df, _cfg(tmp_path, tmp_path, drop_constant_statics=False), fold)[0]
+    assert "issue_type" in kept.static_categoricals
+
+
+def test_run_saved_before_drop_constant_statics_kept_them(tmp_path):
+    saved = {k: v for k, v in TrainConfig().to_dict().items() if k != "drop_constant_statics"}
+    (tmp_path / "config.json").write_text(json.dumps({"config": saved}))
+    assert from_run(tmp_path).drop_constant_statics is False

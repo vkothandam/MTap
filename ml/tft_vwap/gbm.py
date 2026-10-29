@@ -12,7 +12,8 @@ from row d). The target is the move vs the last VWAP. One HistGradientBoostingRe
 loss="quantile") per quantile, fitted on forecast days before the fold's early-stop block
 (no early stopping: a fixed `--max-iter`), outputs sorted so none cross. Writes
 runs/<stamp>-gbm-<n>sym/{config.json, summary.json, fold_k/{test_predictions,metrics}} with the
-TFT runs' columns, so compare, the dashboard and overlay read it like a TFT run.
+TFT runs' columns, so compare, the dashboard and overlay read it like a TFT run, plus the
+MODEL.md card (`--label`, `--about`, `--purpose`; model_card).
 """
 
 from __future__ import annotations
@@ -28,6 +29,9 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 
+import model_card
+
+from . import cards
 from .config import EARNINGS_MODES, KNOWN_REALS, PM_GROUP_CHOICES, PREMARKET_MODES, TrainConfig
 from .dataset import Fold, load_panel, make_folds
 from .evaluate import qcol
@@ -89,7 +93,8 @@ def run_fold(feat: pd.DataFrame, df: pd.DataFrame, cfg: TrainConfig, fold: Fold,
                      validate="one_to_one")
 
 
-def run(cfg: TrainConfig, *, max_iter: int = 200, max_train_rows: int | None = None) -> Path:
+def run(cfg: TrainConfig, *, max_iter: int = 200, max_train_rows: int | None = None,
+        card: dict | None = None) -> Path:
     df, meta = load_panel(cfg)
     folds = make_folds(df, cfg)
     cfg.test_end, cfg.n_folds = folds[-1].test_end, len(folds)
@@ -100,6 +105,12 @@ def run(cfg: TrainConfig, *, max_iter: int = 200, max_train_rows: int | None = N
         {"model": "gbm", "config": cfg.to_dict(), "panel_meta": meta,
          "folds": [asdict(f) for f in folds], "max_iter": max_iter,
          "lags": list(LAGS)}, indent=2, default=str))
+    text = dict(kind="GBM", forecast=cards.FORECAST[cards.state_of(cfg)],
+                inputs=cards.inputs_text(cfg, "HGB per quantile (no TFT)")
+                + f" Last-day inputs + lags {list(LAGS[1:])} of the move; {max_iter} iterations"
+                + (f", up to {max_train_rows:,} training rows" if max_train_rows else "") + ".",
+                folds=cards.folds_text(cfg, len(folds)))
+    model_card.write(out, **text, **(card or {}))
     feat = build_features(df, cfg)
     print(f"run {out.name}: {len(feat):,} samples, {len(_xcols(feat))} features")
     done = {}
@@ -115,6 +126,7 @@ def run(cfg: TrainConfig, *, max_iter: int = 200, max_train_rows: int | None = N
         write_summary(out, done)
     (out / "state.json").write_text(json.dumps(
         {"status": "done", "path": os.path.realpath(out)}, indent=2))
+    model_card.write(out, **text, status="done", result=model_card.contract_result(out))
     return out
 
 
@@ -142,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-iter", type=int, default=200)
     p.add_argument("--max-train-rows", type=int, default=None, help="subsample the training rows")
     p.add_argument("--seed", type=int, default=d.seed)
+    model_card.add_args(p)
     a = p.parse_args(argv)
     n_folds = a.n_folds if a.n_folds is not None else (0 if a.min_train_sessions else d.n_folds)
     out = run(TrainConfig(
@@ -151,7 +164,8 @@ def main(argv: list[str] | None = None) -> int:
         min_train_sessions=a.min_train_sessions, test_end=a.test_end, earnings=a.earnings,
         market=a.market, macro=a.macro, session_shape=a.session_shape,
         after_hours=a.after_hours, premarket=a.premarket, pm_groups=a.pm_groups, seed=a.seed,
-    ), max_iter=a.max_iter, max_train_rows=a.max_train_rows)
+    ), max_iter=a.max_iter, max_train_rows=a.max_train_rows,
+        card=model_card.from_args(a, "tft-vwap-gbm", argv))
     print(f"wrote {out}")
     return 0
 

@@ -150,12 +150,22 @@ def _normalizer(cfg: TrainConfig):
     return GroupNormalizer(groups=["symbol"], transformation=transformation)
 
 
+def static_categoricals(train_df: pd.DataFrame, cfg: TrainConfig) -> list[str]:
+    """STATIC_CATEGORICALS, less those with one value in the training rows when
+    cfg.drop_constant_statics (symbol always stays: it is the series id)."""
+    if not cfg.drop_constant_statics:
+        return list(STATIC_CATEGORICALS)
+    return [c for c in STATIC_CATEGORICALS if c == "symbol" or train_df[c].nunique() > 1]
+
+
 def build_datasets(
     df: pd.DataFrame, cfg: TrainConfig, fold: Fold
 ) -> tuple[TimeSeriesDataSet, TimeSeriesDataSet, TimeSeriesDataSet]:
     """(train, early_stop, test) datasets; the latter two reuse train's encoders/normalizers."""
+    train_df = df[df["day_idx"] < fold.es_start]
+    statics = static_categoricals(train_df, cfg)
     train = TimeSeriesDataSet(
-        df[df["day_idx"] < fold.es_start],
+        train_df,
         time_idx="day_idx",
         target=cfg.target_col,
         group_ids=["symbol"],
@@ -163,12 +173,12 @@ def build_datasets(
         min_encoder_length=cfg.min_encoder_length,
         max_prediction_length=1,
         min_prediction_length=1,
-        static_categoricals=list(STATIC_CATEGORICALS),
+        static_categoricals=statics,
         time_varying_known_reals=cfg.known_reals,
         time_varying_unknown_reals=[cfg.target_col, *cfg.observed_reals],
         target_normalizer=_normalizer(cfg),
         weight="loss_weight" if cfg.target == "vwap" else None,
-        categorical_encoders={c: NaNLabelEncoder(add_nan=True) for c in STATIC_CATEGORICALS},
+        categorical_encoders={c: NaNLabelEncoder(add_nan=True) for c in statics},
         # pre-market values and flags stay raw: 0 means blank (see PmMaskCollate)
         scalers={c: None for c in UNSCALED_REALS if c in (*cfg.known_reals, *cfg.observed_reals)},
         add_relative_time_idx=True,
@@ -191,10 +201,15 @@ def build_datasets(
 
 def longest_encoder(ds: TimeSeriesDataSet, copy: bool = True) -> TimeSeriesDataSet:
     """One sample per (symbol, forecast day): the one with the most history. Evaluation sets
-    otherwise repeat each day once per encoder length from min_encoder_length up."""
+    otherwise repeat each day once per encoder length from min_encoder_length up. Next to
+    missing timesteps pytorch-forecasting can also emit the same sample twice (seen on the
+    5-year panel: WALD, gaps around day 750), so ties keep only the first."""
     idx = ds.decoded_index
-    first = idx.groupby(["symbol", "time_idx_first_prediction"])["time_idx_first"].transform("min")
-    return ds.filter(lambda d: (d["time_idx_first"] == first).to_numpy(), copy=copy)
+    key = ["symbol", "time_idx_first_prediction"]
+    first = idx.groupby(key)["time_idx_first"].transform("min")
+    keep = (idx["time_idx_first"] == first).to_numpy().copy()
+    keep[keep] = ~idx[keep].duplicated(key).to_numpy()
+    return ds.filter(lambda d: keep, copy=copy)
 
 
 STATE_RATES = {"night": {"px": 1.0, "full": 1.0}, "px": {"px": 0.0, "full": 1.0},

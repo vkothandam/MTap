@@ -9,6 +9,8 @@ writes runs/intraday/<run_id>/{config.json, summary.json, report/} plus, per fol
 fold_<k>/{best.ckpt, metrics.json, baselines.json, intraday_<target>.parquet, logs/}.
 The prediction files are the dashboard's intraday contract (forecast_dash/intraday_contract.py):
 one row per (symbol, date, t_s) test decision, every value a log move from the last price at t.
+Each run also gets a MODEL.md card (`--label`, `--about`, `--purpose`; model_card): written when
+it starts, then with the per-target skill vs climatology when it ends.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import argparse
 import gc
 import json
 import time
+import warnings
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +31,8 @@ import torch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
 from pytorch_forecasting import TemporalFusionTransformer
+
+import model_card
 from torch import nn
 
 from . import baselines, daily_join, report
@@ -173,6 +178,7 @@ def train_fold(cfg: IntradayConfig, meta: dict, fold: Fold, fold_dir: Path, symb
             callbacks=[EarlyStopping(monitor="val_loss", patience=cfg.patience), ckpt],
             logger=CSVLogger(fold_dir, name="logs", version=""),
             enable_model_summary=False,
+            enable_progress_bar=False,  # a bar per batch fills logs by GBs
         )
         t1 = time.time()
         trainer.fit(model, train_dataloaders=train_dl, val_dataloaders=es_dl)
@@ -203,7 +209,17 @@ def train_fold(cfg: IntradayConfig, meta: dict, fold: Fold, fold_dir: Path, symb
     return result
 
 
-def run(cfg: IntradayConfig) -> Path:
+def _card_result(by_target: pd.DataFrame | None, baselines_only: bool) -> str:
+    if by_target is None or by_target.empty or "skill_clim" not in by_target:
+        return "No test fold scored."
+    t = by_target[by_target["model"] == "tft"]
+    return (("Baselines only (no TFT; q* are momentum's). " if baselines_only else "")
+            + "Skill vs climatology per target (1 − pinball ÷ climatology's): "
+            + ", ".join(f"{r.target} {r.skill_clim:+.1%}" for r in t.itertuples())
+            + f"; {int(t['n'].max()):,} test decisions. Per-target table: `report/by_target`.")
+
+
+def run(cfg: IntradayConfig, card: dict | None = None) -> Path:
     meta = read_meta(cfg.panel)
     folds = make_folds(meta, cfg)
     symbols = pick_symbols(cfg.panel, meta["dates"], cfg.symbols, cfg.seed)
@@ -223,6 +239,19 @@ def run(cfg: IntradayConfig) -> Path:
                                             "features", "tmask_bits", "target_unit")},
     }, indent=2, default=str))
     print(f"run {run_id}: {len(folds)} folds, {n_sym} symbols")
+    n_run = sum(cfg.only_folds is None or k in cfg.only_folds for k in range(len(folds)))
+    text = dict(
+        kind="Intraday", forecast="intraday",
+        inputs=("Baselines only (climatology, momentum), no model" if cfg.baselines_only else
+                f"Intraday TFT, {len(TARGETS)} targets ({', '.join(TARGETS)}) from each "
+                f"{meta['step_s']} s decision point; {cfg.encoder_steps} encoder steps, hidden "
+                f"{cfg.hidden_size}" + ("" if cfg.use_group else ", no market/sector inputs"))
+               + f". Panel `{cfg.panel}`, {n_sym} symbols"
+               + (f"; morning forecast from `{cfg.daily_run.name}`" if cfg.daily_run else "") + ".",
+        folds=f"{n_run} of {len(folds)} folds; test days "
+              + "; ".join(",".join(f.test_dates) for k, f in enumerate(folds)
+                          if cfg.only_folds is None or k in cfg.only_folds) + ".")
+    model_card.write(run_dir, **text, **(card or {}))
 
     results = {}
     for k, fold in enumerate(folds):
@@ -240,6 +269,7 @@ def run(cfg: IntradayConfig) -> Path:
         indent=2, default=str))
     if "by_target" in tables:
         print(report.format_summary(tables["by_target"]))
+    model_card.write(run_dir, **text, status="done", result=_card_result(tables.get("by_target"), cfg.baselines_only))
     print(f"results: {run_dir}")
     return run_dir
 
@@ -270,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--num-workers", type=int, default=d.num_workers)
     p.add_argument("--baselines-only", action="store_true")
     p.add_argument("--seed", type=int, default=d.seed)
+    model_card.add_args(p)
     a = p.parse_args(argv)
     blocks = d.test_blocks
     if a.test_blocks:
@@ -277,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.daily_folds:
         blocks = [[x] for b in blocks for x in b]
     torch.set_float32_matmul_precision("medium")
+    warnings.filterwarnings("ignore", message="X does not have valid feature names")
     run(IntradayConfig(
         panel=a.panel, out_dir=a.out,
         daily_run=None if a.daily_run.lower() == "none" else Path(a.daily_run),
@@ -287,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=a.batch_size, hidden_size=a.hidden_size, learning_rate=a.learning_rate,
         accelerator=a.accelerator, num_workers=a.num_workers, baselines_only=a.baselines_only,
         seed=a.seed,
-    ))
+    ), card=model_card.from_args(a, "tft-intraday", argv))
     return 0
 
 

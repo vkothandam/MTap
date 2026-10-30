@@ -74,7 +74,7 @@ pre-market):
   but stays worse calibrated even after recal, and it needs a TFT: not chosen.
 - **R8, the screener on R5~px-cal (09:30), is kept:** its top 20 move 12.5% from the open on
   average vs 11.0% for the naive ATR top 20 (+1.53 pts, CI 1.42–1.63) and 12.2% for the TFT-width
-  top 20; above the universe median on 99.2% of days (819 days).
+  top 20; above the universe median on 99.2% of days (819 days). **R8b**, the same screener on the chosen R5~px-cal20s (`ml/runs/screener/20261030-033910Z-…~px-cal20s`, 882 days): top 20 range 12.46% vs ATR 10.90% (+1.56 pts, CI 1.45–1.66), vs TFT width 12.10% (+0.35, CI 0.30–0.40), above the universe median on 99.3% of days; its 09:45 re-rank 12.50%. Kept.
 
 **Per forecast** (the pre-market bake-off, 7 odd folds; Q12; pinball first, before Q35)
 
@@ -100,7 +100,7 @@ pre-market):
 | R7 | plain HGB per quantile, R1c's inputs, no TFT | 1.3% better than R1c (CI clear); skill 28.0%, calibration good (0.80 pts) | **leads at night**; gains largest in early folds |
 | R7f | R7 + full pre-market always on, 7 odd folds | ties R6f; 0.76% better than R4f, 1.6% better than R4 | tied lead at 09:45, until R5 |
 | R5 | one HGB, optional pre-market (09:30 `~px` and 09:45 from one fit), + open, volatility, 600 tail iterations; folds 0–14 | skill 38.3%; after recal 3.5% better than R7f-cal, 4.4% better than R6p-cal (CIs clear, every fold) | **the single 09:30+ model**, with rolling recal (R5-cal20s) |
-| R8 | screener on R5~px-cal | top 20 range 12.5% vs ATR 11.0% (CI clear) | **kept** |
+| R8, R8b | screener on R5~px-cal; R8b on R5~px-cal20s (the chosen model) | top 20 range 12.5% vs ATR 10.9–11.0% (CI clear) | **kept; R8b goes with R5-cal20s** |
 
 **Running and queued:** nothing (R5 queue ended 18:26 PT, runs backed up to the NAS).
 **Production switch: the user's call** (rule 10-28: after all models are evaluated, now done).
@@ -190,6 +190,8 @@ rolling 20-session recalibration** (R5-cal20s, Q36); the production switch waits
 |---|---|
 | Quantile (P10, P90 …) | "P90 = +2%" means the model gives a 90% chance that the move is at most +2% |
 | Calibration | Whether the stated probabilities come true as often as stated (P90 holds 90% of the time) |
+| Recalibration | Shifting each quantile by how far it missed on recent forecasts with known outcomes, so it comes true as often as stated again. Changes the band's position, not its information (Q35, Q36) |
+| Rolling recalibration | Recalibration where each day's shift comes from the last N sessions (here 20) before it, so it follows a drifting error; live = the last 20 graded days |
 | Pinball (quantile) loss | The score for quantile forecasts; lower is better. A big miss counts in proportion to its size, not squared |
 | Baseline | A simple rule with no learning, e.g. "tomorrow's spread looks like this stock's last 60 days". Every model must beat it |
 | Skill | The % improvement in pinball loss over a baseline |

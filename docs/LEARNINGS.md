@@ -1285,6 +1285,7 @@ quarter to the next, so last quarter's shift is often the wrong way; the last 20
 mean range from the open): screener 0.1249, naive ATR 0.1096, TFT width 0.1215, random 0.0282.
 Screener − ATR +0.0153 (0.0142 … 0.0163), screener − width +0.0034 (0.0029 … 0.0040); above the
 universe median on 99.2% of days. **Kept** (Q15's rule: beat ATR with a CI clear of 0).
+R8b, the same screener on the chosen R5~px-cal20s (`ml/runs/screener/20261030-033910Z-…~px-cal20s`, 882 days): top 20 range 12.46% vs ATR 10.90% (+1.56 pts, CI 1.45–1.66), vs TFT width 12.10% (+0.35, CI 0.30–0.40), above the universe median on 99.3% of days; its 09:45 re-rank 12.50%. Kept.
 
 **Verdict.** R5 + rolling 20-session recal is the candidate single model for 09:30 and 09:45,
 best in pinball and in pooled calibration. Production switch: the user's call (MODEL-STRATEGY Q36).

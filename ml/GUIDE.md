@@ -153,6 +153,18 @@ Tags: `guide-model`
 - **R7, plain HGB** (`tft-vwap-gbm`): one HGB per quantile on the last day's inputs plus lags
   0, 1, 2, 5 and 20 of the target, same folds and run files. It checks that the TFT earns its
   cost, and it is the cheap screen for any new input group (Q21 rule 3).
+- **Recalibration** (`tft-vwap-recal`, applied to any run's out-of-fold forecasts): each quantile
+  P_τ is shifted by the τ-quantile of (actual − P_τ) on earlier forecasts with known outcomes, so
+  τ of the actuals land below it again; then the quantiles are sorted so none cross. A shift
+  moves the band, it adds no information: pinball stays within ~0.3%.
+  - **Calibration rows:** `--window K` = the K test folds before the target fold; `--sessions N`
+    (**chosen**, N = 20) = the N sessions before each forecast day, from any fold. Never the day
+    itself or later.
+  - **Groups** (`--by pm,width`): with or without full pre-market × P5–P95 width tercile (cut on
+    the calibration rows). A group with fewer than 2,000 calibration rows uses the all-rows shift.
+  - **Why rolling:** R5's error changes sign between quarters, so a 4-fold shift is often the
+    wrong way (0.57 pts); the last 20 sessions follow it (0.18 pts). Live, the same shifts come
+    from the last 20 graded days (MODEL-STRATEGY Q35–Q36).
 - **Screener** (`ml/screener`, R8): HGB on the range from the open, for the 09:30 watch list.
 - **Phase 2:** AutoGluon, Chronos-2, DeepAR and others ([docs/TODO.md](../docs/TODO.md)).
 
@@ -249,6 +261,7 @@ in detail: [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-ml-daily`.
 | R5 `20261029-211059Z-gbm` (+`~px`) | **one HGB for 09:30 and 09:45** (`--premarket optional`), + the open for every stock, past volatility, 600 tail iterations | 0–14 | **best so far:** skill 38.3%; after recal 3.5% better than R7f-cal, 4.4% better than R6p-cal (CIs clear, every fold) |
 | R5-cal20s, R5~px-cal20s | R5 with rolling recal: each day on the 20 sessions before it (`tft-vwap-recal --sessions 20 --by pm,width`) | 0–14 | **the candidate single model:** mean \|q err\| 0.18 pts (excellent), good or excellent in 13 of 14 folds; the 4-fold R5-cal only 0.57 |
 | R8 `screener/20261030-011637Z-…` | screener on R5~px-cal | odd | **kept:** top 20 range 12.5% vs ATR 11.0%, CI clear |
+| R8b `screener/20261030-033910Z-…` | screener on R5~px-cal20s (the chosen model) | 882 days | **the screener to use:** 12.46% vs ATR 10.90% (CI 1.45–1.66 pts) |
 | R2 | + fundamentals | | phase 2 (needs dated EPS) |
 
 **R1c vs R0** (3,169,270 forecasts, 945 days; `compare_vs_r0.json`):

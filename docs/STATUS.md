@@ -3,7 +3,7 @@
 The one page that says what runs where, when, on what data, with which secrets and limits.
 The details are in the linked docs.
 
-**Last updated: 2026-10-29 18:45 PT.**
+**Last updated: 2026-10-29 20:50 PT.**
 
 **Keep it current.** Any change to any of these updates this file, in the same change:
 
@@ -460,3 +460,6 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
   R5~px-cal20s written: mean |q err| 0.18 pts, excellent, good or excellent in 13 of 14 folds.
   R8 screener kept. Proposal: R5 + rolling 20-session recal as the single 09:30+ model; the
   production switch waits for the user. [Model performance](#model-performance), MODEL-STRATEGY Q36.
+- 2026-10-29 20:50: R8b (screener on the chosen R5~px-cal20s, `ml/runs/screener/20261030-033910Z-…`) same
+  result as R8 (top 20 range 12.46% vs ATR 10.90%, CI clear). Recalibration documented in ml/GUIDE.md §4 and the
+  MODEL-STRATEGY glossary; live rolling recal + an HGB live predict path added to docs/TODO.md.

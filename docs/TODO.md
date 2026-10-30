@@ -2,6 +2,13 @@
 
 Running list of follow-ups that were decided but deferred. Newest first; tick and date an item when done. What runs today, and where: [STATUS.md](STATUS.md).
 
+- [ ] **Live rolling recalibration for the chosen model (R5-cal20s).** Added 2026-10-29 (ml/MODEL-STRATEGY.md Q36).
+  Each morning: the shifts per pre-market × width group from the last 20 graded days of the model's own forecasts
+  (`tft-vwap-grade` output), applied to the 09:30 and 09:45 forecasts before they are written. Needs the
+  live predict path for the HGB (R5) first: `tft-vwap-gbm` fits per fold and keeps only the test forecasts, no
+  saved models, so a final fit on all sessions (+ saved models) and a `predict --state px|full` for it are to
+  build. Build when the production switch (or a shadow run) is agreed.
+
 - [ ] **Daily model, phase 2 (after the R0–R8 series).** Added 2026-10-27 (ml/MODEL-STRATEGY.md Q12, Q15).
   - **Cross-model bake-off:** AutoGluon-TimeSeries, DeepAR, PatchTST, Chronos, fitted fold by fold on the same 16 folds. Needs a separate environment and hours per fold; done once the inputs are settled.
   - **Recency weighting** of training samples.

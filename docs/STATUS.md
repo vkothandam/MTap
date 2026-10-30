@@ -3,7 +3,7 @@
 The one page that says what runs where, when, on what data, with which secrets and limits.
 The details are in the linked docs.
 
-**Last updated: 2026-10-29 20:50 PT.**
+**Last updated: 2026-10-30 PT.**
 
 **Keep it current.** Any change to any of these updates this file, in the same change:
 
@@ -347,6 +347,7 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
 | [deploy/synology/README.md](../deploy/synology/README.md) | NAS runbook: one-time setup, trial, cutover, rollback, Monday checks |
 | [LEARNINGS.md](LEARNINGS.md) | what the data checks found, by tagged topic |
 | [intraday-model.md](intraday-model.md) | the intraday model: data, the daily forecast as input, folds aligned with the daily model |
+| [forecasting-design-brief.md](forecasting-design-brief.md) | one-page brief for designing alternatives: the goal (up/down momentum ranking from 09:30), daily, screener and intraday inputs and intentions, constraints, baselines, open alternatives |
 | [TODO.md](TODO.md) | deferred work |
 | [database-schema.md](database-schema.md) | DuckDB ER diagrams (generated; CI checks them) |
 | [stock-prediction-plan.md](stock-prediction-plan.md), [next-session-parquet-tft.md](next-session-parquet-tft.md) | ML plans |
@@ -463,3 +464,6 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
 - 2026-10-29 20:50: R8b (screener on the chosen R5~px-cal20s, `ml/runs/screener/20261030-033910Z-…`) same
   result as R8 (top 20 range 12.46% vs ATR 10.90%, CI clear). Recalibration documented in ml/GUIDE.md §4 and the
   MODEL-STRATEGY glossary; live rolling recal + an HGB live predict path added to docs/TODO.md.
+- 2026-10-30: [forecasting-design-brief.md](forecasting-design-brief.md) added: the goal (rank stocks by up/down
+  momentum from 09:30), the daily, screener and intraday inputs, constraints, baselines to beat and alternatives to
+  evaluate, as a starting point for design sessions. Docs only.

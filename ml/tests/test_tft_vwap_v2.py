@@ -592,6 +592,56 @@ def test_recal_groups_get_their_own_shift(monkeypatch):
     assert np.allclose(f.loc[~pm[2], "q50"], 98, atol=0.2)
 
 
+def test_recal_rolling_uses_only_the_sessions_before_each_day(tmp_path, panel4_path, monkeypatch):
+    from tft_vwap import recal
+    monkeypatch.setattr(recal, "MIN_ROWS", 12)
+    folds = {k: range(1100 + 40 * k, 1140 + 40 * k) for k in range(2)}
+    syms = tuple(f"S{i}" for i in range(6))
+    base = _fake_run(tmp_path, "base", folds, shift=0.01, symbols=syms, panel=panel4_path)
+    raw = pd.concat([pd.read_parquet(base / f"fold_{k}" / "test_predictions.parquet") for k in folds])
+    out = recal.run(base, by=(), sessions=5, card={"purpose": "test"})
+    assert out.name == "base-cal5s"
+    cal = pd.concat([pd.read_parquet(out / f"fold_{k}" / "test_predictions.parquet") for k in folds])
+    # the first days lack 12 calibration rows (2 sessions x 6 symbols), so they are left out
+    assert cal["day_idx"].min() == 1102 and json.loads((out / "config.json").read_text())["sessions"] == 5
+    below = lambda f, c: (f["actual"] <= f[c]).mean()
+    assert abs(below(raw, "q50") - 0.5) > 0.1 and abs(below(cal, "q50") - 0.5) < 0.1
+    assert (cal["q10"] <= cal["q50"]).all() and (cal["q50"] <= cal["q90"]).all()
+    assert json.loads((out / "fold_1" / "metrics.json").read_text())["calibrated_on_sessions"] == 5
+    assert model_card.read(out)["label"] == "base-cal5s"
+    # day d's own actuals (and later ones) never move day d; the 5 days before it do
+    d = 1160
+    for k, f in ((k, pd.read_parquet(base / f"fold_{k}" / "test_predictions.parquet")) for k in folds):
+        f.loc[f["day_idx"] >= d, "actual"] *= 1.5
+        f.to_parquet(base / f"fold_{k}" / "test_predictions.parquet", index=False)
+    again = pd.read_parquet(recal.run(base, by=(), sessions=5, out=tmp_path / "again")
+                            / "fold_1" / "test_predictions.parquet")
+    cal = pd.read_parquet(out / "fold_1" / "test_predictions.parquet")
+    before = cal[cal["day_idx"] <= d].sort_values(["day_idx", "symbol"])["q50"].to_numpy()
+    assert np.allclose(before, again[again["day_idx"] <= d].sort_values(["day_idx", "symbol"])["q50"])
+    after = cal[cal["day_idx"] == d + 1].sort_values("symbol")["q50"].to_numpy()
+    assert not np.allclose(after, again[again["day_idx"] == d + 1].sort_values("symbol")["q50"])
+
+
+def test_recal_rolling_groups_get_their_own_shift(monkeypatch):
+    from tft_vwap import recal
+    monkeypatch.setattr(recal, "MIN_ROWS", 10)
+    rng = np.random.default_rng(0)
+    n, flag = 200, np.arange(200) % 2 == 0
+    frames = {0: [], 1: []}
+    for d in range(10):
+        prev = np.full(n, 100.0)
+        act = prev * (1 + np.where(flag, 0.02, -0.02) + rng.normal(0, 0.005, n))
+        frames[d // 5].append(pd.DataFrame({"symbol": [f"S{i}" for i in range(n)], "day_idx": d,
+                                            "prev_vwap": prev, "actual": act, "q50": prev}))
+    frames = {k: pd.concat(v, ignore_index=True) for k, v in frames.items()}
+    pm = {k: np.tile(flag, len(v) // n) for k, v in frames.items()}
+    out = recal.recalibrate_rolling(frames, [0.5], ["q50"], sessions=3, by=("pm",), pm=pm)
+    f, m = out[1], np.tile(flag, 5)
+    assert sorted(out) == [0, 1] and out[0]["day_idx"].min() == 1
+    assert np.allclose(f.loc[m, "q50"], 102, atol=0.2) and np.allclose(f.loc[~m, "q50"], 98, atol=0.2)
+
+
 def test_gbm_runs_the_contract_and_loads_in_compare(tmp_path, panel4_path):
     from tft_vwap import gbm
     cfg = _cfg(panel4_path, tmp_path, n_folds=2, fold_len=10, early_stop_len=5,

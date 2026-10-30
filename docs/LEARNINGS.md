@@ -1203,6 +1203,92 @@ What it shows:
   late folds.
 - R7 (HGB, night) and R7f (HGB + pre-market) came next: see the R7 entry above.
 
+### 2026-10-29 R5, the single 09:30+ model, and rolling recalibration (20 sessions)
+
+Tags: `tag-ml-daily`
+
+**Runs.** R5 `ml/runs/20261029-211059Z-gbm-4438sym` (09:45) and `…~px` (09:30), one HGB fit
+(`--premarket optional --open --vol --tail-iter 600`, folds 0–14, 3.18M forecasts, skill 38.3%),
+14:10 → 18:26 PT with recal, tables, R8 and the NAS backup (`ml/runs/queue-r5.sh`). Then
+`tft-vwap-recal --sessions 20 --by pm,width` → `…-cal20s` and `…~px-cal20s`. Scratch scripts:
+`/tmp/mtap/rolling_recal.py`, `block_calib.py`, `calib_table.py`.
+
+**1. Pinball: R5 is the best model so far** (`tft-vwap-compare`, all rows of folds 3–13):
+
+| pair | pinball | difference (95% CI) | folds |
+| --- | --- | --- | --- |
+| R5-cal vs R7f-cal (09:45) | 0.006713 vs 0.006958 | −0.000245 (−0.000284 … −0.000208), 3.5% | better in every fold |
+| R5~px-cal vs R6p-cal (09:30) | 0.006694 vs 0.007003 | −0.000309 (−0.000353 … −0.000268), 4.4% | better in every fold |
+| R5-cal20s vs R7f-cal | 0.006729 vs 0.006958 | −0.000229 (−0.000272 … −0.000189) | better in every fold |
+| R5~px-cal20s vs R6p-cal | 0.006710 vs 0.007003 | −0.000294 (−0.000341 … −0.000248); earnings days −0.000441 | better in every fold |
+| R5-cal20s vs R5 (folds 0–14) | 0.006696 vs 0.006671 | +0.000025 (+0.000012 … +0.000039): the recal costs 0.4% | no fold clear |
+
+- vs R7 (night) 11–15% better per fold. 09:30 vs 09:45 differs by ~0.3%.
+- The gain over R7f/R6p is largest on rows without pre-market (pinball 0.00512 vs 0.00564 /
+  0.00574), from `--open`.
+
+**2. Calibration** (dashboard `calib.summary`, folds 3–13):
+
+| run | rows | pinball | mean / max \|q err\| | ECE | P5–P95 / P10–P90 | bias | grade |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| R5 | all 1,265,370 | 0.006674 | 0.79 / 1.26 | 1.27 | 88.5 / 78.4 | −0.64 | good |
+| R5-cal (4 folds) | all | 0.006675 | 0.57 / 0.94 | 1.37 | 90.5 / 80.7 | −0.53 | good |
+| **R5-cal20s** | all | 0.006691 | **0.18 / 0.31** | 1.16 | 89.5 / 79.5 | +0.06 | excellent |
+| R5~px-cal20s | all | 0.006710 | 0.18 / 0.31 | 1.16 | 89.5 / 79.5 | +0.06 | excellent |
+| R7f-cal | all | 0.006921 | 0.35 / 0.54 | 1.00 | 90.0 / 80.1 | +0.33 | excellent |
+| R6p-cal | all | 0.007003 | 0.47 / 0.89 | 1.34 | 89.9 / 79.9 | +0.45 | excellent |
+| R5-cal20s | pm = 1, 716,862 | 0.007877 | 0.17 / 0.30 | 1.03 | 89.6 / 79.6 | +0.12 | excellent |
+| R7f-cal | pm = 1 | 0.007901 | 0.10 / 0.22 | 0.97 | 90.0 / 80.0 | +0.05 | excellent |
+| R5-cal20s | pm = 0, 548,508 | 0.005140 | 0.21 / 0.40 | 1.44 | 89.4 / 79.3 | −0.01 | excellent |
+| R7f-cal | pm = 0 | 0.005640 | 0.74 / 1.16 | 1.09 | 90.1 / 80.2 | +0.70 | good |
+
+Folds 1–14 pooled (2.97M rows): R5-cal20s 0.19 / 0.33, excellent.
+
+**3. Why the fold-window recal fails on R5: its error drifts.** Mean |q err| and bias per fold:
+
+| fold | R5 | R5-cal | R5-cal20s |
+| --- | --- | --- | --- |
+| 1 | 1.78 (−1.28) | 0.84 | 0.85 (+0.64) |
+| 2 | 2.85 (+2.54) poor | 4.00 poor | 0.61 |
+| 3 | 1.59 (−1.17) | 1.29 | 0.55 |
+| 5 | 0.47 (−0.24) | 1.05 | 0.69 |
+| 7 | 1.25 (+0.97) | 1.08 | 0.20 |
+| 9 | 2.34 (−1.88) poor | 2.96 poor | 1.15 (+1.08) fair |
+| 12 | 1.60 (−1.40) | 0.81 | 0.34 |
+| 14 | 1.24 (+1.17) | 2.08 poor | 0.30 |
+
+R5-cal20s is good or excellent in 13 of 14 folds (fold 9 fair). The bias flips sign from one
+quarter to the next, so last quarter's shift is often the wrong way; the last 20 sessions follow it.
+
+**4. Window length** (scratch `rolling_recal.py`, MIN_ROWS 500, all rows of folds 3–13; the
+21-session block columns are means over 18 blocks of the same rows):
+
+| window | pinball | mean / max \|q err\| | block mean \|q err\| | blocks good+ |
+| --- | --- | --- | --- | --- |
+| none | 0.006711 | 0.78 / 1.26 | 2.43 | 22% |
+| 4 folds | 0.006713 | 0.57 | 2.40 | 22% |
+| 5 sessions | 0.006807 | 0.66 | 1.18 | 50% |
+| 10 | 0.006756 | 0.34 / 0.54 | 1.37 | 50% |
+| **20** | 0.006729 | **0.18 / 0.32** | 2.03 | 22% |
+| 40 | 0.006723 | | 2.74 | 6% |
+| 60 | 0.006722 | 0.17 / 0.28 | 2.68 | 6% |
+| 120 | 0.006715 | 0.54 | | |
+| R7f-cal (reference) | 0.006958 | 0.36 | 2.48 | 17% |
+
+- 60 matches 20 pooled but is uneven (fold 3: 2.24 vs 0.55). 20 is chosen.
+- **Within one month every model is off by about 2 pts** (block column): the whole market's mood
+  in a month shifts all stocks together, faster than any window learns it. Only 5–10 sessions
+  help there, at 0.7–1.4% pinball. The run-level (pooled) grade is excellent; a single month
+  in the dashboard will often read fair.
+
+**5. R8 screener on R5~px-cal** (`ml/runs/screener/20261030-011637Z-…~px-cal`, 819 days, top 20,
+mean range from the open): screener 0.1249, naive ATR 0.1096, TFT width 0.1215, random 0.0282.
+Screener − ATR +0.0153 (0.0142 … 0.0163), screener − width +0.0034 (0.0029 … 0.0040); above the
+universe median on 99.2% of days. **Kept** (Q15's rule: beat ATR with a CI clear of 0).
+
+**Verdict.** R5 + rolling 20-session recal is the candidate single model for 09:30 and 09:45,
+best in pinball and in pooled calibration. Production switch: the user's call (MODEL-STRATEGY Q36).
+
 ### 2026-10-29 Calibration first: walk-forward recalibration, averaging, open and volatility inputs (R5 queued)
 
 Tags: `tag-ml-daily`
@@ -1286,7 +1372,7 @@ level, 200 iterations; gain in pinball vs the R7f inputs):
 training row with full pre-market appears twice, as it is and with the full group blank, so one
 fit serves 09:45 (run dir) and 09:30 (`~px`). Plus `--open --vol --tail-iter 600`, folds 0–14.
 Then recal of both states, the calibration tables vs R7f-cal / R6f-cal / R6p-cal, compare, and R8
-(screener) on R5~px-cal. Results: the next entry.
+(screener) on R5~px-cal. Results: the R5 entry above.
 
 ### 2026-10 R7 and R7f, plain gradient boosting (no TFT), vs R1c and the 09:45 models
 

@@ -229,7 +229,7 @@ Tags: `guide-compare`
 
 Tags: `guide-runs`
 
-Status 2026-10-29 14:30 PT. This section explains the series; the **current** choices and
+Status 2026-10-29 18:45 PT. This section explains the series; the **current** choices and
 results are kept in the Scoreboard at the top of [MODEL-STRATEGY.md](MODEL-STRATEGY.md). Results
 in detail: [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-ml-daily`.
 
@@ -246,8 +246,9 @@ in detail: [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-ml-daily`.
 | R7 `20261029-153450Z-gbm` | HGB on R1c's inputs, no TFT | 0–14 | **leads at night:** 1.3% better than R1c, CI clear |
 | R7f `20261029-170229Z-gbm` | R7 + full pre-market | odd | **leads at 09:45:** ties R6f (CI spans 0), fewer models wins |
 | R7f-cal, R6f-cal, R6p-cal … | walk-forward recalibration (`tft-vwap-recal --by pm,width --window 4`) of each run | odd 3–13 | **R7f-cal best calibrated:** mean \|q err\| 0.78 → 0.10 pts, same pinball; R6f-cal, R6p-cal 0.16; the TFTs only to ~0.9 |
-| R5 | **one HGB for 09:30 and 09:45** (`--premarket optional`), + the open for every stock, past volatility, 600 tail iterations; then R5-cal, R5~px-cal | 0–14 | training (from 10-29 14:10, `runs/queue-r5.sh`) |
-| R8 | screener on R5~px-cal | odd | after R5 |
+| R5 `20261029-211059Z-gbm` (+`~px`) | **one HGB for 09:30 and 09:45** (`--premarket optional`), + the open for every stock, past volatility, 600 tail iterations | 0–14 | **best so far:** skill 38.3%; after recal 3.5% better than R7f-cal, 4.4% better than R6p-cal (CIs clear, every fold) |
+| R5-cal20s, R5~px-cal20s | R5 with rolling recal: each day on the 20 sessions before it (`tft-vwap-recal --sessions 20 --by pm,width`) | 0–14 | **the candidate single model:** mean \|q err\| 0.18 pts (excellent), good or excellent in 13 of 14 folds; the 4-fold R5-cal only 0.57 |
+| R8 `screener/20261030-011637Z-…` | screener on R5~px-cal | odd | **kept:** top 20 range 12.5% vs ATR 11.0%, CI clear |
 | R2 | + fundamentals | | phase 2 (needs dated EPS) |
 
 **R1c vs R0** (3,169,270 forecasts, 945 days; `compare_vs_r0.json`):
@@ -290,10 +291,11 @@ Added 10-29 (MODEL-STRATEGY Q35):
 
 | # | decision | why | status |
 | --- | --- | --- | --- |
-| 9 | **Recalibration settings:** groups pm × width tercile, window 4 folds. | Best on the pre-market rows (R7f 0.10 pts); window 2 is better on rows without pre-market (0.45 vs 0.86), but those are not the 09:45 case. | Kept for R5; to re-check on R5. |
+| 9 | **Recalibration settings:** groups pm × width tercile, window 4 folds. | Best on the pre-market rows (R7f 0.10 pts); window 2 is better on rows without pre-market (0.45 vs 0.86), but those are not the 09:45 case. | Re-checked on R5: superseded by decision 13. |
 | 10 | **`--tail-iter 600`** for P15 and below, P85 and above; 200 for the rest. | The probe: tails improve to ~1,000 iterations, the median is best at 200–400. 600 is the middle. | In R5. |
 | 11 | **`--open` and `--vol` both in R5,** with no separate run each. | The probe on folds 5 and 13 showed each helps (the open at every level, volatility in the tails) and they add up. | In R5. |
 | 12 | **No averaging of models** (R7f + R4f had 0.7% lower loss). | The user wants one model, calibration first; the average needs a TFT and was worse calibrated after recal (0.46 vs 0.10). | Not used. |
+| 13 | **Rolling recal on the last 20 sessions** (`--sessions 20`, pm × width groups, at least 2,000 rows), not 4 folds. | R5's error drifts between quarters (bias +2.5 to −1.9), so the 4-fold shift was often the wrong way (0.57 pts, 3 poor folds). 20 sessions: 0.18 pts, 13 of 14 folds good or better, for 0.4% pinball. 60 is as good pooled but uneven by fold; 5–10 track months better but cost 0.7–1.4% pinball. Live it is the last 20 graded days. | Chosen for the candidate (MODEL-STRATEGY Q36). |
 
 User decisions on record (MODEL-STRATEGY Current position): **one model for 09:30 and after, the
 night forecast dropped, calibration ranked first (10-29);** news backfill and Benzinga are not

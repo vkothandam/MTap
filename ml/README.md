@@ -198,6 +198,7 @@ uv run tft-vwap-gbm $C $G --premarket on --pm-groups px,full $ODD   # R7f HGB + 
 uv run tft-vwap-gbm $C $G --premarket optional --pm-groups px,full --open --vol --tail-iter 600 \
     --label R5   # R5: one HGB for 09:30 (runs/<id>~px) and 09:45 (runs/<id>); runs/queue-r5.sh
 uv run tft-vwap-recal runs/<id> --by pm,width --window 4 --label R5-cal   # -> runs/<id>-cal
+uv run tft-vwap-recal runs/<id> --by pm,width --sessions 20 --label R5-cal20s   # rolling -> runs/<id>-cal20s
 uv run tft-vwap-event-overlay runs/<R0> --panel $P    # R6c band scale on event days -> runs/<R0>-event
 ```
 
@@ -246,7 +247,11 @@ uv run tft-vwap-event-overlay runs/<R0> --panel $P    # R6c band scale on event 
   per group: `pm` = with or without full pre-market, `width` = P5–P95 width tercile (cut on the
   earlier folds). Folds with no earlier fold are skipped. Live, the shifts come from the
   latest test blocks. It fixes the steady pessimism (R7f mean |q err| 0.78 → 0.10 pts) at no
-  pinball cost; MODEL-STRATEGY Q35.
+  pinball cost; MODEL-STRATEGY Q35. **`--sessions N`** (rolling, the chosen mode) calibrates each
+  day on the run's forecasts of the N sessions before it, from any fold (days with fewer than
+  2,000 calibration rows are left out), and writes `runs/<id>-cal<N>s`; live, the shifts come from
+  the last N graded days. On R5 with N = 20: 0.79 → 0.18 pts, where the 4-fold window gives 0.57,
+  for 0.25% pinball (Q36).
 - **Handoff to intraday:** `uv run tft-vwap-handoff runs/<id> [--live] [--state night|px|full]`
   writes `runs/<id>/handoff.parquet` + `handoff.meta.json`: the out-of-fold daily quantiles (one
   row per symbol and forecast date) and their summaries, past-only record and day context.

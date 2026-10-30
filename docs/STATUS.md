@@ -3,7 +3,7 @@
 The one page that says what runs where, when, on what data, with which secrets and limits.
 The details are in the linked docs.
 
-**Last updated: 2026-10-29 14:30 PT.**
+**Last updated: 2026-10-29 18:45 PT.**
 
 **Keep it current.** Any change to any of these updates this file, in the same change:
 
@@ -177,7 +177,7 @@ MTap sources market data for the ML work.
 
 ## Model performance
 
-The daily model's research runs on the 5-year panel, as of **2026-10-29 14:30 PT**. Choices and
+The daily model's research runs on the 5-year panel, as of **2026-10-29 18:45 PT**. Choices and
 verdicts: [ml/MODEL-STRATEGY.md Scoreboard](../ml/MODEL-STRATEGY.md). Details and CIs:
 [LEARNINGS.md](LEARNINGS.md) `tag-ml-daily`. Each table scores every model on the same
 (stock, day) rows. Production (`20261005-025909Z`, 2-year) stays live until all models are
@@ -187,12 +187,33 @@ evaluated.
 night forecast is dropped. Models are ranked first by how well the quantiles hit their probabilities
 (mean/max |q err|, grade, ECE, coverage, bias), then by pinball loss.
 
-**Calibration** (6 odd folds 3–13, 716,862 rows with full pre-market). `-cal` = walk-forward
+**Candidate single model: R5 + rolling recal** (`ml/runs/20261029-211059Z-gbm-4438sym-cal20s`
+for 09:45, `…~px-cal20s` for 09:30). One HGB for 09:30 and 09:45; each day's quantiles are shifted
+by the error of the 20 sessions before it, per pre-market × width group (`tft-vwap-recal
+--sessions 20`). Folds 3–13, all 1,265,370 rows every run has:
+
+| model | forecast | pinball | mean / max \|q err\| | ECE | P5–P95 / P10–P90 | bias | grade |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **R5-cal20s** | 09:45 | 0.006691 | **0.18 / 0.31** | 1.16 | 89.5 / 79.5 | +0.06 | excellent |
+| **R5~px-cal20s** | 09:30 | 0.006710 | **0.18 / 0.31** | 1.16 | 89.5 / 79.5 | +0.06 | excellent |
+| R5-cal (4 folds) | 09:45 | 0.006675 | 0.57 / 0.94 | 1.37 | 90.5 / 80.7 | −0.53 | good |
+| R5 | 09:45 | 0.006674 | 0.79 / 1.26 | 1.27 | 88.5 / 78.4 | −0.64 | good |
+| R7f-cal | 09:45 | 0.006921 | 0.35 / 0.54 | 1.00 | 90.0 / 80.1 | +0.33 | excellent |
+| R6p-cal | 09:30 | 0.007003 | 0.47 / 0.89 | 1.34 | 89.9 / 79.9 | +0.45 | excellent |
+
+R5 beats R7f-cal by 3.5% and R6p-cal by 4.4% in pinball (CIs clear, every fold). Rolling recal is
+good or excellent in 13 of 14 folds; the 4-fold recal is poor in 3, because R5's error drifts
+between quarters. R8 (screener on R5~px-cal) is kept: top 20 range 12.5% vs 11.0% for ATR, CI
+clear. **Production switch: the user's call.** MODEL-STRATEGY Q36.
+
+**Earlier calibration table** (6 odd folds 3–13, 716,862 rows with full pre-market). `-cal` = walk-forward
 recalibration (`tft-vwap-recal --by pm,width --window 4`): each quantile moves by the error seen on
 the 4 test blocks before it, per pre-market × width group.
 
 | model | forecast | pinball | mean / max \|q err\| | ECE | P5–P95 / P10–P90 | bias | grade |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| R5-cal20s | 09:45 | 0.007877 | 0.17 / 0.30 | 1.03 | 89.6 / 79.6 | +0.12 | excellent |
+| R5 | 09:45 | 0.007860 | 0.84 / 1.25 | 1.16 | 88.5 / 78.4 | −0.69 | good |
 | **R7f-cal** | 09:45 | 0.007901 | **0.10 / 0.22** | 0.97 | 90.0 / 80.0 | +0.05 | excellent |
 | R7f | 09:45 | 0.007902 | 0.78 / 1.08 | 1.17 | 89.4 / 79.3 | −0.72 | good |
 | R6f-cal | 09:45 | 0.007908 | 0.16 / 0.37 | 1.31 | 90.0 / 80.1 | +0.15 | excellent |
@@ -200,11 +221,9 @@ the 4 test blocks before it, per pre-market × width group.
 | R6p-cal | 09:30 | 0.007967 | 0.16 / 0.40 | 1.30 | 90.0 / 80.0 | +0.16 | excellent |
 | R4p-cal | 09:30 | 0.007971 | 0.89 / 1.94 | 1.59 | 91.0 / 82.1 | +0.70 | good |
 
-Recalibration takes out most of the calibration error at no cost in pinball. **R5 is training**
-(`ml/runs/queue-r5.sh`, log `ml/runs/queue-r5.log`, from 14:10 PT): one HGB for 09:30 and 09:45
-(`--premarket optional`), plus the open for every stock, past volatility and 600 iterations for the
-tails. It is followed by R5-cal / R5~px-cal, the calibration tables, R8 (screener) and the NAS
-backup. Details: MODEL-STRATEGY Q35.
+Recalibration takes out most of the calibration error at no cost in pinball. On the pre-market
+rows alone R7f-cal is a little better calibrated than R5-cal20s, but 0.3% worse in pinball and
+0.74 pts on the rows without pre-market. Details: MODEL-STRATEGY Q35, Q36.
 
 **Night forecast** (made the evening before, no pre-market; dropped 10-29, kept for reference). Test folds 1–14, 2.95M rows, 882 days:
 
@@ -248,8 +267,8 @@ every model has; the other models' figures move by 0.01 at most on them.
   0.76%) and R4 (1.55%, 1.6%). On a tie fewer models wins, so R7f leads: one model instead of R1c +
   an overlay. R6f's bands are closer to 90% (P5–P95 90.8% vs 89.3%).
 
-All of these CIs are clear of 0 except R7f vs R6f. Next: R5 (one HGB for 09:30 and 09:45; training,
-see the calibration table above), then R8 (screener).
+All of these CIs are clear of 0 except R7f vs R6f. R5 (one HGB for 09:30 and 09:45) now beats all
+of them; see the first table.
 
 **What it says:**
 - **Pre-market is the big gain.** Skill goes from 27% to 40%, the loss drops 17–18% and direction
@@ -435,3 +454,9 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
   `--premarket optional`, `--open`, `--vol` and `--tail-iter`. R5 queued (`ml/runs/queue-r5.sh`, 14:10 PT):
   R5 → recal → calibration tables → R8 → NAS backup. [Model performance](#model-performance),
   MODEL-STRATEGY Q35.
+- 2026-10-29 18:45: R5 done (`ml/runs/20261029-211059Z-gbm-4438sym`, + `~px`; queue ended 18:26 PT,
+  NAS backup done): 3.5% better than R7f-cal at 09:45, 4.4% better than R6p-cal at 09:30. New
+  `tft-vwap-recal --sessions N` (rolling recal on the N sessions before each day); R5-cal20s and
+  R5~px-cal20s written: mean |q err| 0.18 pts, excellent, good or excellent in 13 of 14 folds.
+  R8 screener kept. Proposal: R5 + rolling 20-session recal as the single 09:30+ model; the
+  production switch waits for the user. [Model performance](#model-performance), MODEL-STRATEGY Q36.

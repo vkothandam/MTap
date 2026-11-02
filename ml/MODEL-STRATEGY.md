@@ -233,6 +233,13 @@ The Q31–Q34 items below still apply as data and feature facts.
 | Shrinkage | Pulling a thin match's answer toward the broad set, more when the evidence is thinner |
 | Forest proximity | How often two rows land in the same leaves of a tree forest; used as a learned similarity. The quantile regression forest and the distributional random forest predict this way |
 | CRPS | The continuous ranked probability score: pinball loss averaged over all quantiles, for a whole distribution |
+| σ (sigma) | The stock's typical daily move: the std of the VWAP-to-VWAP log change over the prior 20 sessions. Intraday distances are in σ (σ = 2% → 0.5σ = 1%). Details: LEARNINGS `tag-ml-intraday` Terms |
+| nats | The unit of a log score: +x nats = the model gave e^x times as much probability to what happened as the base rate did (+0.011 ≈ 1.1% more, +0.69 = twice) |
+| Edge | How much better than the base rate (climatology) a forecast is; skill = 1 − model error ÷ base-rate error |
+| Climatology / base rate | The typical forecast for a group (time of day × σ × liquidity), with no stock-specific information. Edge is measured against it |
+| Brier score | For a yes/no event: mean of (probability − outcome)²; lower is better |
+| Rank IC | Per minute, the rank correlation between the predicted score and the realised outcome across stocks, averaged per day; 0 = a random ranking |
+| Touch | The price reaches a level at any time within the window, not only at its end |
 
 ## Q&A log
 
@@ -1359,3 +1366,22 @@ One predictor per job, no ensembles. If the forest analogs and direct GBM tie, t
 - whether "bounced 20%" is from today's low or over recent days;
 - where the shared engine code lives (recommended: a small standalone package, since the dashboard must not import `ml/`).
 
+### Q38 (2026-11-01): Train for intraday. What is the model, how is it tested before weeks of building, and how many confident recommendations does a typical day give?
+
+**The full design: [docs/intraday-design.md](../docs/intraday-design.md).** It replaces the predictor part of Q37 (the analog engine stays as the Space page's "similar moments" view). `tft_intraday` is not the base.
+
+**Why a new design.** The analog check (Q37, [docs/analog-pockets.md](../docs/analog-pockets.md)) found no edge, but it was fed only 10 inputs from the stock's own price path, 87 sessions, 6 clock times, random moments. So it says "the price path alone has no edge", not "nothing has edge". The untested information is the daily forecast, pre-market, market / sector, volume at price, signed flow, results days, σ and liquidity.
+
+**The model.** A GBM (LightGBM in the build, HGB in the probe) in two stages:
+- **Stage A**, every liquid stock every minute on 15-min-delayed Massive data: a lean score (excess up potential − excess down potential over windows from now to 1 … 128 min and the close) and P(+0.5σ before −0.5σ). It gives the top 20 up / 20 down lists.
+- **Stage B**, the shortlist with live data: the full distribution of the highest / lowest price within each window, touch probabilities, race, pressure, horizon and reliability half-life, expiry triggers.
+
+**Test before building (Step 0 probe, `ml/scripts_intraday_probe.py`).**
+- The ladder: add one input group at a time and measure skill over the base rate with a day-bootstrap CI.
+- Yearly walk-forward 2024 / 2025 / 2026; slices found on 2024–2025 count only if confirmed on 2026.
+- **Test points near the intraday high / low** (user, 2026-11-01: random points dilute an edge): p_t within 0.1σ of today's high / low so far (usable live), and, as a hindsight ceiling only, ±5 min around the day's actual turning point. Scored against the base rate at the same moments, kept apart from the all-moments grid.
+- **Recommendations per typical day:** a recommendation = the first minute a (stock, direction, level, window) has calibrated P(touch) ≥ 60%; came true = touched in the window. Counted per day (median, p10, p90), all and edge-only (base rate < 60%), for all stocks at d = 0, the realistic pipeline, and all stocks at d = 15.
+
+**Result:** pending (see the Scoreboard once the run ends).
+
+**Market cap on recommendations.** As of the previous close: shares outstanding from Massive's ticker overview (quarter-end snapshots in `out/shares`; weighted shares, all classes, else `share_class_shares_outstanding`) × the previous close. Bands: mega ≥ $200B, large $10–200B, mid $2–10B, small $250M–2B, micro < $250M. Sent on every MBin RECOMMENDATION.

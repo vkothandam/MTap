@@ -54,6 +54,8 @@ Tags: `guide-terms`
 | **Skill** | 1 − loss / naive loss. R0: 1 − 0.007884 / 0.010738 = **26.6%**. Not based on coverage. 100% would mean every quantile hits the actual exactly, which is impossible for a band; there's no fixed "ideal", only higher is better. | computed from the two above |
 | **Coverage** | Share of actuals inside a band. P5–P95 should hold 90%, P10–P90 80%. Below that, the bands are too narrow (overconfident); above, too wide. | `interval_coverage` (P5–P95); compare also gives P10–P90 |
 | **Directional accuracy** | Share of rows where the sign of P50 matches the sign of the actual move, on rows where both are non-zero. | `directional_accuracy` |
+| **σ (sigma)** | The stock's typical daily move: std of the VWAP-to-VWAP log change over the prior 20 sessions. The intraday probe measures distances in σ (σ = 2% → 0.5σ = 1%). | `docs/LEARNINGS.md` `tag-ml-intraday` Terms |
+| **nats** | Unit of a log score (natural log): +x nats = e^x times as much probability on what happened as the base rate gave. +0.011 ≈ 1.1% more, +0.69 = twice. | analog check, intraday probe |
 | **MAPE skill** | 1 − (mean \|P50 − actual\| / actual) / (mean \|prev VWAP − actual\| / actual). How much closer the median lands than "no move". | `mape_skill` |
 
 **Why the naive score flatters.** A zero-width forecast at 0 is easy to beat, so 26% "skill"

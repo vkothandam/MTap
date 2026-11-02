@@ -28,7 +28,7 @@ Each pick carries a size and a calibrated probability.
 | --- | --- | --- |
 | Daily model | how far, and with what uncertainty, today's VWAP lands from yesterday's VWAP | chosen (R5-cal20s), not yet live |
 | Screener | which stocks will move the most from the open (either direction) | kept (R8b), not yet live |
-| Intraday model | where the next 1–60 min VWAP lands from the last price | one small prototype, no edge on direction |
+| Intraday model | where the next 1–60 min VWAP lands from the last price | one small prototype, no edge on direction; design agreed, Step 0 probe running ([intraday-design.md](intraday-design.md)) |
 | **Signed momentum ranking** (up list / down list) | which stocks will keep going, and which way | **open: the subject of new designs** |
 
 ## 2. Daily forecast
@@ -112,6 +112,8 @@ move from the open, in either direction.
 **Intention.** After the open, update the view second by second: where the price is heading over
 the next minutes and the rest of the day. This is what drives an up/down momentum list that
 changes during the day.
+
+**Design (2026-11-01).** [intraday-design.md](intraday-design.md): a two-stage GBM (Stage A lean ranking on delayed data, Stage B distributions on the shortlist), tested first by the Step 0 probe (input ladder, near-high/low test points, recommendations per day).
 
 **Redesign (2026-10-30).** The earlier step started from
 [intraday-redesign.md](intraday-redesign.md): an analog engine that predicts from what happened

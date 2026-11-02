@@ -1,5 +1,7 @@
 # Intraday redesign: predictions from past events, seen as pockets
 
+**The predictor is now [intraday-design.md](intraday-design.md) (2026-11-01):** a GBM ladder tested by the Step 0 probe; the analog engine below stays as the Space page's "similar moments" view.
+
 **Status: design, not built (2026-10-30).** This page settles how intraday prediction should work
 before any code is written. It evaluates the possible solutions, including whether the TFT is
 still relevant. It also gives the next steps.

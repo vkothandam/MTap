@@ -1684,13 +1684,48 @@ Tags: `tag-ml-intraday`
 | term | meaning | example |
 | --- | --- | --- |
 | **σ (sigma)** | The stock's typical daily move: the standard deviation of the VWAP-to-VWAP log change over the prior 20 sessions (point in time, today not included). Price distances are in σ so that stocks compare | σ = 2% on a $50 stock → 0.5σ = 1% = $0.50 |
+| **±0.6σ typical range** | The band ±0.6σ holds the middle ~45% of outcomes if moves are normal (P(\|z\| < 0.6) = 0.45); real moves have fat tails and a narrow peak, so a bit more in practice. ±1σ holds ~68% | σ = 2% → ±1.2% |
 | **Climatology / base rate** | The typical forecast for a group, knowing only the time of day, σ tercile and liquidity tercile, measured on the training years. "How often does this happen in general?" | 10:00, mid σ, high liquidity: P(touch +0.5σ within 60 min) = 41% |
 | **Edge** | How much better a forecast is than climatology. 0 = its numbers are no more useful than the base rate, however specific they look | |
 | **Skill** | Edge as a share: 1 − model error ÷ climatology error, in %. Positive = better | Brier 0.230 vs 0.240 → skill +4.2% |
 | **Brier score** | For a yes/no event: the mean of (stated probability − outcome)², outcome 1 or 0. Lower is better | said 70%, it happened: (0.7 − 1)² = 0.09 |
 | **Pinball loss** | For quantiles: a miss counts in proportion to its size, weighted by the quantile level. Lower is better (ml/GUIDE.md §2) | |
 | **nats (log score)** | The unit of a log score (natural log): mean ln(P_model(what happened) ÷ P_base(what happened)). +x nats = the model gave e^x times as much probability to what actually happened as the base rate did | +0.011 nats ≈ 1.1% more; +0.69 nats = twice as much; 0 = same |
+| **Rank IC** | Per minute, the rank correlation (Spearman) between the predicted score and the realised outcome across all stocks, averaged over the minutes of a day and then over days. 0 = the ranking is random; +0.02 to +0.05 is already useful for a top-20 list | |
 | **Day-bootstrap CI** | The 95% range of a result when whole days are resampled with replacement (2,000 draws). Days, not rows, because stocks on one day move together | skill +2.1% [+0.4, +3.9]: clear of 0 |
+| **Touch** | The price reaches the level at any time within the window (bar high ≥ level), not at the window's end | |
+| **Recommendation (probe count)** | The first minute a (stock, direction, level, window) has a calibrated P(touch) ≥ 60%. It can't fire again for the same key until its window ends. "Came true" = the level was touched within the window | |
+
+### 2026-11 Intraday Step 0 probe: pre-registered slices and test points (written before the run)
+Tags: `tag-ml-intraday`. Design: [intraday-design.md](intraday-design.md) §8. Script: `ml/scripts_intraday_probe.py`.
+
+Fixed on 2026-11-01, before any result was seen. A slice counts as **confirmed** only if its Brier skill
+is > 0 on the discover years (2024–2025) **and** its 2026 day-bootstrap 95% CI is clear of 0.
+
+| slice | definition at decision minute t (from bars before t) |
+| --- | --- |
+| `all` | every stock on the test grid (every 30 min from a random offset per day) |
+| `burst` | rvol over the last 5 min ≥ 3 |
+| `new_hl` | the last minute made a new day high or low (t ≥ 09:36) |
+| `near_hi` | p_t within 0.1σ of today's high so far, today's range ≥ 0.5σ |
+| `near_lo` | p_t within 0.1σ of today's low so far, today's range ≥ 0.5σ |
+| `vwap_x` | p_t crossed today's VWAP-so-far in the last minute |
+| `band_x` | p_t crossed the daily forecast band's P25 or P75 in the last minute (from 09:46) |
+| `first05` | the first minute p_t is 0.5σ away from the open |
+| `gap` | \|open vs previous close\| ≥ 1σ |
+| `results` | results day or the day after (EDGAR 8-K window) |
+| `mkt_move` | the market moved ≥ 1σ (scaled to 15 min) over the last 15 min |
+| `turn_hi`, `turn_lo` | **hindsight**: within ±5 min of the day's actual high / low (09:45–15:45). Not usable live; a ceiling only |
+| `cap_<band>` | the stock's cap band as of the previous close (mega / large / mid / small / micro) |
+
+**Test points near the intraday high / low (user, 2026-11-01).** Earlier tests sampled random moments, which
+dilutes any edge that only exists at turning points. So besides the grid, the test months carry ~30k densely
+sampled moments each for `near_hi`, `near_lo`, `turn_hi`, `turn_lo`, scored against the base rate of the same
+group. Their results are reported apart from the grid's.
+
+**Recommendation count rule.** A recommendation = the first minute a (stock, direction, level, window) has a
+calibrated P(touch) ≥ 60%; it can't fire again until its window has ended (close window: once a day). Came
+true = touched within the window. Counted all and edge-only (base rate at that moment < 60%).
 
 ### 2026-10 Analog matching across stocks: first check (sessions 2026-06-01 … 2026-10-26)
 

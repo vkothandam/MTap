@@ -349,6 +349,8 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
 | [LEARNINGS.md](LEARNINGS.md) | what the data checks found, by tagged topic |
 | [intraday-model.md](intraday-model.md) | the intraday model: data, the daily forecast as input, folds aligned with the daily model |
 | [intraday-redesign.md](intraday-redesign.md) | the intraday redesign: predictions from past events (analog engine), pockets and pressure, solutions evaluated (TFT not the predictor), the Space page, next steps |
+| [intraday-design.md](intraday-design.md) | the intraday model design (2026-11-01): two-stage GBM, Step 0 probe (`ml/scripts_intraday_probe.py`), test points near the day's high / low, recommendation count |
+| [analog-pockets.md](analog-pockets.md) | the analog-pockets experiment: first check, verdict (no edge yet), the Intraday → Space view, how to rerun |
 | [forecasting-design-brief.md](forecasting-design-brief.md) | one-page brief for designing alternatives: the goal (up/down momentum ranking from 09:30), daily, screener and intraday inputs and intentions, constraints, baselines, open alternatives |
 | [TODO.md](TODO.md) | deferred work |
 | [database-schema.md](database-schema.md) | DuckDB ER diagrams (generated; CI checks them) |
@@ -481,3 +483,8 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
   rest-of-day VWAP; the pocket shape is at most slightly better than climatology. New `space/` package
   (`mtap-space`, `space-build`) and the dashboard's Intraday → Space view (pocket maps, dial curve, a three.js 3-D
   view whose bundle is committed); Intraday now opens on Space, with Model runs as the other view.
+- 2026-11-01: [intraday-design.md](intraday-design.md) added (ml/MODEL-STRATEGY.md Q38): the intraday predictor is a
+  two-stage GBM (Stage A lean ranking on delayed Massive data, Stage B detailed readings on a shortlist); the
+  analog engine stays as the Space view. Step 0 probe `ml/scripts_intraday_probe.py` (input ladder, yearly
+  walk-forward, pre-registered slices and test points near the day's high / low in LEARNINGS `tag-ml-intraday`).
+  Result pending.

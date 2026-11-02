@@ -258,6 +258,46 @@ Retiring the iMac for good, after a stable week: see
 2. **iMac:** run `scripts/schedule/setup-schedule.sh prod --with-daily`, then
    `scripts/schedule/mtap-schedule.sh start`.
 
+## Switching the E*TRADE account (done 2026-11-01)
+
+The collector polls the lists in `node/src/services/etrade/constants.ts` (`WATCHLISTS`), and
+their IDs belong to the account it logs in with. A switch therefore changes the code and the
+secrets together. Do it at a weekend.
+
+1. **Mac, with both logins in `~/.mtap.env`** (the new one as `ALT_ET_*`):
+   - Use `npm run watchlist -- ... --account alt --secrets /Volumes/home/.mtap.env` to create
+     the lists and any column view the feed needs.
+   - Check with `show <id>`: it should print `feed columns: all present`.
+   - Then set the IDs (and `view`) in `WATCHLISTS`.
+2. **NAS secrets** over ssh. Print key names only.
+   ```bash
+   cp -p ~/.mtap.env ~/.mtap.env.bak-<date>
+   sed -i -e 's/^ET_\(USERNAME\|PASSWORD\)=/OLD_ET_\1=/' \
+          -e 's/^ALT_ET_\(USERNAME\|PASSWORD\)=/ET_\1=/' ~/.mtap.env
+   grep -oE '^[A-Z_]+=' ~/.mtap.env; stat -c %a ~/.mtap.env    # 600
+   ```
+3. **NAS state.** In `MTap-State/etrade/`, move `chrome-profile` and `session.json` to
+   `*.old-account-<date>`. Otherwise the saved session logs straight back into the old account.
+4. **The trial run:**
+   - Run `push.sh --trial`, then queue `build`, `selftest` and `start`.
+   - Enter the code in noVNC and tick "save device".
+   - Check the trial `intraday_feed/` rows for the new `watchlist_id`s and for bid/ask.
+   - Then queue `stop`.
+5. **Device trust:**
+   - Move the new `session.json` aside, then queue `start`. It should log in with no code.
+   - The first attempts can time out on the login page; the third try is normal. On 2026-11-01 it took
+     about 5 minutes.
+   - Then queue `stop`.
+6. **Production:** run `push.sh` (no `--trial`), then queue `build`.
+7. **After the first good weekday:** delete `OLD_ET_*`, the `.bak` file and the
+   `.old-account-*` state.
+
+**Rollback:**
+1. Restore the `.bak` secrets file.
+2. Move the `.old-account-*` profile and session back.
+3. Revert the `WATCHLISTS` commit.
+4. Run `push.sh` and queue `build`.
+
 ## Monday checks (Claude, read-only over ssh)
 
 | time (PT) | check |

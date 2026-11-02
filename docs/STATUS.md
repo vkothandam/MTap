@@ -112,8 +112,8 @@ MTap sources market data for the ML work.
 | secret | NAS | iMac | this Mac |
 | --- | --- | --- | --- |
 | `MASSIVE_API_KEY` | `~/.mtap.env`, `~/.massive1s.env` (chmod 600) | repo `.env` | `shared/config/settings.toml` |
-| E*TRADE login (`ET_*`), changed 2026-10-24 | `~/.mtap.env` | repo `.env`: **needs the new password** | |
-| E*TRADE device trust and session | `MTap-State/etrade/chrome-profile` | `<state>/etrade/chrome-profile`, `session.json` | `state/etrade/session.json` (fundamentals) |
+| E*TRADE login (`ET_*`): since 2026-11-01 the former alternate account; the old one is `OLD_ET_*` (to delete after the first good weekday) | `~/.mtap.env` (backup `~/.mtap.env.bak-2026-11-01`) | repo `.env`: **old account** (a rollback to the iMac polls the old lists) | `ALT_ET_*` via `--secrets /Volumes/home/.mtap.env` for `npm run watchlist` |
+| E*TRADE device trust and session | `MTap-State/etrade/chrome-profile`, `session.json` (old account's: `*.old-account-2026-11-01`) | `<state>/etrade/chrome-profile`, `session.json` | `state/etrade/session.json` (fundamentals); `state/etrade-alt/` (the watchlist utility's `--account alt`) |
 | E*TRADE bearer token (live, short-lived) | `MTap-State/etrade/bearer.json` (mode 600), written by the collector; read only by `premarket prices`, which never logs in and stops on the first 401/403/429 | | |
 | noVNC password (`SE_VNC_PASSWORD`) | `~/.mtap.env` | | |
 | SMS gateway (`SMS_EMAIL*`) | not set: no texted OTP link | `.env`, if set | |
@@ -132,6 +132,9 @@ MTap sources market data for the ML work.
   - Website login with puppeteer, behind Akamai Bot Manager.
   - On the NAS it is headed Google Chrome 155. The iMac ran headless Chrome for Testing 127.
   - A new device needs a texted code; one session at a time.
+  - Polled lists (since 2026-11-01): `217428640306` (main, view `MTapFeed`) and `33503637158` (MidCap);
+    managed with `npm run watchlist` ([etrade README](../node/src/services/etrade/README.md#watchlists-which-lists-are-polled-and-the-watchlist-utility)).
+    A column view holds at most 16 columns.
   - Details: [nas-migration.md](nas-migration.md#etrade-on-the-nas).
 - **SEC EDGAR:** at most 10 requests/s (we use 8), with a User-Agent that names us.
 - **Yahoo:** needs a browser User-Agent; otherwise it returns 429.
@@ -488,3 +491,15 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
   analog engine stays as the Space view. Step 0 probe `ml/scripts_intraday_probe.py` (input ladder, yearly
   walk-forward, pre-registered slices and test points near the day's high / low in LEARNINGS `tag-ml-intraday`).
   Result pending.
+- 2026-11-01: the collector polls the **former alternate E*TRADE account**. The main list is `217428640306`
+  (605 symbols; was `215565674306`, 606), read through a new column view `MTapFeed`, which has the old
+  Experimental columns. MidCap is `33503637158` (422; was `215584661306`), re-created from the NAS feed's
+  symbols (`shared/watchlists/`). `source_meta.watchlist` stays `Experimental`/`MidCap`. New: the watchlist
+  utility `npm run watchlist` (list, show, create, add, remove, sync, view, rename, delete; `--account`
+  selects `<NAME>_ET_*`). NAS: in `~/.mtap.env` `ET_*` became `OLD_ET_*` and `ALT_ET_*` became `ET_*`
+  (backup `.bak-2026-11-01`); the old account's Chrome profile and session were moved to
+  `*.old-account-2026-11-01`. Trial on MTap-Trial the same day. LEARNINGS `tag-etrade-watchlist-api`.
+  - The trial passed. The code was entered once in noVNC. Rows carried the new IDs, with bid, ask, open and
+    prev_close filled.
+  - A restart without `session.json` logged in with no code, on attempt 3 of 3, in about 5 minutes.
+  - Then `push.sh` ran for production, and `build`.

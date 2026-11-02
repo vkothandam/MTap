@@ -151,6 +151,30 @@ are wire-compatible with MBin's `core/bus` (same `mtap:evt:<EVENT>` streams,
 
 ## Watchlists: which lists are polled, and the watchlist utility
 
+The collector polls the lists in `WATCHLISTS` (`constants.ts`). The IDs belong to the account
+it logs in with (`ET_USERNAME`). Since 2026-11-01 that is the former alternate account:
+
+| key | id | E*TRADE name | symbols | every | column view (`viewName`) | `source_meta.watchlist` |
+| --- | --- | --- | --- | --- | --- | --- |
+| MAIN | `217428640306` | LargeMega10B | 605 | 2 s | `MTapFeed` | `Experimental` |
+| MIDCAP | `33503637158` | MidCap | 422 | 20 s | `MidCap` (none: Market View) | `MidCap` |
+
+Until 2026-11-01 the old account's lists were polled: `215565674306` (606) and `215584661306`
+(422). Their symbols are in [shared/watchlists/](../../../../shared/watchlists/); MidCap was
+re-created from that file.
+
+**The column view decides the feed's columns.** The poll asks for the list through a
+named view on the account. The feed maps columns by header name (`EtradeWatchlistFeed.ts`).
+A name the account has no custom view for gets E*TRADE's built-in Market View, which has
+price and volume only. `MTapFeed` holds the old Experimental view's 14 columns:
+- Symbol, Actions, Volume;
+- Ask, Bid, Ask Size, Bid Size, Qty;
+- Open, Previous Close, Change %, 10 Day Volume;
+- Last Trade, Day's Gain %.
+
+The account's own `Experimental` view is left as it is. It lacks Open and Bid/Ask, and it
+already has 15 of the 16 columns E*TRADE allows.
+
 **The utility** (`watchlists/`) manages an account's lists and views. It is a CLI over the
 watchlist web API, for one-off changes and later for lists built from a screener:
 
@@ -185,6 +209,7 @@ npm run watchlist -- rename ID NAME | delete ID [--force]
 - A view holds at most 16 columns.
 - An unknown symbol can come back as "Service failure" rather than an empty result.
 - An add that times out on our side can still have been made.
+
 ## Session persistence & reuse
 
 `state/etrade/session.json` (git-ignored) holds the live session so restarts avoid a

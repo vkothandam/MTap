@@ -24,6 +24,7 @@ Every section carries a `Tags:` line. To find every section on a subject, search
 | `tag-chartiq` | **Topic: Live pre-market sources.** E*TRADE ChartIQ, the watchlist feed and Massive's snapshot before the open: what each gives, how fast |
 | `tag-edgar-results` | **Topic: Results release dates (SEC EDGAR).** Which 8-Ks are earnings releases, which session they date, and how that was checked |
 | `tag-ml-intraday` | **Topic: Intraday experiments.** Intraday prediction checks on minute bars: analog matching, pockets, and what they are scored against |
+| `tag-etrade-watchlist-api` | **Topic: E*TRADE watchlist and view API.** Managing watchlists and their column views over the website's API (`npm run watchlist`): payloads, limits, and what comes back |
 
 ## Adding a learning
 
@@ -674,6 +675,81 @@ new container finds one. Then the production `daily` wrote 10-23 (12,557 rows; 1
 **Not covered** (no market): a full day's volume, a 09:00–16:21 ET massive-ws window, and the
 evening compact on real data. The Monday 10-26 checks in the runbook cover them.
 
+
+## E*TRADE watchlist and view API
+
+Tags: `tag-etrade-watchlist-api`
+
+The watchlist utility (`node/src/services/etrade/watchlists/`, `npm run watchlist`) calls the same
+web API as E*TRADE's watchlist page, with the page's cookies and `stk1` header. These facts come
+from moving the polled lists to the alternate account on 2026-11-01
+([node/src/services/etrade/README.md](../node/src/services/etrade/README.md)).
+
+### 2026-11 Moving the polled watchlists to another account (2026-11-01)
+
+Tags: `tag-etrade-watchlist-api` `tag-sourcing-host`
+
+**What was done:**
+- The MidCap symbols were read from the NAS feed (`source_meta.watchlist = 'MidCap'`, 10-29 and 10-30: the
+  same 422) into `shared/watchlists/midcap-215584661306.txt`.
+- On the new account, `create MidCap --from` that file gave list `33503637158` with all 422 symbols.
+- The main list `217428640306` (605 symbols, "LargeMega10B" on E*TRADE) already existed and was not changed.
+
+**Endpoints** (every call is a POST with the body `{value: {...}}` unless marked GET):
+
+| what | endpoint | notes |
+| --- | --- | --- |
+| lists | `webapipf/watchlist/getAllWatchlists.json` | `watchlists[]`: `id`, `name` |
+| create / rename / delete a list | `createWL.json` / `renameWL.json` / `deleteWL.json` | `watchlistName`, `watchlistID` |
+| read a list | `getTSPWatchlistDetails.json` | the collector's payload; `viewName` picks the columns |
+| add a symbol | `createWatchListEntry.json` | one symbol per call; a valid add returns `watchlistEntry.entries` |
+| delete entries | `deleteWatchListEntry.json` | `entryID` = the entry IDs joined by commas |
+| views | `webapipf/view/getViewList/tspWatchlist.json` (GET) | `views[]`: `name`, `customView` |
+| a view's columns | `view/getView.json` | `{isCustomView, viewName, viewSrcType: "watchlist"}` |
+| every column | `view/getAllColumns/tspWatchlist.json` (GET) | names and codes by group; `Actions` (1000) is not in it |
+| create / change a view | `view/createView.json` / `updateView.json` | `columnHeaderCodes` = codes in display order |
+
+**What came back:**
+- **A view holds at most 16 columns.** `updateView` refused 20 columns: "Number of columns for creating a new
+  view or update view cannot be more than 16". The account's `Experimental` view already had 15. So the
+  collector now reads the main list through a separate view, `MTapFeed`, with the 14 columns the old account's
+  Experimental view had (`WatchlistConfig.view`). `name` stays "Experimental", so `source_meta.watchlist` is
+  unchanged.
+- **A view name the account lacks gives Market View.** `getView` and `getTSPWatchlistDetails` both answer with
+  the built-in view (Symbol, Last Price, Change $, Change %, Price Paid, Date Acquired, Change since Added %,
+  Volume). There is no error. The old account had no "MidCap" view either: its MidCap rows only ever had price
+  and volume.
+- **Column codes** seen:
+
+  | column | code | column | code |
+  | --- | --- | --- | --- |
+  | Symbol | 1 | Open | 33 |
+  | Actions | 1000 | Previous Close | 32 |
+  | Last Trade | 47 | Bid / Ask | 13 / 14 |
+  | Volume | 17 | Bid Size / Ask Size | 50 / 51 |
+  | 10 Day Volume | 70 | Qty | 5 |
+  | Change % | 16 | Day's Gain % | 38 |
+- **An unknown symbol can come back as a failure, not an empty result.** `ZZZZQX` came back as "Service
+  failure, Please try again after some time".
+- **A timed-out add can still be made.** `FSK` timed out after 15 s, but it was in the list when the list was
+  re-read. That is why the utility re-reads the list after every add and names any symbol that is not in it.
+- **Login on the new account:** one registered phone, so no phone choice on the page. The code was typed in the
+  Chrome window. After that the saved session (cookies and `stk1`) answered the API with no browser.
+- **The NAS trial (MTap-Trial, 16:29–17:00):**
+  - First login: the code was typed in noVNC at 16:41, with "save device" ticked.
+  - Polling then ran on `217428640306` and `33503637158`. The stop flushed 41,674 rows.
+  - Through `MTapFeed`, 99.8% of Experimental rows had bid, ask, open and prev_close. Only KVUE had no price.
+- **A restart with no `session.json` needed no code.** The Chrome profile kept the device trust. The
+  login took three attempts, about 5 minutes (16:50 → 16:54:53):
+  - Attempt 1 was still on the login page after 60 s.
+  - Attempt 2 failed with "Execution context was destroyed" (a navigation mid-read).
+  - Attempt 3 logged in.
+
+  The old account looked the same: on 10-26 to 10-29, attempt 1 always timed out and attempt 2 logged in.
+  So expect the weekday 06:10 start to take a few minutes to log in.
+
+**How to run it again:** see the commands in the etrade README. `show ID` prints the columns and any feed
+columns missing; `view NAME` does the same for a view.
 
 ## Results release dates (SEC EDGAR)
 

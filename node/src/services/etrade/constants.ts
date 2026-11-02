@@ -56,10 +56,12 @@ export interface WatchlistConfig {
 }
 
 export const WATCHLISTS: Record<string, WatchlistConfig> = {
-  // Main watchlist - polled every 2 seconds
-  MAIN: { id: "215565674306", name: "Experimental", intervalMs: 2000, csvPrefix: "" },
-  // Mid-cap watchlist - polled every 20 seconds
-  MIDCAP: { id: "215584661306", name: "MidCap", intervalMs: 20000, csvPrefix: "MC" },
+  // Main watchlist ("LargeMega10B" on E*TRADE) - polled every 2 seconds. Until 2026-11-01: 215565674306 (old account).
+  // View MTapFeed: the feed's columns (Open, Bid/Ask and sizes, Previous Close, 10 Day Volume ...).
+  MAIN: { id: "217428640306", name: "Experimental", view: "MTapFeed", intervalMs: 2000, csvPrefix: "" },
+  // Mid-cap watchlist - polled every 20 seconds. Until 2026-11-01: 215584661306 (old account).
+  // No "MidCap" view, so Market View (price and volume), as on the old account.
+  MIDCAP: { id: "33503637158", name: "MidCap", intervalMs: 20000, csvPrefix: "MC" },
 };
 
 /**

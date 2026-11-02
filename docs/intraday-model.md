@@ -211,4 +211,6 @@ Proposed direction for these (2026-10-29, [MODEL-STRATEGY.md](../ml/MODEL-STRATE
 - a streaming dataset for 5 years (in memory does not fit);
 - the handoff rebuilt from the base run; the 09:30/09:45 forecasts cover only the odd folds until the overlays run on all 15.
 
+Draft study, not started: [intraday-volume-pressure-plan.md](intraday-volume-pressure-plan.md). It covers a "volume pressure" mass (volume above vs below the price, decayed over time, on 1–128 minute scales), its rate split into a volume part and a price part, a target with no fixed horizon (which side is hit first and how fast), and the non-linear path of the mass over time. It is a study before any model change.
+
 Results go in [LEARNINGS.md](LEARNINGS.md) under a new `tag-ml-intraday` topic.

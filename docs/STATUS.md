@@ -464,6 +464,7 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
 - 2026-10-29 20:50: R8b (screener on the chosen R5~px-cal20s, `ml/runs/screener/20261030-033910Z-…`) same
   result as R8 (top 20 range 12.46% vs ATR 10.90%, CI clear). Recalibration documented in ml/GUIDE.md §4 and the
   MODEL-STRATEGY glossary; live rolling recal + an HGB live predict path added to docs/TODO.md.
+- 2026-10-29: draft plan saved: [intraday-volume-pressure-plan.md](intraday-volume-pressure-plan.md). It is an intraday study of a volume-pressure mass and horizon-free targets (prediction 0), plus the mass's non-linear rate over time (prediction 1). It is linked from [intraday-model.md](intraday-model.md) §5. Not started; docs only.
 - 2026-10-30: [forecasting-design-brief.md](forecasting-design-brief.md) added: the goal (rank stocks by up/down
   momentum from 09:30), the daily, screener and intraday inputs, constraints, baselines to beat and alternatives to
   evaluate, as a starting point for design sessions. Docs only.

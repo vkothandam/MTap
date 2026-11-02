@@ -153,6 +153,17 @@ rolling 20-session recalibration** (R5-cal20s, Q36); the production switch waits
 - **Event types:** all EDGAR 8-K items (not only 2.02), plus Benzinga earnings vs estimates, rating changes and guidance, if the plan includes partner data.
 - **Market context:** SPY, QQQ and sector-ETF returns, plus a volatility index.
 
+**Intraday redesign (2026-10-30, Q37; design, not built):** predictions from past events.
+- An analog engine matches now against a 5-year library of past moments, with a narrow ↔ broad
+  dial, and reads off the pockets, pressure, reach, VWAP path and P(up), each with its effective
+  N and a CI.
+- It is shown on a Space page.
+- The TFT is not the predictor. HGB/LightGBM are the benchmark and the learned similarity.
+- The earlier `tft_intraday` prototype is no longer the base.
+- Spec: [docs/intraday-redesign.md](../docs/intraday-redesign.md).
+
+The Q31–Q34 items below still apply as data and feature facts.
+
 **Intraday design direction (2026-10-29, Q31–Q34; proposals for the intraday deep dive, not built)**
 - 1-minute grid from the 5-year `bars_1m`, empty minutes filled; 60-minute encoder plus day-so-far fields; training decisions every 5 minutes per stock.
 - Volume relative to the time of day (`vol_rel`), price moves in the stock's volatility (`ret_z`), effort vs result (`impact`), regime summaries (quiet / normal / burst, minutes since the last burst), and multi-scale windows (Q33).
@@ -210,6 +221,18 @@ rolling 20-session recalibration** (R5-cal20s, Q36); the production switch waits
 | Volume bars | Steps of equal volume instead of equal time |
 | Multi-scale windows | The same measure over several look-backs (1, 5, 15, 60 min) at every step |
 | Model type vs library | TFT, LightGBM, DeepAR and Chronos-2 are model types. pytorch-forecasting and AutoGluon are libraries that train them |
+| Pocket | A box in the price × time space after now: a price band (in σ, vs the current price) × a time window. Its "size" is the volume that trades in it (Q37) |
+| Occupancy percentile | The chance that at least a given volume fills a pocket; the pocket's colour on the Space page |
+| Bulge / sag | How far the price reaches above (bulge) or below (sag) now within a window; the maximum favourable / adverse excursion |
+| Pressure S | Σ over pockets of Δvol × Δtime × the pocket's signed position. S⁺ is the part above now, S⁻ below; S_past is measured up to now, S_future is the outcome |
+| Analog (analog ensemble) | Predicting from what happened after similar past moments. Weather forecasters' name for weighting past cases by their similarity to now |
+| Kernel / bandwidth (the dial) | How a past moment's weight falls with its distance from now. A wider bandwidth means a broader match |
+| Effective N | (Σw)² / Σw²: how many equally weighted past moments (or days) the weighted match is worth |
+| Lift | How much a narrow match's answer differs from the broad set's |
+| Dial curve | The prediction plotted as the match widens; a lean that holds across the dial is signal, one only at the narrowest setting is noise |
+| Shrinkage | Pulling a thin match's answer toward the broad set, more when the evidence is thinner |
+| Forest proximity | How often two rows land in the same leaves of a tree forest; used as a learned similarity. The quantile regression forest and the distributional random forest predict this way |
+| CRPS | The continuous ranked probability score: pinball loss averaged over all quantiles, for a whole distribution |
 
 ## Q&A log
 
@@ -1266,3 +1289,73 @@ list, CI clear; Q15's rule).
 
 **Recommendation:** R5 + rolling 20-session recal as the one model for 09:30 and 09:45, with R8
 on its 09:30 state. The switch from production waits for the user.
+
+### Q37 (2026-10-30): Rethink intraday prediction. Should predictions come from past events, seen as coloured "pockets" in a price × time × volume space? Is the TFT still relevant, or XGBoost and the like?
+
+**The full design: [docs/intraday-redesign.md](../docs/intraday-redesign.md).** The earlier intraday prototype (`tft_intraday`) is no longer the base.
+
+**The question.** The user pictures a space over price × time × volume, all relative:
+- From now, the past shows the **pockets** a stock is likely to fill next, above the current price (bulge) and below it (sag), each coloured by a percentile.
+- Example: "how did stocks with a similar VWAP projection for the day, which bounced 20% with similar moves across days, fare from this point forward?"
+- The matches need not be exact. Narrowing or broadening the parameters should show how the answer changes.
+- The dashboard should show the pockets as the point in time moves, with parameters such as market cap changed in the UI. The input parameters are details for later.
+
+**What is predicted: one object, read five ways.** The distribution of what happens after now:
+- **pockets:** volume by price band × time window, with percentiles;
+- **pressure** S = Σ Δvol × Δtime × the signed position, the up/down ranking signal;
+- **reach:** P(touching +y or −y within h);
+- **the VWAP path:** quantiles of the rest of the day vs now;
+- **P(up).**
+
+A method that gives all five from the same source keeps them consistent.
+
+**The answer: an analog engine.**
+- A **library of past moments**: one row per stock every 15 minutes, built from the 5 years of `bars_1m`. Each row holds that moment's state and what happened next.
+- **Matching** gives each past moment a weight by its distance from now:
+  - a tolerance per parameter;
+  - one narrow ↔ broad dial;
+  - prior days only;
+  - capped per day.
+- **Readings** come from those weights, each with its **effective N** (in days) and a day-bootstrap CI. The narrow match is shown next to the broad set, and the **dial curve** shows whether a lean holds as the match widens.
+- **Later, a learned similarity**: a forest's proximity (quantile regression forest or distributional random forest) decides which parameters matter, and still lists its past events.
+
+**Is the TFT relevant? Not as the intraday predictor.**
+- HGB beat it on daily, and the intraday prototype had no direction edge (although only 12 sessions).
+- It can't show the past events behind a prediction or give the pocket field.
+- 14.4M rows took 30 GB (Q34).
+- It could return only as a similarity learner, if matching on the raw path beats matching on summary numbers (the path-shape test).
+
+**XGBoost / LightGBM / HGB are appropriate, in two roles:**
+- inside the learned matching;
+- as the direct benchmark the analogs must beat.
+
+Chronos-2 is a zero-shot benchmark. First passage and Hawkes bursts are readings and checks.
+
+**How it is judged.**
+- The same 15 walk-forward blocks.
+- Tuning on validation blocks only. The page shows the validated setting as "the prediction" and labels the user's own settings as exploration.
+- Calibration first, as skill over a volatility-scaled climatology and against direct GBM.
+- The up/down lists against the open rule.
+
+One predictor per job, no ensembles. If the forest analogs and direct GBM tie, take the analogs, because they show their events.
+
+**The Space page.**
+- A time slider over a past stock-day or today.
+- Parameters with tolerance handles and the dial.
+- The pockets ahead of now, the stream behind it, and the matched moments, each clickable to replay.
+- Plotly 3-D first, to settle the concept. Then three.js in a Streamlit custom component (`st.components.v2`), with the same engine output.
+- Today's moments come from the E\*TRADE watchlist feed, after a parity check against Massive.
+
+**Next steps (not started):**
+1. moment library v0 (2 years, top 1,000, 15-minute moments);
+2. engine v0 with a walk-forward backtest against climatology;
+3. Space page v0 in Plotly;
+4. the bake-off (forest analogs, direct GBM, Chronos-2, the path-shape test);
+5. Today from the E\*TRADE feed;
+6. then three.js, more parameters (cap, EPS), 5 years, and 1-second detail.
+
+**Open:**
+- what "quality z" means;
+- whether "bounced 20%" is from today's low or over recent days;
+- where the shared engine code lives (recommended: a small standalone package, since the dashboard must not import `ml/`).
+

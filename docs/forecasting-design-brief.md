@@ -113,6 +113,11 @@ move from the open, in either direction.
 the next minutes and the rest of the day. This is what drives an up/down momentum list that
 changes during the day.
 
+**Redesign (2026-10-30).** The earlier step started from
+[intraday-redesign.md](intraday-redesign.md): an analog engine that predicts from what happened
+after similar past moments, shown as pockets on a Space page. The prototype below is no longer
+the base; its results stay as evidence.
+
 **Today's prototype** (`ml/tft_intraday`, branch `intraday-model`, 12 sessions of the E*TRADE
 feed). It is one TFT with six targets. Each target is the forward VWAP as a log move from the last
 price at decision second t:
@@ -264,6 +269,13 @@ above/below price "pressure mass" and a horizon-free target: which side is hit f
    run fold by fold on the same run contract.
 7. **Ranking losses** (LambdaRank, pairwise) instead of quantile regression, when the output is a
    list.
+8. **Intraday from past events: the analog engine** ([intraday-redesign.md](intraday-redesign.md),
+   [MODEL-STRATEGY.md](../ml/MODEL-STRATEGY.md) Q37).
+   - It matches now against a library of past moments with a narrow ↔ broad dial.
+   - It reads off the pockets, pressure, reach, VWAP path and P(up), each with its effective N
+     and a CI.
+   - It is judged against a volatility-scaled climatology and against direct GBM. The TFT is not
+     the predictor.
 
 ## 9. Where the details are
 
@@ -272,6 +284,7 @@ above/below price "pressure mass" and a horizon-free target: which side is hit f
 | every daily column and its formula | [ml/FEATURES.md](../ml/FEATURES.md) (§18 schema 4, §19 screener) |
 | every intraday column | [ml/FEATURES-intraday.md](../ml/FEATURES-intraday.md) |
 | handoff, intraday data, fold alignment | [intraday-model.md](intraday-model.md) |
+| the intraday redesign (analog engine, pockets, Space page) | [intraday-redesign.md](intraday-redesign.md) |
 | current model choices and results | [ml/MODEL-STRATEGY.md](../ml/MODEL-STRATEGY.md) **Scoreboard**; Q35 (goal), Q36 (rolling recal), Q31–Q34 (intraday) |
 | terms, metrics, how to read reports | [ml/GUIDE.md](../ml/GUIDE.md) |
 | experiment results with examples | [LEARNINGS.md](LEARNINGS.md) `tag-ml-daily` ("Direction and move accuracy") |

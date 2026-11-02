@@ -1,6 +1,6 @@
 # Intraday model: reference
 
-**Last updated: 2026-10-28.**
+**Last updated: 2026-10-30.**
 
 **Scope.** This page covers two things:
 - what the intraday model needs from the daily model, which is ready now (the **handoff**);
@@ -9,6 +9,10 @@
 **Out of scope.** The intraday model itself (targets, quantile strategy, inputs, training) is
 being revised in a separate session. Where this page describes today's intraday code (branch
 `intraday-model`), that is the current state, not the plan. The revision may change it.
+
+**Redesign (2026-10-30).** The new intraday effort starts from
+[intraday-redesign.md](intraday-redesign.md), an analog engine over past moments, not from the
+prototype in §4. The data, fold and leakage facts on this page still apply.
 
 **Related docs.**
 - Field spec of today's intraday code: `ml/FEATURES-intraday.md`.

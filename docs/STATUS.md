@@ -347,6 +347,7 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
 | [deploy/synology/README.md](../deploy/synology/README.md) | NAS runbook: one-time setup, trial, cutover, rollback, Monday checks |
 | [LEARNINGS.md](LEARNINGS.md) | what the data checks found, by tagged topic |
 | [intraday-model.md](intraday-model.md) | the intraday model: data, the daily forecast as input, folds aligned with the daily model |
+| [intraday-redesign.md](intraday-redesign.md) | the intraday redesign: predictions from past events (analog engine), pockets and pressure, solutions evaluated (TFT not the predictor), the Space page, next steps |
 | [forecasting-design-brief.md](forecasting-design-brief.md) | one-page brief for designing alternatives: the goal (up/down momentum ranking from 09:30), daily, screener and intraday inputs and intentions, constraints, baselines, open alternatives |
 | [TODO.md](TODO.md) | deferred work |
 | [database-schema.md](database-schema.md) | DuckDB ER diagrams (generated; CI checks them) |
@@ -468,3 +469,8 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
 - 2026-10-30: [forecasting-design-brief.md](forecasting-design-brief.md) added: the goal (rank stocks by up/down
   momentum from 09:30), the daily, screener and intraday inputs, constraints, baselines to beat and alternatives to
   evaluate, as a starting point for design sessions. Docs only.
+- 2026-10-30: [intraday-redesign.md](intraday-redesign.md) added (ml/MODEL-STRATEGY.md Q37). Intraday prediction is
+  redesigned around past events: an analog engine matches now against a library of past moments with a narrow ↔
+  broad dial, and reads off pockets, pressure, reach, VWAP path and P(up), each with its effective N and CI; a
+  Space page shows it (Plotly 3-D, then three.js). The `tft_intraday` prototype is no longer the base. Docs only;
+  build steps in [TODO.md](TODO.md).

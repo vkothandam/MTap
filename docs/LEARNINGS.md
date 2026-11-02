@@ -23,6 +23,7 @@ Every section carries a `Tags:` line. To find every section on a subject, search
 | `tag-ml-daily` | **Topic: Daily model experiments.** Training runs of the daily model (`ml/tft_vwap`) compared on the same test days |
 | `tag-chartiq` | **Topic: Live pre-market sources.** E*TRADE ChartIQ, the watchlist feed and Massive's snapshot before the open: what each gives, how fast |
 | `tag-edgar-results` | **Topic: Results release dates (SEC EDGAR).** Which 8-Ks are earnings releases, which session they date, and how that was checked |
+| `tag-ml-intraday` | **Topic: Intraday experiments.** Intraday prediction checks on minute bars: analog matching, pockets, and what they are scored against |
 
 ## Adding a learning
 
@@ -1668,3 +1669,75 @@ A read-only check of the feed, the NAS load and dropped data, against the iMac's
 - **Login:** the first attempt at 06:10 was refused (session restore redirected to the login
   page); the retry succeeded with no code. The `/login/sar` lines every 30 s are the
   session's keepalive, not errors.
+
+## Intraday experiments
+
+Tags: `tag-ml-intraday`
+
+Intraday prediction checks on the minute bars (`bars_1m`). Each experiment with its own doc is
+summarised here; the doc holds the full record.
+
+### Terms used in the intraday results
+
+Tags: `tag-ml-intraday`
+
+| term | meaning | example |
+| --- | --- | --- |
+| **σ (sigma)** | The stock's typical daily move: the standard deviation of the VWAP-to-VWAP log change over the prior 20 sessions (point in time, today not included). Price distances are in σ so that stocks compare | σ = 2% on a $50 stock → 0.5σ = 1% = $0.50 |
+| **Climatology / base rate** | The typical forecast for a group, knowing only the time of day, σ tercile and liquidity tercile, measured on the training years. "How often does this happen in general?" | 10:00, mid σ, high liquidity: P(touch +0.5σ within 60 min) = 41% |
+| **Edge** | How much better a forecast is than climatology. 0 = its numbers are no more useful than the base rate, however specific they look | |
+| **Skill** | Edge as a share: 1 − model error ÷ climatology error, in %. Positive = better | Brier 0.230 vs 0.240 → skill +4.2% |
+| **Brier score** | For a yes/no event: the mean of (stated probability − outcome)², outcome 1 or 0. Lower is better | said 70%, it happened: (0.7 − 1)² = 0.09 |
+| **Pinball loss** | For quantiles: a miss counts in proportion to its size, weighted by the quantile level. Lower is better (ml/GUIDE.md §2) | |
+| **nats (log score)** | The unit of a log score (natural log): mean ln(P_model(what happened) ÷ P_base(what happened)). +x nats = the model gave e^x times as much probability to what actually happened as the base rate did | +0.011 nats ≈ 1.1% more; +0.69 nats = twice as much; 0 = same |
+| **Day-bootstrap CI** | The 95% range of a result when whole days are resampled with replacement (2,000 draws). Days, not rows, because stocks on one day move together | skill +2.1% [+0.4, +3.9]: clear of 0 |
+
+### 2026-10 Analog matching across stocks: first check (sessions 2026-06-01 … 2026-10-26)
+
+Tags: `tag-ml-intraday`, `tag-volume`, `tag-vwap`, `tag-timestamps`
+
+Full record: [analog-pockets.md](analog-pockets.md).
+
+- **The question.** For a stock at a moment of the day, find past moments of any stock whose
+  parameters were close (VWAP so far vs yesterday's, the open, the move since the open, the last
+  days' moves), with a chosen match tolerance, and compare what followed: where the later volume
+  traded in price × time ("pockets", as density blobs).
+- **The data.** Massive minute bars, Jun–Oct 2026, regular session, stocks ≥ $5M a day: 6.04M
+  moments (every 15 min, 09:45–15:45) on 87 sessions. Queries: 500 October moments of stocks
+  ≥ $20M a day, matched only against earlier sessions. Every result is shrunk to climatology by
+  its effective number of days (N_eff days / (N_eff days + 10)).
+- **Findings:**
+  - **Feasible and fast, no training needed:** the library builds in 42 s; a match + pockets
+    takes 3–7 ms.
+  - **No edge on these inputs.** Direction (Brier) and rest-of-day VWAP, bulge and sag (pinball)
+    are ≈ 0 vs climatology, and the medium dial is 2–3% worse on direction. A trained HGB on the
+    same inputs is no better (−0.5% Brier, +0.5% pinball, CIs span 0).
+  - **The pockets' shape is at most slightly better than climatology** (broad, 60 sessions:
+    +0.011 nats [+0.001, +0.022]); matched pockets are a little tighter. An earlier draw of 500
+    queries showed +0.012 to +0.020, so this is near the noise level.
+  - **Evidence is days, not matches.** Matches cluster on market-wide days; without shrinkage a
+    handful of matches from one or two days made medium 11% worse on Brier.
+  - **Five parameters starve the narrow dial:** 37–54% of queries find fewer than 5 matches.
+- **The 60-session window, your 5 parameters** (skill vs climatology, %, 95% CI over days):
+
+  | dial | matches (median) | N_eff days | P(up) Brier | rest-of-day VWAP | pocket density (nats) |
+  | --- | --- | --- | --- | --- | --- |
+  | narrow (0.25) | 7 | 3.2 | −1.2 [−3, +1] | −2.6 [−17, +12] | −0.001 [−0.011, +0.009] |
+  | medium (0.5) | 200 | 21.0 | −2.9 [−5, −1] | −1.6 [−15, +12] | +0.004 [−0.008, +0.016] |
+  | broad (1.0) | 4,476 | 35.3 | −1.1 [−3, +0] | −0.9 [−15, +13] | +0.011 [+0.001, +0.022] |
+
+- **Example where the views differ: MU 2026-10-02 at 11:00** (σ 2.97%; opened +1.36σ over
+  yesterday's VWAP, −0.75σ since the open). The 3 medium matches (RIO 07-29, GIII 08-03,
+  DGXX 08-12) all went up: P(up) 96%, 91% of later volume above now, but they are 1.1
+  effective days, so shrunk it is 54%. The 192 broad matches (20.9 days) say 56% up, 55% of
+  volume above now. MU went down: 5% of its later volume traded above the 10:59 price, and the
+  rest-of-day VWAP was −0.16σ.
+- **Data notes:**
+  - each `bars_1m/month=YYYY-MM/` folder holds that month only, whatever its file name says
+    (about 27M rows a month, not a quarter);
+  - `t` is UTC; a fixed −4 h is right only in EDT, so convert per date with the New York zone.
+- **How to rerun** (read-only, about 11 min, NAS mounted):
+  `cd ml && uv run python scripts_space_analog_check.py [--parts example,windows,hgb,coverage] [--queries 500] [--seed 1]`
+- **Next:** the dashboard view (Intraday → Space, with the 3-D pockets) is built; then the ideas in
+  [analog-pockets.md §7](analog-pockets.md#7-improve-later), above all more informative inputs
+  (market and sector move, results days, the daily forecast).

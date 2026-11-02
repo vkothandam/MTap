@@ -55,6 +55,13 @@ def _default_intraday_root() -> str:
     return given or str(Path(_default_root()) / "intraday")
 
 
+def _default_space_root() -> str:
+    """--space-lib, else $FORECAST_DASH_SPACE_LIB, else ../out/space."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--space-lib", default=os.environ.get("FORECAST_DASH_SPACE_LIB"))
+    return p.parse_known_args(sys.argv[1:])[0].space_lib or "../out/space"
+
+
 def _default_screener_root() -> str:
     """--screener-dir, else $FORECAST_DASH_SCREENER, else ../out/screener."""
     p = argparse.ArgumentParser(add_help=False)
@@ -832,7 +839,7 @@ def main():
     if section == "home":
         return home.render(_default_root(), _default_intraday_root())
     if section == "intraday":
-        return intraday_page.render(_default_intraday_root())
+        return intraday_page.render(_default_intraday_root(), _default_space_root())
     if section == "watchlist":
         return watchlist_page.render(_default_screener_root())
     title, body = HELP["overview"]

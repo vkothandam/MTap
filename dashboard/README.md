@@ -25,6 +25,7 @@ To use a custom port, different run, or skip telemetry:
 uv run forecast-dash --runs ../ml/runs/<run_id> --port 8502
 FORECAST_DASH_RUNS=../ml/runs uv run forecast-dash --port 8503
 uv run forecast-dash --runs ../ml/runs --intraday-runs ../ml/runs/intraday   # the default
+uv run forecast-dash --runs ../ml/runs --space-lib ../out/space               # the default
 ```
 
 To run tests:
@@ -102,7 +103,9 @@ The sidebar **Section** radio switches between three views (it follows `?section
   `report/by_target.parquet` if the run has it, else computed). A card says so when there is no run (`tft-intraday` has not
   been run).
 - **Cross-day**: the next-day forecast tabs below, with their own sidebar filters.
-- **Intraday**: six tabs for the intraday model, described under *Intraday* below.
+- **Intraday**: a sidebar **View** radio (`?view=space` or `runs`) picks **Space (pockets)**
+  (the default, see *Intraday → Space* below) or **Model runs**, the six tabs for the intraday
+  model described under *Intraday* below. Home's *Open Intraday* button opens Model runs.
 
 ## Sidebar (applies to every Cross-day tab)
 
@@ -187,6 +190,58 @@ Cross-day.
 | Across stocks | Per stock and per sector: coverage and skill, a coverage-vs-skill chart, and a *min decision points* filter | Left of the 80% line the stock's bands are too narrow; below 0 the model loses to climatology. |
 | Intraday vs daily | Always the whole-day VWAP: pinball loss of the intraday forecast and of the morning daily forecast by time of day, and the intraday skill | The intraday model should win more as the day goes on. Only decision points with a morning forecast (`has_daily`) count. |
 
+## Intraday → Space
+
+Where the later volume traded after moments like this one, from earlier sessions of every stock
+(the experiment and its first check: `docs/analog-pockets.md`). It needs no intraday run, only a
+**moment library** built from the minute bars by the `mtap-space` package (`../space`, an
+editable path dependency). From the repo root:
+
+```bash
+cd space && uv run space-build --sessions 90      # about a minute; writes ../out/space/lib-<last session>/
+```
+
+The page reads `--space-lib DIR` or `FORECAST_DASH_SPACE_LIB` (default `../out/space`) and picks
+the newest `lib-*`. Without one it shows the build command. A link opens a moment:
+`?section=intraday&view=space&sp_stock=MU&sp_date=2026-10-02&sp_time=11:00`.
+
+The 3-D view is a `st.components.v2` component: three.js in `js/src/space3d.js`, bundled by
+esbuild into `forecast_dash/space3d/space3d.js` (committed, so no Node is needed to run the
+dashboard; `pyproject.toml` `[tool.streamlit.component]` serves it as a cached file). After
+editing the JS:
+
+```bash
+cd dashboard/js && npm install && npm run build
+```
+
+Without the bundle the page shows that command instead of the 3-D view. AppTest cannot run
+WebGL; check the look with headless Chrome (`--use-angle=metal` on a Mac; SwiftShader fails).
+
+- **Sidebar.** The moment: stock (most traded first), date, time (09:45 … 15:45 every 15 min).
+  Matching: the parameters (default: VWAP so far vs the previous VWAP, the open vs the previous
+  VWAP, the move since the open, day −1 and day −2), a tolerance multiplier per parameter, the
+  close and loose dials, the history (30 / 60 / 90 sessions) and the pool filters (min dollar
+  volume, min price, this stock only, time of day ±0 / 15 / 30 min).
+- **The pocket space (3-D).** Four views on one canvas (close match, loose match, everything,
+  what it did) with one shared camera: x = time ahead (log), y = price vs now in σ, height =
+  share of the later volume (√ or linear). Colour = pocket region (the strongest shade = 50%,
+  then 80 and 95%, grey outside), blue above now and red below; rings at the 50 / 80 / 95% edges with their
+  floor shadows; a translucent wall at now. Drag to turn, scroll to zoom, right-drag to pan;
+  hover a cell for its time window, $ band and share; a click picks that cell for the Compare
+  tab. The camera stays where you left it when a control changes.
+- **Evidence table.** One row per view (close match, loose match, everything = climatology of the
+  pool, what it did): matches, stocks, independent days, trust (the shrinkage weight), P(up), the
+  rest-of-day VWAP p10 / 50 / 90, bulge, sag and share of later volume above now in σ; for past
+  dates also how much of what it did fell inside the 50 / 80% pockets and the log score vs
+  everything. Fewer than 5 independent days is flagged ⚠️.
+
+| Tab | What it shows | How to read it |
+| --- | --- | --- |
+| Compare | The four pocket maps (time ahead on a log axis × price vs now in σ, with $ on hover; white lines at the 50 / 80 / 95% edges), a match − everything difference map, and a picked cell: each view's share there and the matches that put the most volume there | A match pocket that looks like everything says the parameters carry no information at this moment. Several blobs in the 50% pocket mean the matches split into different paths. |
+| Matches | The query's parameter values with the close and loose tolerances, and the loose match's 50 heaviest moments with what followed each. Picking a row draws that moment's pocket next to this one | Many different stocks and days behind a match count make it more trustworthy than many moments from a few days. |
+| Dial curve | Matches, stocks and independent days, P(up) and share above now for dials 0.25 … 2 | A reading that only moves away from everything at a dial with few days is noise. |
+| Day path | The stock's minute VWAP, session VWAP and volume that day, the decision time and the previous VWAP | What actually happened after the moment. |
+
 ## Layout
 
 ```
@@ -199,10 +254,14 @@ forecast_dash/
   app.py        Streamlit UI: Section switch, Cross-day sidebar and tabs, caching
   ui.py         shared Streamlit helpers (_chart, _table, _in_short, ...), run caches, sections
   home.py       Home page: one card per section
-  intraday_page.py     the Intraday section (six tabs)
+  intraday_page.py     the Intraday section: the View switch and the six model-run tabs
+  space_page.py        Intraday → Space: sidebar, evidence, four tabs (reads a mtap_space library)
+  space_calc.py        Space tables from a library and a query (pure)
+  space3d/space3d.js   the built 3-D view (from js/, do not edit)
   intraday_contract.py discover / load intraday runs
   intraday_calib.py    intraday scores, built on calib.py (pure)
   cli.py        forecast-dash entry point -> streamlit run app.py
+js/             the 3-D view's source (src/space3d.js), package.json and the esbuild script
 tests/          maths, contract, charts, insights, AppTest smoke over every tab, import boundary
 ```
 

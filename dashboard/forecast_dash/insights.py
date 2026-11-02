@@ -582,3 +582,62 @@ def compare_insights(summaries: dict[str, dict], calls: dict[str, pd.DataFrame],
             + "; ".join(f"{n}: " + ", ".join(f"{side} {_pts(v)}" for side, v in d.items())
                         for n, d in devs.items()) + ").")))
     return out
+
+
+# ---- Intraday → Space -------------------------------------------------------------------------
+
+SPACE_MIN_DAYS = 5      # fewer independent days than this behind a match: mostly climatology
+SPACE_LEAN = 0.05       # |match − everything| in P(up) or share above now worth calling a lean
+
+
+def space_insights(ev: pd.DataFrame, past: bool) -> list[Insight]:
+    """Space view: how much evidence stands behind each match, whether the matches lean away
+    from everything, and (on a past date) which pocket was closer to what the stock did.
+    `ev` is space_calc.evidence(): rows close, loose, clim, actual."""
+    out = []
+    cl, lo, ev_all = ev.loc["close"], ev.loc["loose"], ev.loc["clim"]
+    for k, r in (("close", cl), ("loose", lo)):
+        if r["matches"] == 0:
+            out.append(Insight(WARN, f"The {k} match found nothing: its view is everything. "
+                                     f"Widen its dial or use fewer parameters."))
+        elif r["days"] < SPACE_MIN_DAYS:
+            out.append(Insight(WARN, f"The {k} match stands on {r['days']:.1f} independent days "
+                                     f"({r['matches']:,.0f} moments), so its readings are "
+                                     f"{1 - r['trust']:.0%} everything."))
+    if lo["matches"]:
+        d_up, d_ab = lo["p_up"] - ev_all["p_up"], lo["above_now"] - ev_all["above_now"]
+        lean = "higher" if d_up > 0 else "lower"
+        if max(abs(d_up), abs(d_ab)) >= SPACE_LEAN:
+            out.append(Insight(INFO, (
+                f"After moments like this one, the rest-of-day VWAP ended above now "
+                f"{lo['p_up']:.0%} of the time vs {ev_all['p_up']:.0%} for everything, and "
+                f"{lo['above_now']:.0%} of the later volume traded above now (everything "
+                f"{ev_all['above_now']:.0%}): the loose match leans {lean}.")))
+        else:
+            out.append(Insight(INFO, (
+                f"The loose match looks like everything: P(rest of day above now) "
+                f"{lo['p_up']:.0%} vs {ev_all['p_up']:.0%}, later volume above now "
+                f"{lo['above_now']:.0%} vs {ev_all['above_now']:.0%}.")))
+        if lo["blobs_50"] > 1:
+            out.append(Insight(INFO, f"The loose match's 50% pocket is {lo['blobs_50']:.0f} "
+                                     f"separate blobs: the later volume went to more than one "
+                                     f"place."))
+    if past:
+        a = ev.loc["actual"]
+        if np.isnan(a["above_now"]):
+            out.append(Insight(INFO, "Nothing traded after this moment, so it can't be graded."))
+        else:
+            for k, r in (("close", cl), ("loose", lo)):
+                if r["matches"] == 0:
+                    continue
+                better = r["log_score"] > 0
+                out.append(Insight(GOOD if better else WARN, (
+                    f"What it did: {r['in_50']:.0%} of its later volume landed in the {k} "
+                    f"match's 50% pocket (everything: {ev_all['in_50']:.0%}). The {k} pocket "
+                    f"was {'closer to' if better else 'no closer to'} what happened than "
+                    f"everything (log score {r['log_score']:+.2f}).")))
+    out.append(Insight(INFO, "On the first check (docs/analog-pockets.md) matches called the "
+                             "direction no better than everything, and their pocket shape was "
+                             "at most 0.01 nats closer: read the pockets as what followed "
+                             "similar moments, not a forecast."))
+    return out

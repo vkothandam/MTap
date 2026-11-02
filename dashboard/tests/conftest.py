@@ -137,3 +137,19 @@ def write_intraday_run(root, name="id-a", seed=0, report=False, **kw):
                 for t in ID_TARGETS for m in ("tft", "climatology", "momentum")]
         pd.DataFrame(rows).to_parquet(run / "report" / "by_target.parquet", index=False)
     return run
+
+
+def write_space_lib(root, sessions=25):
+    """A tiny moment library (6 synthetic stocks) under root/lib-<last session>/."""
+    from mtap_space import library
+    from mtap_space.synthetic import sessions as days
+    from mtap_space.synthetic import synthetic_bars, write_bars
+
+    bars = write_bars(root / "bars", synthetic_bars(days()))
+    built = library.build(bars, sessions=sessions, min_dollar=1e6, log=lambda *_: None)
+    return library.save(built, root / "space")
+
+
+@pytest.fixture(scope="session")
+def space_lib(tmp_path_factory):
+    return write_space_lib(tmp_path_factory.mktemp("space"))

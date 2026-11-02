@@ -57,14 +57,15 @@ def _chart(fig, panel: str, **kw):
 
 
 def _table(df: pd.DataFrame, panel: str, column_config: dict | None = None, **kw):
-    """st.dataframe with the ⓘ above it and every known column's meaning as a header tooltip."""
+    """st.dataframe with the ⓘ above it and every known column's meaning as a header tooltip.
+    Returns what st.dataframe returns (the selection state when `on_select` is set)."""
     _about(panel, df.columns)
     cfg = dict(column_config or {})
     for c in df.columns:
         if h := column_help(c, panel):
             cfg[c] = {**(cfg.get(c) or st.column_config.Column()), "help": h}
     kw.setdefault("hide_index", True)
-    st.dataframe(df, column_config=cfg, **kw)
+    return st.dataframe(df, column_config=cfg, **kw)
 
 
 def _in_short(items: list[insights.Insight], title: str = "In short"):

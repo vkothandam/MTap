@@ -40,7 +40,8 @@ MTap sources market data for the ML work.
 | `scripts/schedule/`, `scripts/storage/` | the macOS (iMac) target: launchd, pmset, SMB mount | [scripts/README.md](../scripts/README.md), [IMAC.md](../scripts/IMAC.md) |
 | `nas/massive1s/` | Rust 1-second REST backfill, runs on the NAS | [nas/README.md](../nas/README.md) |
 | `ml/` | TFT trainer, report, predict, grade (to move to its own repo) | [ml/README.md](../ml/README.md), [MODEL-STRATEGY.md](../ml/MODEL-STRATEGY.md) |
-| `dashboard/` | Streamlit forecast dashboard (reads run files only) | [dashboard/README.md](../dashboard/README.md) |
+| `dashboard/` | Streamlit forecast dashboard (reads run files and the `space/` moment library only) | [dashboard/README.md](../dashboard/README.md) |
+| `space/` | `mtap-space`: the analog-pockets moment library and matcher (`space-build`), used by Intraday → Space | [analog-pockets.md](analog-pockets.md) |
 
 ## Hosts
 
@@ -474,3 +475,9 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
   broad dial, and reads off pockets, pressure, reach, VWAP path and P(up), each with its effective N and CI; a
   Space page shows it (Plotly 3-D, then three.js). The `tft_intraday` prototype is no longer the base. Docs only;
   build steps in [TODO.md](TODO.md).
+- 2026-10-31: analog pockets, first check ([analog-pockets.md](analog-pockets.md), LEARNINGS `tag-ml-intraday`,
+  `ml/scripts_space_analog_check.py`). Matching a moment against past moments of any stock is fast (a 90-session
+  library is about 6M moments and builds in under a minute) but has no predictive edge yet on direction or the
+  rest-of-day VWAP; the pocket shape is at most slightly better than climatology. New `space/` package
+  (`mtap-space`, `space-build`) and the dashboard's Intraday → Space view (pocket maps, dial curve, a three.js 3-D
+  view whose bundle is committed); Intraday now opens on Space, with Model runs as the other view.

@@ -491,3 +491,137 @@ def id_vs_daily(vd: pd.DataFrame) -> go.Figure:
     fig.update_yaxes(tickformat=".2%", row=1, col=1)
     fig.update_yaxes(tickformat=PCT, row=2, col=1)
     return _layout(fig, "Intraday vs daily: whole-day VWAP", height=540)
+
+
+# ---- Intraday → Space: pockets of later volume (maps are NX x NY: time ahead x σ vs now) ------
+
+MIN_TICKS = [(1, "1m"), (5, "5m"), (15, "15m"), (30, "30m"), (60, "1h"), (120, "2h"),
+             (240, "4h"), (390, "6.5h")]
+
+
+def span_label(m: float) -> str:
+    """Minutes ahead as a short label: 0.4m, 25m, 2.5h."""
+    return f"{m:.1f}m" if m < 10 else f"{m:.0f}m" if m < 90 else f"{m / 60:.1f}h"
+
+
+def _cell_text(Q: np.ndarray, xe: np.ndarray, ye: np.ndarray, now: float, sig: float,
+               region: np.ndarray | None, names) -> np.ndarray:
+    """Hover text per cell, shaped like the heatmap (NY x NX)."""
+    out = np.empty(Q.T.shape, dtype=object)
+    px = now * np.exp(ye * sig)
+    for i in range(Q.shape[0]):
+        for j in range(Q.shape[1]):
+            r = f"<br>{names[region[i, j]]}" if region is not None else ""
+            out[j, i] = (f"{span_label(xe[i])}–{span_label(xe[i + 1])} ahead<br>"
+                         f"{ye[j]:+.2f}σ to {ye[j + 1]:+.2f}σ (${px[j]:,.2f}–${px[j + 1]:,.2f})"
+                         f"<br>{Q[i, j]:.2%} of the later volume{r}")
+    return out
+
+
+def _map_axes(fig: go.Figure, xe: np.ndarray, n: int, cols: int):
+    pos = [float(np.interp(m, xe, np.arange(len(xe)))) for m, _ in MIN_TICKS]
+    for k in range(n):
+        r, c = k // cols + 1, k % cols + 1
+        fig.update_xaxes(tickvals=pos, ticktext=[t for _, t in MIN_TICKS], range=[0, len(xe) - 1],
+                         row=r, col=c, title="time ahead" if r == (n - 1) // cols + 1 else None)
+        fig.update_yaxes(title="price vs now (σ)" if c == 1 else None, row=r, col=c)
+        fig.add_hline(y=0, line={"color": "white", "width": 1, "dash": "dot"}, row=r, col=c)
+
+
+def pocket_maps(maps: dict[str, np.ndarray], regions: dict[str, np.ndarray | None],
+                xe: np.ndarray, ye: np.ndarray, now: float, sig: float, region_names,
+                title: str, cols: int = 2) -> go.Figure:
+    """One heatmap per map (each scaled to its own peak), with the 50 / 80 / 95% pocket edges
+    as white lines. The dotted line is the price now."""
+    names = list(maps)
+    rows = (len(names) + cols - 1) // cols
+    fig = make_subplots(rows=rows, cols=cols, subplot_titles=names, horizontal_spacing=0.06,
+                        vertical_spacing=0.12, shared_yaxes=True)
+    xc = np.arange(len(xe) - 1) + 0.5
+    yc = (ye[:-1] + ye[1:]) / 2
+    for k, name in enumerate(names):
+        Q, reg = maps[name], regions.get(name)
+        r, c = k // cols + 1, k % cols + 1
+        peak = Q.max() if Q.max() > 0 else 1.0
+        fig.add_trace(go.Heatmap(
+            x=xc, y=yc, z=(Q / peak).T, colorscale="Viridis", showscale=False, zmin=0, zmax=1,
+            text=_cell_text(Q, xe, ye, now, sig, reg, region_names),
+            hovertemplate="%{text}<extra>" + name + "</extra>"), row=r, col=c)
+        if reg is not None:
+            fig.add_trace(go.Contour(
+                x=xc, y=yc, z=reg.T.astype(float), showscale=False, hoverinfo="skip",
+                contours={"start": 0.5, "end": 2.5, "size": 1, "coloring": "lines"},
+                line={"color": "white", "width": 1.2}, colorscale=[[0, "white"], [1, "white"]]),
+                row=r, col=c)
+    _map_axes(fig, xe, len(names), cols)
+    return _layout(fig, title, height=300 * rows + 80)
+
+
+def pocket_diff(Qm: np.ndarray, Qc: np.ndarray, xe: np.ndarray, ye: np.ndarray, now: float,
+                sig: float, title: str) -> go.Figure:
+    """Match − everything, per cell, in points of the later volume: red = more volume there
+    after the matches than usual, blue = less."""
+    D = Qm - Qc
+    lim = float(np.abs(D).max()) or 1e-6
+    fig = make_subplots(rows=1, cols=1)
+    fig.add_trace(go.Heatmap(
+        x=np.arange(len(xe) - 1) + 0.5, y=(ye[:-1] + ye[1:]) / 2, z=D.T * 100,
+        colorscale="RdBu_r", zmid=0, zmin=-lim * 100, zmax=lim * 100,
+        colorbar={"title": "pts"}, text=_cell_text(D, xe, ye, now, sig, None, None),
+        hovertemplate="%{text}<extra>difference</extra>"))
+    _map_axes(fig, xe, 1, 1)
+    return _layout(fig, title, height=420)
+
+
+def dial_curve(t: pd.DataFrame, dials: tuple[float, float], clim_up: float,
+               clim_above: float) -> go.Figure:
+    """Against the match tolerance: matches and N_eff days (log scale), then P(up) and the share
+    of later volume above now, with everything (climatology) dashed."""
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1,
+                        subplot_titles=("Matches and independent days",
+                                        "Readings (blended to everything)"))
+    for col, name, color in (("matches", "matches", COLORS[0]), ("days", "N_eff days", COLORS[3]),
+                             ("stocks", "stocks", COLORS[5])):
+        fig.add_scatter(x=t["dial"], y=t[col].clip(lower=0.5), name=name, mode="lines+markers",
+                        line={"color": color}, row=1, col=1)
+    for col, name, color, ref in (("p_up", "P(rest of day above now)", COLORS[2], clim_up),
+                                  ("above_now", "later volume above now", COLORS[1], clim_above)):
+        fig.add_scatter(x=t["dial"], y=t[col], name=name, mode="lines+markers",
+                        line={"color": color}, row=2, col=1)
+        fig.add_hline(y=ref, line={**IDEAL, "color": color}, row=2, col=1)
+    for d, label in zip(dials, ("close", "loose")):
+        fig.add_vline(x=d, line={"color": "grey", "width": 1, "dash": "dot"})
+        # labelled at the foot of the top panel: at the top they would cover the panel titles
+        fig.add_annotation(x=d, xref="x", y=0, yref="y domain", text=label, showarrow=False,
+                           xanchor="left", yanchor="bottom", font={"color": "grey", "size": 11})
+    fig.update_xaxes(title="tolerance (× each parameter's spread)", row=2, col=1)
+    fig.update_yaxes(type="log", title="count", row=1, col=1)
+    fig.update_yaxes(tickformat=PCT, row=2, col=1)
+    return _layout(fig, "What the tolerance does", height=560)
+
+
+def space_day_path(t: pd.DataFrame, decision: int, prev: float, title: str) -> go.Figure:
+    """The stock's day: each minute's VWAP and the session VWAP so far, volume below, the
+    decision time marked and the minutes after it dotted."""
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28],
+                        vertical_spacing=0.05)
+    before, after = t[~t["after"]], t[t["after"]]
+    fig.add_scatter(x=before["minute"], y=before["vwap"], mode="lines", name="minute VWAP",
+                    text=before["time"], hovertemplate="%{text}: $%{y:,.2f}",
+                    line={"color": COLORS[0], "width": 1.5}, row=1, col=1)
+    fig.add_scatter(x=after["minute"], y=after["vwap"], mode="lines", name="after the decision",
+                    text=after["time"], hovertemplate="%{text}: $%{y:,.2f}",
+                    line={"color": COLORS[0], "width": 1, "dash": "dot"}, opacity=0.6,
+                    row=1, col=1)
+    fig.add_scatter(x=t["minute"], y=t["session_vwap"], mode="lines", name="session VWAP so far",
+                    hoverinfo="skip", line={"color": COLORS[2]}, row=1, col=1)
+    fig.add_hline(y=prev, line=IDEAL, row=1, col=1)
+    fig.add_bar(x=t["minute"], y=t["volume"], name="volume", row=2, col=1, text=t["time"],
+                hovertemplate="%{text}: %{y:,.0f} shares",
+                marker_color=np.where(t["after"], "rgba(127,127,127,0.35)", COLORS[0]))
+    fig.add_vline(x=decision, line={"color": COLORS[1], "width": 1.5})
+    ticks = t["minute"][t["minute"] % 30 == 0]
+    fig.update_xaxes(tickvals=ticks, ticktext=t["time"][ticks.index], row=2, col=1)
+    fig.update_yaxes(title="price ($)", tickprefix="$", row=1, col=1)
+    fig.update_yaxes(title="shares", row=2, col=1)
+    return _layout(fig, title + " (grey dashed: previous VWAP)", height=520)

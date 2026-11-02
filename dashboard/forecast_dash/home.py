@@ -10,7 +10,7 @@ from forecast_dash import calib, insights
 from forecast_dash import intraday_calib as ic
 from forecast_dash.contract import discover, run_label
 from forecast_dash.intraday_contract import discover_intraday, load_config
-from forecast_dash.intraday_page import get_report, get_summary
+from forecast_dash.intraday_page import get_report, get_summary, open_runs
 from forecast_dash.ui import ICONS, _pct_cols, _table, get_live, get_run, goto_section
 
 SHORT = ["r_1m", "r_5m", "r_15m", "r_60m"]
@@ -86,8 +86,12 @@ def _intraday_card(runs: list[Path], root: str):
                 h = h.drop(columns="skill_clim")
             _table(h, "home_intraday", _pct_cols(h, ["coverage80", "skill_clim", "skill_mom",
                                                      "dir_last"]))
-    st.button("Open Intraday", key="open_intraday", on_click=goto_section,
-              args=("intraday",))
+    st.button("Open Intraday", key="open_intraday", on_click=_open_intraday)
+
+
+def _open_intraday():
+    goto_section("intraday")
+    open_runs()
 
 
 def _test_days(path: str) -> int:

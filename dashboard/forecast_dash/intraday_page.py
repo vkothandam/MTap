@@ -1,6 +1,8 @@
-"""The Intraday section: six tabs grading the intraday model (VWAP of the next minutes, the
-rest of the day, the whole day) on the days it never trained on. Run `tft-intraday` to make a run
-(see intraday_contract.py for the files)."""
+"""The Intraday section, two views (sidebar View, ?view=):
+- Space (pockets): where the later volume traded after moments like this one (space_page.py).
+- Model runs: six tabs grading the intraday model (VWAP of the next minutes, the rest of the day,
+  the whole day) on the days it never trained on. Run `tft-intraday` to make a run (see
+  intraday_contract.py for the files)."""
 
 from __future__ import annotations
 
@@ -9,8 +11,9 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from forecast_dash import charts
+from forecast_dash import charts, space_page
 from forecast_dash import intraday_calib as ic
+from forecast_dash.contract import run_label
 from forecast_dash.intraday_contract import (
     discover_intraday,
     load_config,
@@ -18,7 +21,6 @@ from forecast_dash.intraday_contract import (
     load_report,
     targets_of,
 )
-from forecast_dash.contract import run_label
 from forecast_dash.ui import _chart, _header, _in_short, _model_popover, _pct_cols, _table
 
 # columns each page needs, so a big run loads only what it grades
@@ -51,7 +53,37 @@ def get_summary(path: str, ref: str) -> pd.DataFrame:
 
 # ---- page -----------------------------------------------------------------------------------
 
-def render(root: str):
+VIEWS = {"space": "Space (pockets)", "runs": "Model runs"}
+
+
+def view_radio() -> str:
+    """The sidebar View radio, seeded from ?view= and written back to it."""
+    if "id_view" not in st.session_state:
+        st.session_state["id_view"] = VIEWS.get(st.query_params.get("view", "space"),
+                                                VIEWS["space"])
+    label = st.sidebar.radio("View", list(VIEWS.values()), key="id_view",
+                             help="Space: where the later volume traded after moments like a "
+                                  "chosen one, matched across stocks (no model). Model runs: "
+                                  "the intraday model graded on its test days")
+    slug = next(k for k, v in VIEWS.items() if v == label)
+    if st.query_params.get("view") != slug:
+        st.query_params["view"] = slug
+    return slug
+
+
+def open_runs():
+    """Button callback: open Intraday → Model runs."""
+    st.session_state["id_view"] = VIEWS["runs"]
+    st.query_params["view"] = "runs"
+
+
+def render(root: str, space_root: str):
+    if view_radio() == "space":
+        return space_page.render(space_root)
+    render_runs(root)
+
+
+def render_runs(root: str):
     st.title("Intraday forecasts")
     sb = st.sidebar
     root = sb.text_input("Intraday runs directory", root, key="id_root")

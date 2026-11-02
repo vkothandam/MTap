@@ -1002,3 +1002,192 @@ COLUMNS.update({
     "hit_rate": "share of picks whose range beat the universe median",
     "predicted": "mean predicted range of the picks",
 })
+
+
+# ---- Intraday → Space (space_page.py) -----------------------------------------------------------
+
+SP_TERMS = """
+**Words used on this page**
+- **moment**: one stock at one decision time (09:45 … 15:45, every 15 minutes) of one day.
+- **σ**: the stock's usual daily move (the std of its daily VWAP change over the 20 sessions
+  before the day). Prices are in σ vs the price now, so a calm stock and a wild one compare.
+- **parameters**: what the day looked like up to the decision time (VWAP so far vs the previous
+  VWAP, the open, the move since the open, the last days' moves…). Only bars before it are used.
+- **match**: a moment of the same time of day on an earlier session (any stock) whose parameters
+  are all within the tolerance of this one's. An exact match weighs 1, one at the edge 0.
+- **close / loose**: the two tolerances (the sidebar dials), in units of each parameter's spread.
+- **everything**: every moment in the pool, unmatched (climatology): the bar a match must beat.
+- **N_eff days**: how many independent days the matches stand for. Moments on the same day move
+  together, so 300 matches from 2 days are worth about 2.
+- **trust**: N_eff days / (N_eff days + 10). Match readings are trust × match + (1 − trust) ×
+  everything, so thin evidence falls back to everything.
+- **pocket**: where the later volume (decision time → close) traded, on a map of time ahead ×
+  price vs now. The 50% pocket is the smallest area holding half of it; it can be several blobs.
+"""
+
+HELP.update({
+    "sp_space": ("What followed moments like this", f"""
+Pick a moment in the sidebar. Its parameters are matched against the same time of day on the
+earlier sessions of every stock, at a close and a loose tolerance. The page shows what followed
+the matches, next to everything at that time of day and, for a past date, what the stock did.
+
+No model is trained: the matches are looked up. On the first check (docs/analog-pockets.md) the
+matches called the direction no better than everything, and their pocket shape was at most
+slightly closer. Read it as a description of what followed similar moments.
+
+**Sidebar**: the library, the moment (stock, date, time), the parameters and their tolerances,
+the two dials, the history and the pool filters. The URL keeps the moment
+(`?section=intraday&view=space&sp_stock=…&sp_date=…&sp_time=…`).
+{SP_TERMS}"""),
+    "sp_compare": ("Compare the pockets", """
+The four pocket maps side by side, then one match minus everything, then any one cell picked by
+its time ahead and price.
+"""),
+    "sp_matches": ("The matches", """
+The query's parameter values and the tolerance each dial allows, then the closest loose matches
+with what followed each. Pick a row to draw that one moment's own pocket next to this moment's.
+"""),
+    "sp_dial": ("Dial curve", """
+What the tolerance does: from very close (few matches, few days, readings mostly everything)
+to very loose (many matches, readings close to everything again). A lean that only shows at
+one dial is likely noise.
+"""),
+    "sp_day": ("Day path", """
+The query stock's session minute by minute, with the decision time marked. The minutes after it
+(dotted, grey volume) are what the pockets are about.
+"""),
+})
+
+PANELS.update({
+    "sp_evidence": ("Evidence per view", """
+One row per view. **close / loose match**: the matched moments, blended with everything by their
+trust. **everything**: the whole pool. **what it did**: this moment's own outcome (past dates).
+Prices are in σ vs the price now. ⚠️ marks a match on fewer than 5 independent days: its readings
+are mostly everything. For past dates, `in_50` / `in_80` are how much of the moment's later
+volume landed in each view's pocket (a calibrated 50% pocket holds about 50% on average), and
+`log_score` is how much closer the view's pocket was than everything's (above 0 = closer).
+"""),
+    "sp_space3d": ("The pocket space (3-D)", """
+Each view as a landscape: left to right, time after the decision (log scale, 1 minute to the
+close); back to front, the minute VWAP vs the price now in σ (higher is farther back; the grey
+wall and the line on the floor are the price now); height, the share of the later volume in the
+cell, each view scaled to its own peak (**√ height** lifts the small hills). Colour is the pocket
+the cell is in: the strongest shade = inside 50%, then 80%, then 95% (fading toward the
+background), grey = outside; blue above now, red below. The rings are the 50 / 80 / 95% pocket edges, with their shadows on the floor.
+
+The views share one camera: drag to turn all of them, scroll to zoom, right-drag to pan. Hover a
+cell for its time window, price band in $, share and pocket; click it to pick it for the
+**Pick a cell** tables in the Compare tab (the picked cell is framed in every view).
+"""),
+    "sp_maps": ("Pocket maps", """
+x: time after the decision (log scale, 1 minute to the close). y: the minute VWAP vs the price
+now, in σ (the dotted line is now). Colour: the share of the later volume in each cell, each map
+scaled to its own peak. White lines: the edges of the 50%, 80% and 95% pockets. Hover a cell for
+its time, price band in $ and share.
+"""),
+    "sp_diff": ("Match − everything", """
+Per cell, the match's share of the later volume minus everything's, in points. Red: more volume
+traded there after the matches than usual; blue: less. Red above the dotted line and blue below
+means the matches' later volume sat higher than usual.
+"""),
+    "sp_cell": ("The picked cell", """
+Each view's share of the later volume in the cell, how that compares with everything (2× =
+twice as much), and which pocket the cell falls in.
+"""),
+    "sp_cell_matches": ("Matches that traded in the cell", """
+The loose matches that put the most weighted volume in the picked cell, and what share of the
+cell's volume each one brought. A cell filled by one or two matches is thin evidence.
+"""),
+    "sp_query": ("This moment's parameters", """
+Every parameter in the library with this moment's value and how far a match may be at each dial
+(± in the same unit). Only the ones marked `used` take part in the match.
+"""),
+    "sp_match_table": ("Closest loose matches", """
+The heaviest loose matches, closest first. `close` marks those inside the close dial too. The
+parameter columns are each match's values (compare with the table above); then what followed it:
+the rest-of-day VWAP, the highest high and lowest low after the decision, in σ vs its price then,
+and the share of its later volume above that price.
+"""),
+    "sp_match_maps": ("The picked match's pocket", """
+The picked match's later volume (left) next to this moment's own (right), on the same map.
+One moment's pocket is lumpy: the match pockets are averages of many such maps.
+"""),
+    "sp_dial_chart": ("Tolerance sweep", """
+Top: matches, stocks and N_eff days at each tolerance (log scale). Bottom: the blended P(rest of
+day above now) and share of later volume above now, with everything's value dashed. The dotted
+lines are the close and loose dials.
+"""),
+    "sp_dial_table": ("Tolerance sweep table", """
+The numbers behind the chart, one row per tolerance.
+"""),
+    "sp_day_chart": ("The stock's day", """
+Top: each minute's VWAP (dotted after the decision) and the session VWAP so far, with the
+previous day's VWAP dashed. Bottom: the minute volume, grey after the decision. The red line is
+the decision time.
+"""),
+})
+
+_SP_PARAMS = {
+    "vwap_vs_prev": "VWAP so far today vs the previous day's VWAP, in σ",
+    "open_vs_prev": "the open vs the previous day's VWAP, in σ",
+    "move_since_open": "the price at the decision time vs the open, in σ",
+    "day_1": "yesterday's VWAP move, in σ",
+    "day_2": "the VWAP move the day before yesterday, in σ",
+    "day_3": "the VWAP move three days back, in σ",
+    "path_30m": "the price now vs 30 minutes earlier, in σ",
+    "rvol": "log of the volume so far vs the stock's normal volume by this time of day",
+    "from_high": "the price now vs the day's high so far, in σ (0 or below)",
+    "from_low": "the price now vs the day's low so far, in σ (0 or above)",
+}
+COLUMNS.update({
+    **_SP_PARAMS,
+    "trust": "N_eff days / (N_eff days + 10): the weight of the match in its blended readings; "
+             "the rest is everything",
+    "p_up": "P(the VWAP from the decision time to the close ends above the price then)",
+    "rod_p10": "rest-of-day VWAP vs now, in σ: 10% of moments ended below this",
+    "rod_p50": "rest-of-day VWAP vs now, in σ: the median",
+    "rod_p90": "rest-of-day VWAP vs now, in σ: 90% of moments ended below this",
+    "bulge_p50": "median highest high after the decision, in σ vs now",
+    "sag_p50": "median lowest low after the decision, in σ vs now",
+    "above_now": "share of the later volume that traded above the price at the decision time",
+    "blobs_50": "how many separate blobs the 50% pocket is",
+    "in_50": "share of what the moment's later volume did that landed in this view's 50% pocket",
+    "in_80": "share of what the moment's later volume did that landed in this view's 80% pocket",
+    "log_score": "how much closer this view's pocket was to what happened than everything's (nats "
+                 "per unit of volume; above 0 = closer)",
+    "share_here": "the view's share of the later volume in this cell",
+    "vs_everything": "share here ÷ everything's share here: above 1 = more than usual",
+    "of_cell": "the match's share of the loose match's volume in this cell (among the 5,000 "
+               "heaviest matches)",
+    "close_tol": "how far a match may be at the close dial (± in the parameter's unit)",
+    "loose_tol": "how far a match may be at the loose dial (± in the parameter's unit)",
+    "rest_of_day": "what followed: the VWAP from the decision time to the close, in σ vs the "
+                   "price then",
+    "bulge": "what followed: the highest high after the decision, in σ vs the price then",
+    "sag": "what followed: the lowest low after the decision, in σ vs the price then",
+})
+for _p in ("sp_evidence", "sp_dial_table"):
+    COLUMNS.update({
+        f"{_p}:matches": "matched moments (everything: the moments in the pool)",
+        f"{_p}:stocks": "different stocks among them",
+        f"{_p}:days": "N_eff days: how many independent days the moments stand for",
+    })
+for _p in ("sp_match_table", "sp_cell_matches"):
+    COLUMNS.update({
+        f"{_p}:date": "the match's day",
+        f"{_p}:time": "the match's decision time (ET)",
+        f"{_p}:weight": "how close the match is: 1 = exact, falling to 0 at the loose edge",
+    })
+COLUMNS.update({
+    "sp_evidence:view": "close / loose match (blended with everything by trust), everything (the "
+                        "pool), or what the stock did",
+    "sp_cell:view": "which map",
+    "sp_cell:pocket": "the smallest pocket of that map the cell falls in",
+    "sp_query:parameter": "the parameter",
+    "sp_query:value": "this moment's value",
+    "sp_query:used": "whether it takes part in the match (the sidebar's Parameters)",
+    "sp_match_table:close": "inside the close dial too",
+    "sp_dial_table:dial": "the tolerance, × each parameter's spread",
+    "sp_dial_table:p_up": "P(rest of day above now), blended with everything",
+    "sp_dial_table:above_now": "share of later volume above now, blended with everything",
+})

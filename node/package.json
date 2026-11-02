@@ -14,7 +14,8 @@
     "run-source": "tsx src/cli.ts",
     "serve": "tsx src/cli.ts serve",
     "test": "tsx --test \"src/**/*.test.ts\"",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "watchlist": "tsx src/cli.ts watchlist"
   },
   "dependencies": {
     "ajv": "^8.17.0",

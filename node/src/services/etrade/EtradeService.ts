@@ -305,6 +305,7 @@ export class EtradeService extends Service {
       this.dataScrapers[key] = new ETPageScraper(this.requestHeaders, this.bus, genRunId, {
         id: config.id,
         name: config.name,
+        view: config.view,
         csvPrefix: config.csvPrefix,
       });
     }

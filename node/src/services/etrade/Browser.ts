@@ -24,8 +24,11 @@ export class Browser {
   private browser: PuppeteerBrowser | null = null;
   private context: BrowserContext | null = null;
   page: Page | null = null;
+  private readonly userDataDir: string;
 
-  constructor() {
+  /** userDataDir: the Chrome profile; default CHROME_PROFILE_DIR, else <state root>/etrade/chrome-profile. */
+  constructor(userDataDir?: string) {
+    this.userDataDir = userDataDir ?? ENV.CHROME_PROFILE_DIR ?? join(stateRoot(), "etrade", "chrome-profile");
     const stealth = StealthPlugin();
     // Headed, Chrome's own UA and client hints are already a real browser's; this evasion
     // would replace them (on Linux with a Windows UA the rest of the browser contradicts).
@@ -44,7 +47,7 @@ export class Browser {
       timeout: 60000,
       // A persistent profile keeps E*TRADE's device-trust and bot-manager cookies across
       // runs, so a login looks like a returning browser instead of a fresh one each time.
-      userDataDir: ENV.CHROME_PROFILE_DIR ?? join(stateRoot(), "etrade", "chrome-profile"),
+      userDataDir: this.userDataDir,
       // --enable-automation sets navigator.webdriver and the "controlled by automated
       // software" bar, both of which bot detection reads.
       ignoreDefaultArgs: ["--enable-automation"],

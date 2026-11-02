@@ -25,6 +25,8 @@ import { stateRoot } from "../../common/config.js";
 export interface AuthenticationOptions {
   /** Optional hook fired when an OTP challenge is detected (e.g. to mirror AUTH_OTP_REQUIRED on the bus). */
   onOtpRequired?: () => void;
+  /** Where a captured bearer token is mirrored; default STATE/etrade/bearer.json (the premarket job reads it). */
+  bearerPath?: string;
 }
 
 export class Authentication {
@@ -34,6 +36,7 @@ export class Authentication {
   private readonly guard: BrowserGuard;
   private readonly otpCoordinator: OtpCoordinator;
   private readonly onOtpRequired?: () => void;
+  private readonly bearerPath?: string;
   private readonly smsNotifier: SMSNotifier;
   private readonly maxRetries = 3;
   private bearerToken: string | null = null;
@@ -42,6 +45,7 @@ export class Authentication {
     this.guard = guard;
     this.otpCoordinator = otpCoordinator;
     this.onOtpRequired = options.onOtpRequired;
+    this.bearerPath = options.bearerPath;
     this.smsNotifier = new SMSNotifier({
       email: ENV.SMS_EMAIL,
       emailPassword: ENV.SMS_EMAIL_PASSWORD,
@@ -54,7 +58,7 @@ export class Authentication {
     const changed = token !== this.bearerToken;
     this.bearerToken = token;
     // Mirror a changed token to STATE/etrade/bearer.json for the premarket job (never throws).
-    if (changed) writeBearerFile(token);
+    if (changed) writeBearerFile(token, this.bearerPath);
   }
 
   getBearerToken(): string | null {

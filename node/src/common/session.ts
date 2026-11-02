@@ -35,8 +35,9 @@ export class SessionStore {
   private path: string;
   private cache: EtradeSession | null = null;
 
-  constructor(scope = "etrade") {
-    this.path = process.env.SESSION_PATH ?? join(stateRoot(), scope, "session.json");
+  /** path: an explicit file, which wins over SESSION_PATH (a second account's own session). */
+  constructor(scope = "etrade", path?: string) {
+    this.path = path ?? process.env.SESSION_PATH ?? join(stateRoot(), scope, "session.json");
   }
 
   /** Last persisted session, or null if none has been written yet. */

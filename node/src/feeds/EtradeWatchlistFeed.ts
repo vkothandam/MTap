@@ -46,8 +46,8 @@ export interface FeedBatch {
 type NumericField = "price" | "volume_cum" | "day_open" | "prev_close" | "bid" | "ask" | "bid_size" | "ask_size" | "vol_10d_src";
 
 // Header name -> canonical field. The first header present wins for `price`.
-const PRICE_HEADERS = ["Last Trade", "Last Price", "Last", "Price"];
-const FIELD_HEADERS: Array<[NumericField, string]> = [
+export const PRICE_HEADERS = ["Last Trade", "Last Price", "Last", "Price"];
+export const FIELD_HEADERS: Array<[NumericField, string]> = [
   ["volume_cum", "Volume"],
   ["day_open", "Open"],
   ["prev_close", "Previous Close"],

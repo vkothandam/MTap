@@ -2,6 +2,7 @@
 // CLI entry point:
 //   sourcing-node run <source>    one-shot batch source (fetch -> extract -> write)
 //   sourcing-node serve <service> long-running service (e.g. the E*TRADE scraper)
+//   sourcing-node watchlist ...   manage E*TRADE watchlists (services/etrade/watchlists/cli.ts)
 import "./common/dotenv.js"; // first: fills process.env from the repo .env
 import { loadSource } from "./common/config.js";
 import { createSource } from "./registry.js";
@@ -42,7 +43,11 @@ async function main(argv: string[]): Promise<number> {
   const [verb, name] = argv;
   if (argv.length === 2 && verb === "run") return runSource(name);
   if (argv.length === 2 && verb === "serve") return serveService(name);
-  console.error("usage: sourcing-node run <source> | serve <service>");
+  if (verb === "watchlist") {
+    const { watchlistMain } = await import("./services/etrade/watchlists/cli.js");
+    return watchlistMain(argv.slice(1));
+  }
+  console.error("usage: sourcing-node run <source> | serve <service> | watchlist <command> ...");
   return 2;
 }
 

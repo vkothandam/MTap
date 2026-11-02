@@ -10,10 +10,11 @@ service holds a persistent session and **streams events** rather than writing fi
 > CLI verb, the `Service` base class, the Redis-backed `Bus`, the file-backed
 > session store, the `/auth/otp` server, and the ported browser/login/page-scraper
 > modules — `etrade` is registered, so `serve etrade` runs. The `POLLED_DATA`
-> contract is frozen (`POLLED_DATA.contract.md` / `.schema.json`). Still to come:
-> the input-driven `WatchlistManager` and the `WATCHLIST_CMD` command path
-> (watchlist CRUD from MBin's UI). This guide describes the operational flow so new
-> sourcing use cases can follow the same shape.
+> contract is frozen (`POLLED_DATA.contract.md` / `.schema.json`). Watchlist create,
+> add, remove, sync and delete are a CLI (`npm run watchlist`, [below](#watchlists-which-lists-are-polled-and-the-watchlist-utility)).
+> Still to come: the `WATCHLIST_CMD` command path (the same operations from MBin's UI,
+> run in the live session). This guide describes the operational flow so new sourcing
+> use cases can follow the same shape.
 
 ## Prerequisites
 
@@ -35,7 +36,8 @@ cp .env.example .env
 |---|---|
 | `BUS_TRANSPORT` | `redis` to talk to MBin cross-process (`inproc` = local only) |
 | `REDIS_URL` | Redis endpoint for the bus |
-| `ET_USERNAME` / `ET_PASSWORD` | E*TRADE browser-login credentials |
+| `ET_USERNAME` / `ET_PASSWORD` | E*TRADE browser-login credentials (the account whose watchlists are polled) |
+| `<NAME>_ET_USERNAME` / `<NAME>_ET_PASSWORD` | another account, for the watchlist utility's `--account <name>` (below) |
 | `SMS_EMAIL` / `SMS_EMAIL_PASSWORD` | email→SMS gateway account used to text the OTP link |
 | `OTP_HOST` / `OTP_PORT` | where MTap serves the `/auth/otp` code-entry page (the SMS links here) |
 
@@ -147,6 +149,42 @@ The transport and envelope are defined in [`../../common/bus`](../../common/bus)
 are wire-compatible with MBin's `core/bus` (same `mtap:evt:<EVENT>` streams,
 `__reply__` channel, and `{ ...payload, _key, _ts }` envelope).
 
+## Watchlists: which lists are polled, and the watchlist utility
+
+**The utility** (`watchlists/`) manages an account's lists and views. It is a CLI over the
+watchlist web API, for one-off changes and later for lists built from a screener:
+
+```bash
+cd node
+S=/Volumes/home/.mtap.env                 # the NAS secrets file (or omit: the environment)
+npm run watchlist -- list            --account alt --secrets $S
+npm run watchlist -- show 217428640306                 # columns, feed columns missing, count
+npm run watchlist -- create NAME --from FILE           # one symbol per line, # comments
+npm run watchlist -- add|remove ID (--from FILE | SYM...)
+npm run watchlist -- sync ID --from FILE [--prune] [--dry-run]
+npm run watchlist -- view [NAME] [--columns "A,B,..." | --add-columns "A,B,..."]
+npm run watchlist -- rename ID NAME | delete ID [--force]
+```
+
+- **Accounts.** `--account main` (the default) reads `ET_USERNAME`/`ET_PASSWORD`. Any other
+  name reads `<NAME>_ET_*`: `alt` reads `ALT_ET_*`, `old` reads `OLD_ET_*`.
+- **State.** Each account has its own state, `<state>/etrade-<account>/{chrome-profile,
+  session.json}`, so the utility never touches the collector's `state/etrade/`.
+- **Sessions.** Commands use the saved session and open no browser. Chrome opens only for
+  `login`, or when the session no longer works. You type the code in the window and tick
+  "save device".
+- **Views.** `show` and `add` read through the collector's view for a polled list, and
+  through the list's own name otherwise.
+- **Safeguards:**
+  - `create` refuses a name that exists already.
+  - `delete` refuses a list the collector polls unless you pass `--force`.
+  - After an add, the list is re-read and any symbol not in it is listed.
+
+**E*TRADE behaviour to know** (details in [docs/LEARNINGS.md](../../../../docs/LEARNINGS.md),
+`tag-etrade-watchlist-api`):
+- A view holds at most 16 columns.
+- An unknown symbol can come back as "Service failure" rather than an empty result.
+- An add that times out on our side can still have been made.
 ## Session persistence & reuse
 
 `state/etrade/session.json` (git-ignored) holds the live session so restarts avoid a

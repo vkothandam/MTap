@@ -39,12 +39,18 @@ export const INTERVALS = {
 
 /**
  * Watchlist configuration. Each watchlist has an ID, display name, polling
- * interval, and CSV prefix. Account-specific IDs; Step 4 (WatchlistManager)
- * makes these command/input-driven, at which point they can move to config.
+ * interval, and CSV prefix. The IDs belong to the account the collector logs in
+ * with (ET_USERNAME); `npm run watchlist -- list` shows an account's lists. The
+ * name becomes source_meta.watchlist, so it stays "Experimental"/"MidCap" whatever
+ * the list is called on E*TRADE. `view` is the account's column view the poll asks
+ * for (viewName; default: the name). A view the account lacks gets E*TRADE's
+ * built-in Market View (price and volume only); `npm run watchlist -- view NAME`
+ * shows a view's columns and the feed columns it lacks.
  */
 export interface WatchlistConfig {
   id: string;
   name: string;
+  view?: string;
   intervalMs: number;
   csvPrefix: string;
 }

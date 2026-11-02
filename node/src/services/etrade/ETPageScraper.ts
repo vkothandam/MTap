@@ -19,10 +19,12 @@ import { agentLog } from "./debug.js";
 export interface WatchlistConfig {
   id: string;
   name: string;
+  /** The column view to read the list with (viewName); default: the name. */
+  view?: string;
   csvPrefix: string;
 }
 
-type RequestHeaders = Record<string, string | undefined>;
+export type RequestHeaders = Record<string, string | undefined>;
 
 interface ApiError {
   message?: string;
@@ -37,8 +39,6 @@ function asApiError(error: unknown): ApiError {
 export class ETPageScraper {
   static MAX_RETRIES = 3;
   static RETRY_DELAY_MS = 2000;
-  static DEFAULT_WATCHLIST_ID = "215565674306";
-  static DEFAULT_WATCHLIST_NAME = "Experimental";
   static MAX_ENTRIES_PER_PAGE = 1000; // handle 619+ entries in a single call
 
   private requestHeaders: RequestHeaders;
@@ -48,20 +48,22 @@ export class ETPageScraper {
   private consecutiveFailures = 0;
   private readonly watchlistId: string;
   private readonly watchlistName: string;
+  private readonly viewName: string;
   private readonly csvPrefix: string;
 
   constructor(
     requestHeaders: RequestHeaders,
     bus: Bus | null,
     runId: string,
-    watchlistConfig?: WatchlistConfig,
+    watchlistConfig: WatchlistConfig,
   ) {
     this.requestHeaders = requestHeaders;
     this.bus = bus;
     this.runId = runId;
-    this.watchlistId = watchlistConfig?.id ?? ETPageScraper.DEFAULT_WATCHLIST_ID;
-    this.watchlistName = watchlistConfig?.name ?? ETPageScraper.DEFAULT_WATCHLIST_NAME;
-    this.csvPrefix = watchlistConfig?.csvPrefix ?? "";
+    this.watchlistId = watchlistConfig.id;
+    this.watchlistName = watchlistConfig.name;
+    this.viewName = watchlistConfig.view ?? watchlistConfig.name;
+    this.csvPrefix = watchlistConfig.csvPrefix;
   }
 
   /** Deterministic idempotency key for the next publish (monotonic seq per instance). */
@@ -273,7 +275,7 @@ export class ETPageScraper {
           fromReactWatchLists: true,
           isCustomView: true,
           pagination: { startPosNum: startPos, posPerPage: pageSize },
-          viewName: this.watchlistName,
+          viewName: this.viewName,
           sortBy: "0",
           sortOrder: "0",
           watchlistID: this.watchlistId,
@@ -335,7 +337,7 @@ export class ETPageScraper {
           fromReactWatchLists: true,
           isCustomView: true,
           pagination: { startPosNum: 1, posPerPage: ETPageScraper.MAX_ENTRIES_PER_PAGE },
-          viewName: this.watchlistName,
+          viewName: this.viewName,
           sortBy: "0",
           sortOrder: "0",
           watchlistID: this.watchlistId,
@@ -345,18 +347,23 @@ export class ETPageScraper {
   }
 
   getRequestConfig(cookie: string): AxiosRequestConfig {
-    return {
-      headers: {
-        "Content-Type": "application/json",
-        Cookie: cookie,
-        stk1: this.requestHeaders.stk1 ?? "",
-        referer: "https://us.etrade.com/etx/pxy/watchlists",
-        origin: "https://us.etrade.com",
-        host: "us.etrade.com",
-        "x-requested-with": "XMLHttpRequest",
-        "user-agent": this.requestHeaders["user-agent"] ?? BROWSER_USER_AGENT,
-      },
-      timeout: API_TIMEOUT_MS,
-    };
+    return etradeRequestConfig(cookie, this.requestHeaders);
   }
+}
+
+/** Headers for the watchlist web API: the page's cookies and stk1, and a browser user agent. */
+export function etradeRequestConfig(cookie: string, requestHeaders: RequestHeaders): AxiosRequestConfig {
+  return {
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+      stk1: requestHeaders.stk1 ?? "",
+      referer: "https://us.etrade.com/etx/pxy/watchlists",
+      origin: "https://us.etrade.com",
+      host: "us.etrade.com",
+      "x-requested-with": "XMLHttpRequest",
+      "user-agent": requestHeaders["user-agent"] ?? BROWSER_USER_AGENT,
+    },
+    timeout: API_TIMEOUT_MS,
+  };
 }

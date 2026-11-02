@@ -1,10 +1,11 @@
 import { createClient } from "redis";
-import type { Transport, Handler, SubscribeOptions, BusMessage } from "./types.js";
+import type { Transport, Handler, SubscribeOptions, BusMessage, TransportPublishOptions } from "./types.js";
 
 // Cross-process transport over Redis Streams + consumer groups. This is the
 // TypeScript counterpart of MBin's core/bus/RedisBus.js and MUST stay wire-
 // compatible with it: one stream per event (`mtap:evt:<EVENT>`), the JSON
-// envelope carried in a `data` field, one consumer group per subscriber label
+// envelope carried in a `data` field (the prefix is per call: `mbin:evt:` for
+// MBin's contract streams, MTap↔MBin protocol §2), one consumer group per subscriber label
 // (each logical consumer sees every message once), and a broadcast `__reply__`
 // channel for request/reply. The public surface is synchronous to satisfy the
 // Transport contract; the async redis client is driven behind `this.ready`.
@@ -28,13 +29,24 @@ const DEFAULT_MAXLEN = 5000;
 // so 4000 ≈ the last two hours (~0.8 GB of the 2 GB cap): the window the durable
 // `storage` consumer can fall behind and still catch up.
 // POLLED_DATA entries are raw watchlist responses (~0.3 MB); MBin consumes them live.
+// Contract streams (protocol §4): durable ones keep a full trading day, state ones ~200.
 // Override any stream with env REDIS_STREAM_MAXLEN_<EVENT>.
-const EVENT_MAXLEN: Record<string, number> = { INTRADAY_FEED: 4000, POLLED_DATA: 300 };
+const EVENT_MAXLEN: Record<string, number> = {
+  INTRADAY_FEED: 4000,
+  POLLED_DATA: 300,
+  RECOMMENDATION: 20000,
+  EXIT_RECOMMENDATION: 20000,
+  RECOMMENDATION_OUTCOME: 20000,
+  TRADING_PARAMETERS: 200,
+  POSITIONS_SNAPSHOT: 200,
+  CONTRACT_STATUS: 200,
+  RESYNC_REQUEST: 200,
+};
 const READ_COUNT = 50;
 const BLOCK_MS = 5000;
 const RECONNECT_BACKOFF_MS = 500;
 
-const streamKey = (event: string): string => `${STREAM_PREFIX}${event}`;
+const streamKey = (event: string, prefix: string = STREAM_PREFIX): string => `${prefix}${event}`;
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface SubState {
@@ -81,8 +93,8 @@ export class RedisBus implements Transport {
     return EVENT_MAXLEN[event] ?? this.maxLen;
   }
 
-  publish(event: string, payload: BusMessage): void {
-    const key = streamKey(event);
+  publish(event: string, payload: BusMessage, options: TransportPublishOptions = {}): void {
+    const key = streamKey(event, options.prefix);
     this.ready
       .then(() =>
         this.pub.xAdd(
@@ -101,7 +113,7 @@ export class RedisBus implements Transport {
     // its own per-instance group so it isn't load-balanced with peers.
     const broadcast = event === REPLY_EVENT || options.broadcast === true;
     const group = broadcast ? `${label}:${this.instanceId}` : label;
-    const key = streamKey(event);
+    const key = streamKey(event, options.prefix);
     const consumer = `${this.instanceId}:${this.subCounter++}`;
 
     const sub: SubState = { stopped: false, conn: null };

@@ -40,8 +40,9 @@ Emitted by `ETPageScraper.getWatchlist()`, once per successful poll of a watchli
 
 - `data` is an **opaque passthrough** of the upstream E*TRADE response — MTap does
   not reshape it (transformation stays in MBin's `DataTransformer`). Informative,
-  not normative: MBin currently reads `data.data.watchListView.{entryDetails,
-  columnValues,columnHeaders}`. MTap normalizes so `entryDetails` and
+  not normative: the message's `data` holds the API response's own
+  `data`, so the view is at `message.data.watchListView.{entryDetails, columnValues,
+  columnHeaders}` (`data.data.watchListView` when the Redis entry field `data` is counted). MTap normalizes so `entryDetails` and
   `columnValues` are both present (one is copied from the other when only one is
   returned), and the paginated-fallback path returns the same `watchListView`
   shape.

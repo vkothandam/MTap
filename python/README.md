@@ -48,6 +48,27 @@ a known cost; see [docs/TODO.md](../docs/TODO.md).
 tool; Python only writes its inputs (`sourcing-py massive-1s prepare`, run by
 `nas/deploy.sh`). See [nas/README.md](../nas/README.md).
 
+## The MTap↔MBin contract recommender (`mtap/recommender`)
+
+```bash
+uv run sourcing-py recommender run [--for-s N]        # publish recs, CONTRACT_STATUS every 60 s, answer RESYNC
+uv run sourcing-py recommender submit --file CAND.json   # queue one candidate by hand
+uv run sourcing-py recommender status                 # state/recommender/status.json
+uv run sourcing-py recommender check-schemas          # vendored schemas vs pins and MBin's copy
+```
+
+MTap's phase-1 side of the contract in `../MBin/docs/contracts/` (protocol + schemas; the
+copies in `../schemas/contracts/` are byte-identical, pinned by sha256 in
+`recommender/contract.py`). It reads candidates from the internal stream
+`mtap:int:REC_CANDIDATE` (the live scorer writes them; a candidate is a RECOMMENDATION body
+without header or `rec_id`), validates each message before it goes out, and reads MBin's
+`mbin:evt:TRADING_PARAMETERS`, `CONTRACT_STATUS`, `RESYNC_REQUEST` and
+`RECOMMENDATION_OUTCOME` (durable group `mtap-outcomes`). Its audit trail is
+`state/recommender/published/<date>.jsonl`; outcomes go to `state/recommender/outcomes/`.
+When Redis is down (the daily stop) it retries every 5 s and on reconnect re-runs the start
+sequence with `gap_detected`. Not deployed yet: it needs the NAS Redis hardened first
+(REVIEW item 7).
+
 ## Test (includes schema conformance)
 
 ```bash

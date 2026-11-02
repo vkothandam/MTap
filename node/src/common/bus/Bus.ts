@@ -19,6 +19,11 @@ let correlationCounter = 0;
 
 export interface PublishOptions {
   idempotencyKey?: string;
+  /** Skip the producer-side 5-min dedup: a RESYNC re-publish keeps its original key
+   *  (MTap↔MBin protocol §4, REVIEW M7). Consumer-side dedup is unchanged. */
+  republish?: boolean;
+  /** Stream prefix, default `mtap:evt:` (REVIEW M5). */
+  prefix?: string;
 }
 
 export interface RequestOptions {
@@ -48,12 +53,12 @@ export class Bus {
   }
 
   publish(event: string, payload: BusMessage, options: PublishOptions = {}): { deduped: boolean; key?: string } {
-    const { idempotencyKey } = options;
-    if (idempotencyKey && this.hasSeenRecently(idempotencyKey)) {
+    const { idempotencyKey, republish, prefix } = options;
+    if (idempotencyKey && !republish && this.hasSeenRecently(idempotencyKey)) {
       return { deduped: true, key: idempotencyKey };
     }
     if (idempotencyKey) this.markSeen(idempotencyKey);
-    this.transport.publish(event, { ...payload, _key: idempotencyKey, _ts: Date.now() });
+    this.transport.publish(event, { ...payload, _key: idempotencyKey, _ts: Date.now() }, { prefix });
     return { deduped: false, key: idempotencyKey };
   }
 

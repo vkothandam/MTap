@@ -109,6 +109,10 @@ def main(argv: list[str] | None = None) -> int:
         from .massive_1s.cli import main as massive_1s_main
 
         return massive_1s_main(argv[1:])
+    if argv and argv[0] == "recommender":
+        from .recommender.cli import main as recommender_main
+
+        return recommender_main(argv[1:])
     if argv and argv[0] == "daily-gaps":
         from .sources.massive_grouped_daily.gaps import main as gaps_main
 
@@ -125,7 +129,8 @@ def main(argv: list[str] | None = None) -> int:
             "       sourcing-py massive-ext <fetch|gaps> [options]   (pre-market / after-hours)\n"
             "       sourcing-py forecast-night [--date D] [--force] [--run-dir DIR]   (the claimed night job)\n"
             "       sourcing-py massive-1s prepare --fromdate D1 --todate D2   (inputs for nas/massive1s)\n"
-            "       sourcing-py daily-gaps [--max 10]   (sessions missing a daily_summary file)",
+            "       sourcing-py daily-gaps [--max 10]   (sessions missing a daily_summary file)\n"
+            "       sourcing-py recommender <run|submit|status|check-schemas>   (MTap↔MBin contract)",
             file=sys.stderr,
         )
         return 2

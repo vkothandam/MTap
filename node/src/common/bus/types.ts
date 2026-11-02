@@ -15,9 +15,16 @@ export interface SubscribeOptions {
   replay?: boolean;
   /** Redis: fan out to every instance rather than load-balance (used for the reply channel). */
   broadcast?: boolean;
+  /** Stream prefix, default `mtap:evt:`; `mbin:evt:` reads MBin's contract streams (protocol §2, REVIEW M5). */
+  prefix?: string;
+}
+
+export interface TransportPublishOptions {
+  /** Stream prefix, default `mtap:evt:` (REVIEW M5). */
+  prefix?: string;
 }
 
 export interface Transport {
-  publish(event: string, payload: BusMessage): void;
+  publish(event: string, payload: BusMessage, options?: TransportPublishOptions): void;
   subscribe(event: string, handler: Handler, options?: SubscribeOptions): () => void;
 }

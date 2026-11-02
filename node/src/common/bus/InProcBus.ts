@@ -1,4 +1,7 @@
-import type { Transport, Handler, SubscribeOptions, BusMessage } from "./types.js";
+import type { Transport, Handler, SubscribeOptions, BusMessage, TransportPublishOptions } from "./types.js";
+
+const DEFAULT_PREFIX = "mtap:evt:";
+const subKey = (event: string, prefix: string = DEFAULT_PREFIX): string => `${prefix}${event}`;
 
 interface Sub {
   handler: Handler;
@@ -14,8 +17,10 @@ interface Sub {
 export class InProcBus implements Transport {
   private subs = new Map<string, Sub[]>();
 
-  publish(event: string, payload: BusMessage): void {
-    const list = [...(this.subs.get(event) ?? [])].sort((a, b) => b.priority - a.priority);
+  // Subscriptions are keyed by prefix + event, so `mbin:evt:X` and `mtap:evt:X` stay
+  // apart in-process as they do on Redis (an absent prefix means the default).
+  publish(event: string, payload: BusMessage, options: TransportPublishOptions = {}): void {
+    const list = [...(this.subs.get(subKey(event, options.prefix)) ?? [])].sort((a, b) => b.priority - a.priority);
     for (const sub of list) {
       try {
         sub.handler(payload);
@@ -31,12 +36,13 @@ export class InProcBus implements Transport {
       priority: options.priority ?? 0,
       label: options.label ?? "anonymous",
     };
-    const list = this.subs.get(event) ?? [];
+    const key = subKey(event, options.prefix);
+    const list = this.subs.get(key) ?? [];
     list.push(sub);
-    this.subs.set(event, list);
+    this.subs.set(key, list);
 
     return () => {
-      const arr = this.subs.get(event);
+      const arr = this.subs.get(key);
       if (!arr) return;
       const i = arr.indexOf(sub);
       if (i >= 0) arr.splice(i, 1);

@@ -31,7 +31,7 @@ MTap sources market data for the ML work.
 
 | folder | what | doc |
 | --- | --- | --- |
-| `schemas/` | the output contract: JSON schemas and conventions | [conventions.md](../schemas/conventions.md) |
+| `schemas/` | the output contract: JSON schemas and conventions; `contracts/` = byte-identical copies of MBin's contract schemas | [conventions.md](../schemas/conventions.md) |
 | `python/` | `sourcing-py`: Massive sources, the intraday store, massive-ws, massive-ext, E*TRADE fundamentals and EDGAR (DuckDB), news | [python/README.md](../python/README.md) |
 | `node/` | the E*TRADE watchlist collector (puppeteer) and Node sources | [node/README.md](../node/README.md), [etrade README](../node/src/services/etrade/README.md) |
 | `shared/config/` | source registry; `settings.toml` (gitignored, has secrets) | |
@@ -503,3 +503,11 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
     prev_close filled.
   - A restart without `session.json` logged in with no code, on attempt 3 of 3, in about 5 minutes.
   - Then `push.sh` ran for production, and `build`.
+- 2026-11-01: **MTap↔MBin contract, phase 1, MTap side built (not deployed).** New `sourcing-py recommender`
+  (`python/sourcing_py/recommender/`, producer `mtap/recommender`): RECOMMENDATION from the internal
+  `mtap:int:REC_CANDIDATE` stream, CONTRACT_STATUS at startup / 60 s / shutdown / on a problem, the §5 start
+  RESYNC, RESYNC answers (original `_key`, `correlation_id`, 10 s rate limit), §6.4 problem codes, outcomes via
+  group `mtap-outcomes`, audit in `state/recommender/`. Schemas vendored in `schemas/contracts/`, sha256-pinned.
+  Bus changes: per-call stream prefix (Node + Python, REVIEW M5), `{republish: true}` skips the Node producer
+  dedup (M7), Python `publish()` stamps `_key` / `_ts`, MAXLEN per stream (durable 20 000, state 200). Waits
+  for REVIEW item 7 (NAS Redis on the LAN with AUTH / ACL / AOF), then a launch job on the NAS.

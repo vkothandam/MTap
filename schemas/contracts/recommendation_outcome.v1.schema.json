@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "recommendation_outcome.v1",
+  "title": "RECOMMENDATION_OUTCOME message (MBin to MTap, v1, draft)",
+  "description": "What happened to a RECOMMENDATION or EXIT_RECOMMENDATION in MBin: one message per state change, closing with realized P&L. MTap's feedback loop. Stream mbin:evt:RECOMMENDATION_OUTCOME, durable. See mtap-mbin-protocol.md section 8.5.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "schema_version", "producer", "ts_utc", "_key", "_ts", "subject", "outcome", "outcome_ts_utc", "actor"],
+  "properties": {
+    "type": { "const": "RECOMMENDATION_OUTCOME" },
+    "schema_version": { "const": 1 },
+    "producer": { "type": "string", "pattern": "^mbin/[a-z0-9][a-z0-9_.-]{0,39}$" },
+    "ts_utc": { "$ref": "#/definitions/ts_utc" },
+    "correlation_id": { "type": ["string", "null"], "maxLength": 80 },
+    "_key": { "type": "string", "pattern": "^out:(rec|exit):[A-Za-z0-9][A-Za-z0-9._-]{7,63}:[a-z_]{4,20}(:[0-9]{1,6})?$", "description": "out:<subject.kind>:<subject.id>:<outcome>, plus :<seq> for outcomes that can repeat (filled on partial fills)." },
+    "_ts": { "type": "integer", "minimum": 0 },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "enum": ["rec", "exit"], "description": "rec: a RECOMMENDATION (id = rec_id). exit: an EXIT_RECOMMENDATION (id = exit_id)." },
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$" }
+      }
+    },
+    "outcome": {
+      "enum": ["received", "rejected", "expired", "superseded", "declined", "approved", "order_rejected", "filled", "closed"],
+      "description": "See the outcome table in protocol section 8.5."
+    },
+    "reason": { "type": ["string", "null"], "maxLength": 64, "description": "Machine-readable reason, e.g. stale_on_arrival, ttl, replaced, operator_ignore, sell_not_held, gate:budget, broker:<code>." },
+    "reason_text": { "type": ["string", "null"], "maxLength": 200 },
+    "actor": { "enum": ["user", "rule", "system"] },
+    "outcome_ts_utc": { "$ref": "#/definitions/ts_utc" },
+    "account_alias": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/account_alias" }] },
+    "position_key": { "type": ["string", "null"], "pattern": "^pos_[A-Za-z0-9]{8,40}$" },
+    "qty": { "type": ["number", "null"], "description": "Shares filled (filled), or shares closed (closed)." },
+    "price": { "type": ["number", "null"], "minimum": 0, "description": "Average fill price in dollars (filled, closed)." },
+    "realized_pnl_cents": { "type": ["integer", "null"], "description": "closed only. Net of fees, integer cents." },
+    "realized_pnl_pct": { "type": ["number", "null"], "description": "closed only." },
+    "hold_seconds": { "type": ["integer", "null"], "minimum": 0, "description": "closed only." }
+  },
+  "definitions": {
+    "account_alias": { "enum": ["automation", "manual", "long_term"], "description": "Account by role (D17). Account numbers and accountIdKey never cross the boundary." },
+    "ts_utc": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" }
+  }
+}

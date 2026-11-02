@@ -35,6 +35,31 @@ test("Bus: subscribe-side idempotency dedups by _key per label", () => {
   assert.equal(calls, 1);
 });
 
+test("Bus: a repeated idempotencyKey is dropped unless republish is set (REVIEW M7)", () => {
+  const bus = new Bus(new InProcBus());
+  const got: any[] = [];
+  bus.subscribe("RECOMMENDATION", (m) => got.push(m), { label: "raw" });
+  assert.equal(bus.publish("RECOMMENDATION", { v: 1 }, { idempotencyKey: "rec:a" }).deduped, false);
+  assert.equal(bus.publish("RECOMMENDATION", { v: 1 }, { idempotencyKey: "rec:a" }).deduped, true);
+  const again = bus.publish("RECOMMENDATION", { v: 1, correlation_id: "c1" }, { idempotencyKey: "rec:a", republish: true });
+  assert.equal(again.deduped, false);
+  // The transport carried it with the original _key; this subscriber's own dedup still drops it.
+  assert.equal(got.length, 1);
+  assert.equal(got[0]._key, "rec:a");
+});
+
+test("InProcBus: the stream prefix keeps mtap:evt and mbin:evt apart (REVIEW M5)", () => {
+  const bus = new Bus(new InProcBus());
+  const mtap: any[] = [];
+  const mbin: any[] = [];
+  bus.subscribe("CONTRACT_STATUS", (m) => mtap.push(m), { label: "a" });
+  bus.subscribe("CONTRACT_STATUS", (m) => mbin.push(m), { label: "b", prefix: "mbin:evt:" });
+  bus.publish("CONTRACT_STATUS", { party: "mbin" }, { idempotencyKey: "cs:mbin:i:1", prefix: "mbin:evt:" });
+  bus.publish("CONTRACT_STATUS", { party: "mtap" }, { idempotencyKey: "cs:mtap:i:1" });
+  assert.deepEqual(mbin.map((m) => m.party), ["mbin"]);
+  assert.deepEqual(mtap.map((m) => m.party), ["mtap"]);
+});
+
 // Cross-instance test over a real Redis (two Bus instances = two processes on
 // the wire). Skipped unless REDIS_URL is set. Passing here is the cross-repo
 // interop guarantee: MTap's RedisBus uses the same wire constants as MBin's.
@@ -63,6 +88,31 @@ test(
 
       const res = await busA.request("WATCHLIST_CMD", { action: "add" }, { timeoutMs: 3000 });
       assert.deepEqual(res, { ok: true, echo: "add" });
+    } finally {
+      await a.close();
+      await b.close();
+    }
+  },
+);
+
+test(
+  "RedisBus: the per-call prefix picks the stream (REVIEW M5)",
+  { skip: !process.env.REDIS_URL },
+  async () => {
+    const a = new RedisBus();
+    const b = new RedisBus();
+    const busB = new Bus(b);
+    const event = `TEST_PREFIX_${Date.now().toString(36)}`;
+    try {
+      const mbin: any[] = [];
+      const mtap: any[] = [];
+      busB.subscribe(event, (m) => mbin.push(m), { label: "p-mbin", prefix: "mbin:evt:" });
+      busB.subscribe(event, (m) => mtap.push(m), { label: "p-mtap" });
+      await sleep(600);
+      new Bus(a).publish(event, { side: "mbin" }, { idempotencyKey: "p1", prefix: "mbin:evt:" });
+      await sleep(700);
+      assert.deepEqual(mbin.map((m) => m.side), ["mbin"]);
+      assert.equal(mtap.length, 0);
     } finally {
       await a.close();
       await b.close();

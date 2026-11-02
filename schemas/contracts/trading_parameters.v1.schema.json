@@ -1,0 +1,77 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "trading_parameters.v1",
+  "title": "TRADING_PARAMETERS message (MBin to MTap, v1, draft)",
+  "description": "The rules MBin applies to what MTap sends, so MTap can produce only what will be used. State message: the newest one wins. Stream mbin:evt:TRADING_PARAMETERS. See mtap-mbin-protocol.md section 8.3.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "schema_version", "producer", "ts_utc", "_key", "_ts", "params_version", "session", "ttl", "thresholds", "accepted", "trading_state", "autonomy_phase"],
+  "properties": {
+    "type": { "const": "TRADING_PARAMETERS" },
+    "schema_version": { "const": 1 },
+    "producer": { "type": "string", "pattern": "^mbin/[a-z0-9][a-z0-9_.-]{0,39}$" },
+    "ts_utc": { "$ref": "#/definitions/ts_utc" },
+    "correlation_id": { "type": ["string", "null"], "maxLength": 80 },
+    "_key": { "type": "string", "pattern": "^tp:[A-Za-z0-9._-]{1,40}:[0-9]{1,12}$", "description": "tp:<instance_id>:<seq>." },
+    "_ts": { "type": "integer", "minimum": 0 },
+    "params_version": { "type": "integer", "minimum": 1, "description": "Increments whenever any value below changes. Heartbeat re-sends keep it." },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["date_et", "is_trading_day", "open_ts_utc", "close_ts_utc", "is_half_day"],
+      "description": "Today's regular session, from MBin's market calendar.",
+      "properties": {
+        "date_et": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "is_trading_day": { "type": "boolean" },
+        "open_ts_utc": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/ts_utc" }] },
+        "close_ts_utc": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/ts_utc" }] },
+        "is_half_day": { "type": "boolean" }
+      }
+    },
+    "ttl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default_ms", "max_ms"],
+      "properties": {
+        "default_ms": { "type": "integer", "minimum": 1000 },
+        "max_ms": { "type": "integer", "minimum": 1000 }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default_target_pct", "default_stop_pct"],
+      "description": "Applied by MBin when a RECOMMENDATION omits target_pct or stop_pct.",
+      "properties": {
+        "default_target_pct": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "default_stop_pct": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 }
+      }
+    },
+    "accepted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instruments", "entry_actions", "sell_policy"],
+      "properties": {
+        "instruments": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["EQ"] } },
+        "entry_actions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["BUY"] } },
+        "sell_policy": { "enum": ["held_only_as_exit"], "description": "A SELL recommendation becomes an exit:model exit if the symbol is held; otherwise MBin drops it." }
+      }
+    },
+    "trading_state": { "enum": ["NORMAL", "CLOSE_ONLY", "FLATTENING"], "description": "Informational. MBin still filters; MTap may use it to save work." },
+    "autonomy_phase": { "enum": ["manual", "semi", "auto"], "description": "Informational." },
+    "hints": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "The operator's current Console selectors, so MTap can skip candidates nobody will see. Never a hard filter on MTap's side.",
+      "properties": {
+        "min_probability": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "cap_bands": { "type": ["array", "null"], "uniqueItems": true, "items": { "enum": ["mega", "large", "mid", "small", "micro"] } },
+        "sectors_allow": { "type": ["array", "null"], "uniqueItems": true, "items": { "type": "string", "maxLength": 80 } },
+        "max_recs_per_min": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    }
+  },
+  "definitions": {
+    "ts_utc": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" }
+  }
+}

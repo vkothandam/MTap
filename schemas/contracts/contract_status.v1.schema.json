@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "contract_status.v1",
+  "title": "CONTRACT_STATUS message (both directions, v1, draft)",
+  "description": "Each party's presence and which schema versions it consumes and produces, plus any problems with what it received. Sent at startup, every 60 s, and immediately when a problem appears or a schema changes. State message: the newest per instance wins. Streams mtap:evt:CONTRACT_STATUS and mbin:evt:CONTRACT_STATUS. See mtap-mbin-protocol.md sections 6 and 8.6.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "schema_version", "producer", "ts_utc", "_key", "_ts", "party", "instance_id", "started_ts_utc", "protocol_version", "reason", "consumes", "produces", "problems"],
+  "properties": {
+    "type": { "const": "CONTRACT_STATUS" },
+    "schema_version": { "const": 1 },
+    "producer": { "type": "string", "pattern": "^(mtap|mbin)/[a-z0-9][a-z0-9_.-]{0,39}$" },
+    "ts_utc": { "$ref": "#/definitions/ts_utc" },
+    "correlation_id": { "type": ["string", "null"], "maxLength": 80 },
+    "_key": { "type": "string", "pattern": "^cs:(mtap|mbin):[A-Za-z0-9._-]{1,40}:[0-9]{1,12}$", "description": "cs:<party>:<instance_id>:<seq>." },
+    "_ts": { "type": "integer", "minimum": 0 },
+    "party": { "enum": ["mtap", "mbin"] },
+    "instance_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,40}$", "description": "Changes on every process start." },
+    "started_ts_utc": { "$ref": "#/definitions/ts_utc" },
+    "protocol_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+(-draft)?$", "description": "The mtap-mbin-protocol.md version this build implements." },
+    "reason": { "enum": ["startup", "heartbeat", "problem", "schema_changed", "shutdown"] },
+    "consumes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "versions"],
+        "properties": {
+          "type": { "$ref": "#/definitions/message_type" },
+          "versions": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["version", "schema_sha256"],
+              "properties": {
+                "version": { "type": "integer", "minimum": 1 },
+                "schema_sha256": { "$ref": "#/definitions/sha256_or_null" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "produces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "version", "schema_sha256"],
+        "properties": {
+          "type": { "$ref": "#/definitions/message_type" },
+          "version": { "type": "integer", "minimum": 1, "description": "The version currently being emitted. One entry per type (protocol section 6.2)." },
+          "schema_sha256": { "$ref": "#/definitions/sha256_or_null" }
+        }
+      }
+    },
+    "problems": {
+      "type": "array",
+      "description": "Empty when all is well. Each entry aggregates one kind of problem on one type since the instance started or the problem was last cleared.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "problem", "count", "first_ts_utc", "last_ts_utc"],
+        "properties": {
+          "type": { "type": "string", "maxLength": 64, "description": "The message type as received; may be unknown to this party." },
+          "problem": { "enum": ["unsupported_version", "schema_mismatch", "validation_failed", "unknown_type", "unparseable", "clock_skew"] },
+          "received_version": { "type": ["integer", "null"] },
+          "sample_key": { "type": ["string", "null"], "maxLength": 120 },
+          "count": { "type": "integer", "minimum": 1 },
+          "first_ts_utc": { "$ref": "#/definitions/ts_utc" },
+          "last_ts_utc": { "$ref": "#/definitions/ts_utc" },
+          "detail": { "type": ["string", "null"], "maxLength": 300, "description": "First validator error path and message. Never message content." }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "ts_utc": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "message_type": { "enum": ["RECOMMENDATION", "EXIT_RECOMMENDATION", "INTRADAY_FEED", "TRADING_PARAMETERS", "POSITIONS_SNAPSHOT", "RECOMMENDATION_OUTCOME", "CONTRACT_STATUS", "RESYNC_REQUEST"] },
+    "sha256_or_null": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$", "description": "sha256 of the schema file's bytes (protocol section 6.3). Null for a type without a schema file in docs/contracts/schemas." }
+  }
+}

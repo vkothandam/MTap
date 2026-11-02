@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "exit_recommendation.v1",
+  "title": "EXIT_RECOMMENDATION message (MTap to MBin, v1, draft)",
+  "description": "MTap's advice to close all or part of a held position, or the withdrawal of that advice. Level-triggered: re-sent with a new revision while active. Stream mtap:evt:EXIT_RECOMMENDATION, durable. See mtap-mbin-protocol.md section 8.2.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "schema_version", "producer", "ts_utc", "_key", "_ts", "exit_id", "revision", "state", "data_ts_utc", "position_ref", "reason", "strategy_id", "strategy_version"],
+  "properties": {
+    "type": { "const": "EXIT_RECOMMENDATION" },
+    "schema_version": { "const": 1 },
+    "producer": { "type": "string", "pattern": "^mtap/[a-z0-9][a-z0-9_.-]{0,39}$" },
+    "ts_utc": { "$ref": "#/definitions/ts_utc" },
+    "correlation_id": { "type": ["string", "null"], "maxLength": 80 },
+    "_key": { "type": "string", "pattern": "^exit:[A-Za-z0-9][A-Za-z0-9._-]{7,63}:[0-9]{1,9}$", "description": "exit:<exit_id>:<revision>." },
+    "_ts": { "type": "integer", "minimum": 0 },
+    "exit_id": { "$ref": "#/definitions/id", "description": "Stable for one exit episode on one position. A later, unrelated exit on the same position gets a new exit_id." },
+    "revision": { "type": "integer", "minimum": 1, "description": "Increments on every publish of this exit_id, refreshes included, so each publish has a fresh _key. MBin keeps the highest revision and ignores lower ones." },
+    "state": { "enum": ["active", "cleared"], "description": "cleared withdraws the advice; MBin removes the highlight." },
+    "data_ts_utc": { "$ref": "#/definitions/ts_utc" },
+    "ttl_ms": { "type": ["integer", "null"], "minimum": 1000, "maximum": 3600000, "description": "Validity from data_ts_utc, same defaults and clamps as RECOMMENDATION. An active exit that is not refreshed lapses, so an active exit carries at least 60000 (two 30 s refreshes)." },
+    "position_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["account_alias", "symbol"],
+      "description": "Which position. position_key from POSITIONS_SNAPSHOT is preferred; account_alias plus symbol is the fallback.",
+      "properties": {
+        "position_key": { "type": ["string", "null"], "pattern": "^pos_[A-Za-z0-9]{8,40}$" },
+        "account_alias": { "$ref": "#/definitions/account_alias" },
+        "symbol": { "$ref": "#/definitions/symbol" }
+      }
+    },
+    "reason": { "enum": ["exit:target", "exit:stop", "exit:trailing", "exit:prob-drop", "exit:model", "exit:session"] },
+    "reason_text": { "type": ["string", "null"], "maxLength": 200, "description": "Shown on the highlight, e.g. 'probability dropped to 0.41'." },
+    "suggested_qty": { "type": ["number", "null"], "exclusiveMinimum": 0, "description": "Shares to sell. Null or absent: the whole position. MBin caps it at the quantity held." },
+    "probability": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/probability" }],
+      "description": "The forecast that triggered exit:prob-drop, if any."
+    },
+    "strategy_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$" },
+    "strategy_version": { "type": "string", "minLength": 1, "maxLength": 32 },
+    "inputs": { "type": ["object", "null"], "description": "Free-form, stored for audit. Keep it under 4 KB." }
+  },
+  "definitions": {
+    "account_alias": { "enum": ["automation", "manual", "long_term"], "description": "Account by role (D17). Account numbers and accountIdKey never cross the boundary." },
+    "ts_utc": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$" },
+    "symbol": { "type": "string", "pattern": "^[A-Z][A-Z0-9./-]{0,11}$" },
+    "probability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "target_pct", "horizon"],
+      "properties": {
+        "value": { "type": "number", "minimum": 0, "maximum": 1 },
+        "target_pct": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "horizon": { "type": "string", "pattern": "^([1-9][0-9]{0,2}m|close|next_session)$" }
+      }
+    }
+  }
+}

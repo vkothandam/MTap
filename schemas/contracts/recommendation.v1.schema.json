@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "recommendation.v1",
+  "title": "RECOMMENDATION message (MTap to MBin, v1, draft)",
+  "description": "An entry candidate from MTap. MTap owns the signal: what, why, how likely and for how long. MBin owns the money: budget, size, rank, approval and execution. Stream mtap:evt:RECOMMENDATION, durable. See mtap-mbin-protocol.md section 8.1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "schema_version", "producer", "ts_utc", "_key", "_ts", "rec_id", "data_ts_utc", "symbol", "instrument", "action", "score", "price_ref", "strategy_id", "strategy_version"],
+  "properties": {
+    "type": { "const": "RECOMMENDATION", "description": "Message type; equals the stream suffix." },
+    "schema_version": { "const": 1, "description": "Version of this type's schema (protocol section 6)." },
+    "producer": { "type": "string", "pattern": "^mtap/[a-z0-9][a-z0-9_.-]{0,39}$", "description": "MTap component that published it, e.g. mtap/recommender." },
+    "ts_utc": { "$ref": "#/definitions/ts_utc", "description": "Publish time." },
+    "correlation_id": { "type": ["string", "null"], "maxLength": 80, "description": "request_id of the RESYNC_REQUEST this re-publish answers; otherwise absent or null." },
+    "_key": { "type": "string", "pattern": "^rec:[A-Za-z0-9][A-Za-z0-9._-]{7,63}$", "description": "rec:<rec_id>. The same value on every re-publish of this decision." },
+    "_ts": { "type": "integer", "minimum": 0, "description": "Epoch milliseconds, set by the publishing Bus." },
+    "rec_id": { "$ref": "#/definitions/id", "description": "Unique per decision, forever. A changed decision (new data, new score) is a new rec_id." },
+    "data_ts_utc": { "$ref": "#/definitions/ts_utc", "description": "Time of the market data the decision used. The TTL counts from here." },
+    "symbol": { "$ref": "#/definitions/symbol" },
+    "name": { "type": ["string", "null"], "maxLength": 120, "description": "Company or fund name, for display." },
+    "instrument": { "enum": ["EQ"], "description": "v1 carries equities only." },
+    "action": { "enum": ["BUY", "SELL"], "description": "BUY opens a position. MBin honours SELL only as an exit for a held symbol (protocol section 8.1)." },
+    "score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Calibrated probability that +target_pct is touched before -stop_pct, from price_ref over probability.horizon (to the close when probability is null); the TTL is only the entry window. Against the TRADING_PARAMETERS defaults when target_pct or stop_pct is absent. The same definition for every MTap strategy, so scores compare. MBin ranks by score, then probability.value." },
+    "probability": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/probability" }],
+      "description": "Forecast of reaching probability.target_pct within probability.horizon. Null or absent when MTap has no forecast."
+    },
+    "target_pct": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/pct" }],
+      "description": "Take-profit distance above the fill price, in percent (MTap computes it at price_ref). Null or absent: MBin applies TRADING_PARAMETERS thresholds.default_target_pct."
+    },
+    "stop_pct": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/pct" }],
+      "description": "Protective-stop distance below the fill price, in percent. Null or absent: MBin applies thresholds.default_stop_pct."
+    },
+    "ttl_ms": { "type": ["integer", "null"], "minimum": 1000, "maximum": 3600000, "description": "Validity from data_ts_utc. Null or absent: MBin uses ttl.default_ms. MBin clamps it to ttl.max_ms and to the session close." },
+    "price_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["price", "ts_utc"],
+      "description": "The price the decision saw. MBin sizes from it and the Console shows it.",
+      "properties": {
+        "price": { "type": "number", "exclusiveMinimum": 0, "description": "Dollars." },
+        "ts_utc": { "$ref": "#/definitions/ts_utc" }
+      }
+    },
+    "cap_band": { "enum": ["mega", "large", "mid", "small", "micro", null], "description": "Band of market_cap: mega >= $200B, large $10-200B, mid $2-10B, small $250M-2B, micro < $250M (protocol section 8.1)." },
+    "market_cap": { "type": ["number", "null"], "minimum": 0, "description": "Dollars, as of the previous session's close: shares outstanding (Massive ticker overview) x the previous close. MTap computes it." },
+    "sector": { "type": ["string", "null"], "maxLength": 80 },
+    "industry": { "type": ["string", "null"], "maxLength": 120 },
+    "strategy_id": { "$ref": "#/definitions/strategy_id" },
+    "strategy_version": { "type": "string", "minLength": 1, "maxLength": 32 },
+    "rationale": { "type": ["string", "null"], "maxLength": 200, "description": "One line shown to the operator." },
+    "inputs": { "type": ["object", "null"], "description": "Free-form features behind the decision, for audit and learning. MBin stores it and never interprets it. Keep it under 4 KB." }
+  },
+  "definitions": {
+    "ts_utc": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$", "description": "ISO-8601 UTC with milliseconds." },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$" },
+    "symbol": { "type": "string", "pattern": "^[A-Z][A-Z0-9./-]{0,11}$" },
+    "pct": { "type": "number", "exclusiveMinimum": 0, "maximum": 100, "description": "Percent; 1.0 means 1 %." },
+    "strategy_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$" },
+    "probability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "target_pct", "horizon"],
+      "properties": {
+        "value": { "type": "number", "minimum": 0, "maximum": 1 },
+        "target_pct": { "$ref": "#/definitions/pct" },
+        "horizon": { "type": "string", "pattern": "^([1-9][0-9]{0,2}m|close|next_session)$", "description": "<n>m minutes from data_ts_utc, close (today's close) or next_session." }
+      }
+    }
+  }
+}

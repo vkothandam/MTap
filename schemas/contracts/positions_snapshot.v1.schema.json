@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "positions_snapshot.v1",
+  "title": "POSITIONS_SNAPSHOT message (MBin to MTap, v1, draft)",
+  "description": "Every open position in every account, by account alias. Gives MTap what it needs to produce exits and to fast-poll held symbols. State message: the newest snapshot_seq wins. Stream mbin:evt:POSITIONS_SNAPSHOT. See mtap-mbin-protocol.md section 8.4.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "schema_version", "producer", "ts_utc", "_key", "_ts", "snapshot_seq", "as_of_ts_utc", "stale", "positions"],
+  "properties": {
+    "type": { "const": "POSITIONS_SNAPSHOT" },
+    "schema_version": { "const": 1 },
+    "producer": { "type": "string", "pattern": "^mbin/[a-z0-9][a-z0-9_.-]{0,39}$" },
+    "ts_utc": { "$ref": "#/definitions/ts_utc" },
+    "correlation_id": { "type": ["string", "null"], "maxLength": 80 },
+    "_key": { "type": "string", "pattern": "^ps:[0-9]{1,15}$", "description": "ps:<snapshot_seq>." },
+    "_ts": { "type": "integer", "minimum": 0 },
+    "snapshot_seq": { "type": "integer", "minimum": 1, "description": "Increments on every publish, heartbeats included, so each publish has a fresh _key. Persisted, so it keeps rising across MBin restarts." },
+    "as_of_ts_utc": { "$ref": "#/definitions/ts_utc", "description": "When the positions were last reconciled with the broker." },
+    "stale": { "type": "boolean", "description": "True when MBin's prices or broker sync are older than its staleness threshold." },
+    "positions": { "type": "array", "items": { "$ref": "#/definitions/position" } }
+  },
+  "definitions": {
+    "account_alias": { "enum": ["automation", "manual", "long_term"], "description": "Account by role (D17). Account numbers and accountIdKey never cross the boundary." },
+    "ts_utc": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "symbol": { "type": "string", "pattern": "^[A-Z][A-Z0-9./-]{0,11}$" },
+    "nullable_ts_utc": { "oneOf": [{ "type": "null" }, { "$ref": "#/definitions/ts_utc" }] },
+    "position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["position_key", "account_alias", "symbol", "instrument", "qty", "avg_entry_price", "origin", "auto_exit_enabled"],
+      "properties": {
+        "position_key": { "type": "string", "pattern": "^pos_[A-Za-z0-9]{8,40}$", "description": "Opaque and stable while the position is open. Never derived from an account number or accountIdKey." },
+        "account_alias": { "$ref": "#/definitions/account_alias" },
+        "symbol": { "$ref": "#/definitions/symbol", "description": "For options, the underlying." },
+        "instrument": { "enum": ["EQ", "OPTN"] },
+        "option": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["underlying", "call_put", "strike", "expiry_date", "osi"],
+          "properties": {
+            "underlying": { "$ref": "#/definitions/symbol" },
+            "call_put": { "enum": ["CALL", "PUT"] },
+            "strike": { "type": "number", "exclusiveMinimum": 0 },
+            "expiry_date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+            "osi": { "type": "string", "maxLength": 32 }
+          }
+        },
+        "qty": { "type": "number", "description": "Shares or contracts; negative only for a short position." },
+        "avg_entry_price": { "type": "number", "minimum": 0, "description": "Dollars, as the broker quotes it: per share for EQ, premium per share for OPTN (one contract is 100 shares)." },
+        "opened_ts_utc": { "$ref": "#/definitions/nullable_ts_utc" },
+        "last_price": { "type": ["number", "null"], "minimum": 0 },
+        "last_price_ts_utc": { "$ref": "#/definitions/nullable_ts_utc" },
+        "unrealized_pnl_pct": { "type": ["number", "null"] },
+        "high_since_entry": { "type": ["number", "null"], "minimum": 0, "description": "Highest last_price seen since the entry; feeds trailing exits." },
+        "target_pct": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 100, "description": "As recorded on the opening order (D27)." },
+        "stop_pct": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 100 },
+        "protective_stop": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["price", "resting"],
+          "properties": {
+            "price": { "type": "number", "exclusiveMinimum": 0 },
+            "resting": { "type": "boolean", "description": "True when the stop order is confirmed open at the broker." }
+          }
+        },
+        "rec_id": { "type": ["string", "null"], "maxLength": 64, "description": "The RECOMMENDATION that opened it, when MBin opened it from one." },
+        "origin": { "enum": ["auto", "manual", "emergency", "external"], "description": "Who opened it: an autonomy rule, an operator approval in MBin, the emergency kit, or outside MBin." },
+        "labels": { "type": "array", "uniqueItems": true, "items": { "type": "string", "maxLength": 64 } },
+        "auto_exit_enabled": { "type": "boolean", "description": "Whether MBin may act on an exit for this position without the operator. Otherwise exits are highlighted only." }
+      }
+    }
+  }
+}

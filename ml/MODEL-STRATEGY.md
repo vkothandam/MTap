@@ -18,6 +18,7 @@ changes; details and CIs are in [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-m
 | production (live night forecast) | `20261005-025909Z-return-3712sym --fold 3` | 2-year, stock inputs, no earnings | reference; switches only after all models are evaluated (user, 10-28) |
 | research base (TFT) | **R1c** `20261028-233305Z-return-4438sym` | R0 + session shape + after-hours | skill 27.0%, P5–P95 88.4%; 0.58% better than R0 (CI clear), most on earnings days; R7 (HGB) now beats it at night |
 | intraday handoff | R0 `20261028-030847Z-return-4438sym/handoff.parquet` | | to rebuild from R1c |
+| intraday (Step 0 probe, 2026-11-01) | `ml/scripts_intraday_probe.py`, HGB, no saved model | all input groups, d = 0 vs d = 15 | 2026: touch ±0.5σ/60m skill +6.3% (size: real); direction ≈ 0: at d = 15, and at d = 0 once bid–ask bounce is removed (P1, 11-01: rank IC +0.034 → +0.007, top-20 +0.41σ → +0.05σ). No intraday direction model; live recs use base rates (`baseline.climatology`); Q38 |
 
 **Goal (user, 10-29, Q35):** one model for every forecast at and after 09:30, with full
 pre-market; **the night forecast is dropped**. Ranked first by how well the quantiles hit their
@@ -1382,6 +1383,45 @@ One predictor per job, no ensembles. If the forest analogs and direct GBM tie, t
 - **Test points near the intraday high / low** (user, 2026-11-01: random points dilute an edge): p_t within 0.1σ of today's high / low so far (usable live), and, as a hindsight ceiling only, ±5 min around the day's actual turning point. Scored against the base rate at the same moments, kept apart from the all-moments grid.
 - **Recommendations per typical day:** a recommendation = the first minute a (stock, direction, level, window) has calibrated P(touch) ≥ 60%; came true = touched in the window. Counted per day (median, p10, p90), all and edge-only (base rate < 60%), for all stocks at d = 0, the realistic pipeline, and all stocks at d = 15.
 
-**Result:** pending (see the Scoreboard once the run ends).
+**Result (2026-11-01, run 93 min; LEARNINGS `tag-ml-intraday` "Step 0 probe: results"):**
+- How far a stock moves within the hour is predictable: touch ±0.5σ / 60 min, Brier skill +6.3% on 2026 with
+  all inputs; most of it is today's volatility and the daily forecast. Strongest in bursts, results days and
+  gaps (+13 … +17%).
+- Which way it moves is predictable only with fresh data (d = 0): rank IC +0.043, top-20 spread +0.07σ. With the
+  15-min-delayed full market (d = 0 → d = 15) it is ≈ 0, so the planned Stage A ranker fails its go rule. The
+  d = 0 edge still needs a check against bid–ask bounce.
+- A typical day: about 66 "+1% within 60 min" calls on 43 stocks from the pipeline, 65.5% came true vs 33%
+  typical.
+- Next: [docs/live-recommendations-plan.md](../docs/live-recommendations-plan.md) (bounce check, then a live
+  scorer on the stocks MTap polls in real time).
+
+**Bounce check (P1, 2026-11-01, run 56 min; LEARNINGS "P1 bounce check").** The same rows, with outcomes measured
+from the next minute's open or VWAP instead of the last close (or one minute of delay): rank IC +0.034 → +0.006 …
++0.009, top-20 spread +0.41σ → +0.05σ (CI touching 0). The d = 0 direction edge was mostly the last close
+sitting at the bid or ask and reverting, which no order can capture. Size skill is unchanged (touch +6.2%, up
+first +4.2%). **Answer: the intraday model has no direction edge on minute-bar inputs.** The live recommender
+sends base-rate scores (`baseline.climatology`); the d = 0 scorer (plan P8) is not built. A next try needs a
+new kind of input (order book, 1 s flow, news), not more minute-bar features.
 
 **Market cap on recommendations.** As of the previous close: shares outstanding from Massive's ticker overview (quarter-end snapshots in `out/shares`; weighted shares, all classes, else `share_class_shares_outstanding`) × the previous close. Bands: mega ≥ $200B, large $10–200B, mid $2–10B, small $250M–2B, micro < $250M. Sent on every MBin RECOMMENDATION.
+
+### Q39 (2026-11-02, open, brainstorm): direction failed on GBM summaries. Does a sequence model on raw 1-min bars, after a GBM shortlist, deserve a test?
+
+- **What the GBM saw:** hand-built summaries of the 1-min series (returns over 5 / 15 / 60 min and since the open,
+  rvol, range, close location, VWAP deviation, volume at price, signed flow, market / sector), not the raw bar
+  sequence. A sequence model (TFT, PatchTST, a small 1-D CNN) could find shapes the summaries miss.
+- **Evidence so far against it:** the analog check (matching on price-path shape) had no edge; the old
+  `tft_intraday` (12 sessions only) had no direction edge; on daily, GBM beat the TFT.
+- **Shortlist check (cached P1 predictions, 2026, from the next minute's open):** inside the GBM's top 10% "move
+  coming" moments, its up − down picks the side with AUC 0.508 (base rate 0.507); top 1%: 0.502 (0.505); bursts
+  0.513 (0.512). A shortlist doesn't expose direction by itself; a second model would have to find new information.
+- **Proposed cheap test (not run):** on the shortlisted moments only, a small sequence model over the last 120
+  min of raw bars (OHLC, VWAP, volume in σ / rvol units, plus the market's series), target = which of ±0.5σ is
+  touched first, outcomes from the next minute's open; the same rows and folds as P1. Go only if AUC beats the
+  GBM and the base rate by ≥ 0.02 with a day-bootstrap CI clear of 0 on 2026.
+- **Live cost of a minute-step TFT (measured 2026-11-04, M4 Max, untrained pytorch-forecasting TFT, 120 one-minute
+  steps × 20 inputs, 7 quantiles; /tmp/mtap/tft_bench/bench.py):** forward pass for 100 / 500 / 2,000 / 5,000
+  symbols = 35 / 71 / 244 / 573 ms on the GPU (MPS) at hidden 32 (101k params); 38 / 98 / 339 / 857 ms at hidden 64
+  (282k); CPU is 1.5–2.3× slower. pytorch-forecasting's data prep adds ~75 ms per 1,000 symbols. So compute is not
+  the limit even every 10 s for the whole market; the limit is fresh data: E*TRADE polls ~1,028 symbols (606 at
+  ~2 s, 422 at ~20 s), and Massive's full market is 15 min old.

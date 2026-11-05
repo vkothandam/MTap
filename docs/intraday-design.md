@@ -202,8 +202,25 @@ cap bands; near-extreme masks are PIT).
   rate at that moment < 60%). Three settings: all stocks at d = 0 (the ceiling), the **pipeline**
   (stocks on the d = 15 top-20 lists, d = 0 probabilities), all stocks at d = 15.
 
-### Probe result
-Pending (run started 2026-11-01).
+### Probe result (2026-11-01; details and CIs: LEARNINGS `tag-ml-intraday`, "Step 0 probe: results")
+- **Size of the move: predictable.** Touch ±0.5σ within 60 min, 2026: +3.4% Brier skill from the daily forecast
+  alone, +5.4% with the price path, +6.3% with everything at d = 0. Market, VAP, signed flow and results days add
+  ≈ 0 at d = 15. Bursts (+17%), results days (+17%) and gaps (+13%) are the confirmed strong slices.
+- **Direction: only at d = 0.** Rank IC of lean +0.043 [+0.039, +0.048] and top-20 spread +0.07σ at d = 0;
+  ≈ 0 at d = 15 for every input group. **Stage A on 15-min-delayed data fails the go rule (§7.6).** The d = 0
+  edge is unverified against bid–ask bounce (targets are measured from the last close); the bounce check
+  (targets from the next minute's open) comes first.
+- **Recommendations per day (2026, edge-only):** pipeline 1,614 signal keys a day, 68% came true (typical 41%);
+  one target, +1% within 60 min, 66 a day on 43 stocks, 65.5% true (typical 33%). Calibration holds at common
+  levels and is overconfident at rare ones (+1σ / 15 min).
+- **Consequence for the build:** drop the full-market d = 15 ranker as the selector; score at d = 0 on the
+  stocks MTap polls live, with the stitched features of §3F. Plan: [live-recommendations-plan.md](live-recommendations-plan.md).
+- **Bounce check (P1, 2026-11-01; LEARNINGS "P1 bounce check"): the d = 0 direction edge was bid–ask bounce.**
+  Measured from the next minute's open or VWAP, rank IC falls from +0.034 to +0.006 … +0.009 and the top-20 spread
+  from +0.41σ to +0.05σ (CI touching 0); size skill (touch +6.2%, up first +4.2%) is unchanged. So no stage of
+  this design has a direction edge on minute-bar inputs: Stage A and the d = 0 scorer are **not built**. What
+  stays useful is the size side (touch probabilities, ranges), e.g. for target / stop sizing and options later.
+  The live recommender sends base-rate scores (`baseline.climatology`) until a new input shows direction.
 
 ## 9. MTap → MBin exchange (contract v1.0-draft)
 

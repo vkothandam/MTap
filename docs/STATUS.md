@@ -511,3 +511,20 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
   Bus changes: per-call stream prefix (Node + Python, REVIEW M5), `{republish: true}` skips the Node producer
   dedup (M7), Python `publish()` stamps `_key` / `_ts`, MAXLEN per stream (durable 20 000, state 200). Waits
   for REVIEW item 7 (NAS Redis on the LAN with AUTH / ACL / AOF), then a launch job on the NAS.
+- 2026-11-01: **Contract link moved to the Mac (MBin REVIEW item 14, agreed).** The broker is MBin's contract
+  Redis on the Mac, `127.0.0.1:6380` (loopback, AUTH, ACL users `mtap` / `mbin`, AOF), run by MBin
+  (`MBin/tools/contract-redis/contract-redis.mjs`). The NAS Redis stays MTap-internal and is not exposed, so
+  item 7's NAS hardening is dropped for the link. `sourcing-py recommender` runs **on the Mac**, by hand for now
+  (trading days ~06:00–13:30 PT): `set -a; . ~/.config/mtap/contract.env; set +a` then `recommender run`.
+  **Secret:** `~/.config/mtap/contract.env` (600: `REDIS_URL`, `REDIS_USERNAME=mtap`, `REDIS_PASSWORD` copied
+  from `MBin/state/contract-redis/mtap.password`). Redis credentials now come from env `REDIS_USERNAME` /
+  `REDIS_PASSWORD` in both buses (never in the URL); no `REDIS_PASSWORD` = no AUTH, so the NAS is unchanged.
+  Verified: CONTRACT_STATUS, RESYNC_REQUEST and a TEST RECOMMENDATION published on 6380.
+- 2026-11-01: **Intraday Step 0 probe done** (LEARNINGS `tag-ml-intraday`): move size predictable, direction only
+  at d = 0 (bounce check pending), ≈ 0 on 15-min-delayed data. Plan to production recommendations:
+  [live-recommendations-plan.md](live-recommendations-plan.md).
+- 2026-11-01: **P1 bounce check done** (LEARNINGS "P1 bounce check"): the d = 0 direction edge was bid–ask bounce
+  (rank IC +0.034 → +0.007 from the next minute's open / VWAP). No intraday direction model; the recommender's
+  score stays the base rate (`baseline.climatology`). **P2 drafted, not deployed:** NAS Redis AUTH plus a
+  read-only `mac` user, published on 192.168.1.100:6379 (deploy/container compose.yml, jobs.sh, synology/host.env).
+  Deploy steps in the plan §3; until then the NAS runs as before.

@@ -1772,6 +1772,104 @@ Tags: `tag-ml-intraday`
 | **Touch** | The price reaches the level at any time within the window (bar high ≥ level), not at the window's end | |
 | **Recommendation (probe count)** | The first minute a (stock, direction, level, window) has a calibrated P(touch) ≥ 60%. It can't fire again for the same key until its window ends. "Came true" = the level was touched within the window | |
 
+### 2026-11 Intraday P1 bounce check: the d = 0 direction edge was bid–ask bounce (run 2026-11-01, 56 min)
+Tags: `tag-ml-intraday`. Plan: [live-recommendations-plan.md](live-recommendations-plan.md) P1. Script:
+`ml/scripts_intraday_probe.py --parts p1`. Same rows in every arm (stock-minutes where minute i traded), full
+inputs, same folds as the probe; only the inputs' delay and the price the outcomes are measured from change.
+| arm, 2026 test | touch +0.5σ / 60 | up first | rank IC of lean | top-20 lean spread | top-20 rest-of-day |
+| --- | --- | --- | --- | --- | --- |
+| d0_close: inputs to i − 1, outcomes from the last close (the probe) | +6.4% | +4.2% | **+0.034** [+0.029, +0.039] | **+0.41σ** [+0.35, +0.47] | +0.05σ |
+| d1_close: inputs to i − 2, from the last close | +6.2% | +4.2% | +0.008 [+0.003, +0.014] | +0.08σ [+0.02, +0.14] | +0.01σ |
+| d0_open: inputs to i − 1, from minute i's open | +6.3% | +4.2% | +0.006 [+0.001, +0.012] | +0.06σ [−0.00, +0.12] | +0.00σ |
+| d0_vwap1: inputs to i − 1, entry at minute i's VWAP, outcomes from i + 1 | +6.2% | +4.2% | +0.009 [+0.003, +0.014] | +0.05σ [−0.01, +0.11] | −0.00σ |
+| d1_vwap1 | +6.1% | +4.2% | +0.007 [+0.001, +0.012] | +0.07σ [+0.01, +0.13] | +0.01σ |
+- 2024 and 2025 say the same (d0_close rank IC +0.030 / +0.038; every other arm +0.003 … +0.011).
+- **About 80% of the rank IC and 85–90% of the top-20 spread disappear** once the outcome starts one print later
+  (the next minute's open) or skips a minute. That part was the last close sitting at the bid or the ask and
+  reverting: real in the data, not tradable. Example: a stock whose last 1-min close printed at the ask looks
+  "down next" to the model because the next print at the bid is lower; an order at the open or the VWAP never sees it.
+- What is left is a rank IC of ≈ +0.007 and a top-20 spread of ≈ +0.05σ (≈ 0.1% on a σ = 2% stock, before costs),
+  with CIs at or near 0 for the arms a live order could use (d0_open, d0_vwap1). **No usable direction edge.**
+- **Size survives:** touch skill (+6.2%) and up-first skill (+4.2%) are the same in every arm, and the slices
+  hold (up first near today's low +5.7 … +6.2%, in bursts +8.6 … +9.0%). Up first is "+0.5σ touched before −0.5σ",
+  and "neither by the close" counts as no, so its skill is mostly how active the stock is, not which way.
+- **Up and down sizes, separately (2026 test grid, 4.4M stock-minutes, from the cached P1 predictions):**
+  P(touch +0.5σ within 60 min) Brier skill +6.3%, P(touch −0.5σ) +6.0%, both calibrated: the top decile of
+  predicted P(up touch) says 37.5% and 37% happen, the bottom decile says 0.4% and 0.4% happen; median 60-min high
+  +0.37σ vs +0.08σ. But the two rise and fall together (an active stock has both high). Among the 21% of minutes
+  where only one side is touched, the model's up − down picks the side with AUC 0.514 (d0_open) / 0.516
+  (d0_vwap1), the same as the base rate's 0.516; 0.523 only from the last close (the bounce).
+- In the top decile of predicted P(up touch) (37% said, 36.5% happened), the −0.5σ level was touched 37.1% of the
+  time too. Even the strongest 1% of up − down picks touched +0.5σ 32.6% and −0.5σ 32.4%. The model finds moments
+  when a stock is about to move, three times the typical 11%, not which way.
+- **Volume balance (share of the next 60 min's volume traded above p_t), the volume-side direction target:**
+  base rate 50%, Brier skill −0.06 … +0.04%, AUC 0.506 (d0_open) vs the base rate's 0.504. The top 10% of
+  predictions say 51.0%, 50.9% happened. No edge: where the volume trades is as unpredictable as where the price goes.
+- The d0 arms are the production setup: minute bars up to the last complete minute, 5 years for training and
+  testing; live, E*TRADE supplies the last 15 minutes. Not tested: inputs at second resolution (1 s REST bars,
+  2024-10-21 →), an option only.
+- **Consequence (the plan's rule):** the direction edge holds only in d0_close, so it was the bounce. The live
+  intraday scorer stops at the base rate (P5); the d = 0 direction model (P8) does not go ahead on minute-bar
+  inputs. A next try needs a different input (order book, 1 s flow, news), not more of the same.
+
+### 2026-11 Intraday Step 0 probe: results (run 2026-11-01, 93 min)
+Tags: `tag-ml-intraday`. Design: [intraday-design.md](intraday-design.md) §8. Script: `ml/scripts_intraday_probe.py`.
+Full report: `/tmp/mtap/intraday_probe/report.txt` (local, not kept). Brier skill = 1 − Brier ÷ climatology's
+Brier; 95% CIs by day bootstrap; HGB, yearly walk-forward, test 2024 / 2025 / 2026-01…10-26.
+
+**1. How far a stock will move is predictable; which way is not, on delayed data.**
+| arm (inputs, delay) | touch +0.5σ / 60 min, 2026 | up first ±0.5σ, 2026 | rank IC of lean, 2026 | top-20 rest-of-day spread, 2026 |
+| --- | --- | --- | --- | --- |
+| daily_only (d = 15) | +3.4% [+3.0, +3.7] | +2.5% | +0.000 [−0.005, +0.005] | −0.02σ |
+| s1 price path (d = 15) | +4.6% | +3.2% | +0.002 | +0.01σ |
+| s2 + daily forecast (d = 15) | +5.4% | +3.9% | +0.000 | +0.02σ |
+| s3–s6 + market, VAP, flow, results (d = 15) | +5.4 … +5.5% | +3.9% | −0.001 … +0.001 | ≈ 0 |
+| **full_d0 (all inputs, d = 0)** | **+6.3% [+5.8, +6.8]** | **+4.2%** | **+0.043 [+0.039, +0.048]** | **+0.07σ [+0.05, +0.10]** |
+| open rule (rank by move since the open) | | | −0.009 | −0.03σ |
+- 2024 and 2025 agree (full_d0 rank IC +0.038, +0.050; top-20 +0.06σ, +0.09σ).
+- Touch skill is mostly volatility: how active the stock is today. The daily forecast adds about 1 point; market,
+  VAP, signed flow and results days add **nothing** at d = 15.
+- **Direction (rank IC, top-20 lists) exists only at d = 0**, i.e. only from the last 15 minutes of data.
+  **Unverified:** p_t is the last minute's close, so part of it may be bid–ask bounce (a close at the ask reverts),
+  which is not tradable. To check before relying on it: measure targets from the next minute's open / VWAP, or
+  skip one minute (d = 1). **Checked 2026-11-01 (P1, above): it was mostly bounce.**
+- By the design's go rule (§7.6: rank IC and top-20 beat every baseline with a CI clear of 0), **Stage A on
+  15-min-delayed data fails**; d = 0 passes, pending the bounce check.
+
+**2. Opportunity by time of day (no model).** P(the 60-min high ≥ +1σ): 12.4% at 09:30, 5.5% at 09:45, 1.1% by
+11:20, 0.3% at 15:40, 0 at 15:55. The median 60-min high falls from +0.37σ to +0.05σ.
+
+**3. Slices (touch up, full_d0: discover 2024–25 → confirm 2026).** All pre-registered live slices are confirmed
+(CI clear of 0); the strongest:
+| slice | P(up60 ≥ 1σ) | touch-up skill, 2026 | up-first skill, 2026 |
+| --- | --- | --- | --- |
+| all | 1.6% | +6.3% | +4.2% |
+| burst (rvol_5 ≥ 3) | 5.7% | **+17.0%** [+15.9, +18.1] | +8.8% |
+| results day / day after | 4.2% | **+16.6%** | +8.0% |
+| gap ≥ 1σ | 4.6% | **+13.0%** | +6.3% |
+| near today's low | 2.6% | +9.7% | +6.3% |
+| near today's high | 1.3% | +1.5% (touch down: +8.3%) | +2.1% |
+Hindsight `turn_hi` / `turn_lo` (±5 min of the real turning point): touch toward the turn +14 … +16%, away from
+it −36 … −49%; the model doesn't see turns coming.
+
+**4. Recommendations per day (2026, 103 days, every minute; P(touch) ≥ 60%, once per window).** Counted per
+(stock, direction, level, window), 24 keys per stock, so these are signal counts, not trades.
+| setting | fired / day (median, p10–p90) | came true / day | precision (typical rate) |
+| --- | --- | --- | --- |
+| all stocks, d = 0, edge-only | 20,765 (15,860–28,660) | 13,713 | 66.6% (46.6%) |
+| all stocks, d = 15, edge-only | 16,418 | 10,632 | 65.8% (48.2%) |
+| **pipeline (d = 15 top-20 lists, d = 0 probabilities), edge-only** | **1,614 (1,132–2,236)** | **1,047** | **68.2% (41.1%)** |
+- One target, pipeline edge-only: **+1% within 60 min: 66 a day on 43 stocks, 65.5% came true (typical 33%)**;
+  +0.5σ within 60 min: 36 a day, 61.6% (typical 25%); +1σ within 60 min: under 1 a day.
+- Calibration holds for common levels (stated mean P within 1–4 points of the hit rate), but is
+  **overconfident at rare levels**: +1σ within 15 min stated 70.6%, came true 40.7%.
+- **Caveat for trading:** a high P(touch +1%) mostly says the stock will move; it often touches −1% too. A BUY
+  needs P(target before stop), where the skill is the "up first" column above: +4.2% over the base rate.
+
+**5. Second-level re-timing** (1,721 new-day-high / low minutes, 2026, 1 s bars): the trigger fires a median
+42 s before the minute ends, and the median share of the following move already gone by the minute end is ≈ 0
+(median move 0.24%). Deciding on minute bars loses nothing measurable for these triggers.
+
 ### 2026-11 Intraday Step 0 probe: pre-registered slices and test points (written before the run)
 Tags: `tag-ml-intraday`. Design: [intraday-design.md](intraday-design.md) §8. Script: `ml/scripts_intraday_probe.py`.
 

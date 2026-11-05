@@ -28,7 +28,7 @@ Each pick carries a size and a calibrated probability.
 | --- | --- | --- |
 | Daily model | how far, and with what uncertainty, today's VWAP lands from yesterday's VWAP | chosen (R5-cal20s), not yet live |
 | Screener | which stocks will move the most from the open (either direction) | kept (R8b), not yet live |
-| Intraday model | where the next 1–60 min VWAP lands from the last price | one small prototype, no edge on direction; design agreed, Step 0 probe running ([intraday-design.md](intraday-design.md)) |
+| Intraday model | where the next 1–60 min VWAP lands from the last price | one small prototype, no edge on direction; Step 0 probe done 2026-11-01: size predictable; direction ≈ 0 (on delayed data, and on fresh data once bid–ask bounce is removed, P1 bounce check 2026-11-01) ([intraday-design.md](intraday-design.md), [live-recommendations-plan.md](live-recommendations-plan.md)) |
 | **Signed momentum ranking** (up list / down list) | which stocks will keep going, and which way | **open: the subject of new designs** |
 
 ## 2. Daily forecast

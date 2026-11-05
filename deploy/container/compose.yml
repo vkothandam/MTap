@@ -39,11 +39,39 @@ services:
   redis:
     image: redis:7-alpine
     profiles: [etrade]
-    # Memory only, 4 GB, noeviction (the iMac's redis-mtap.conf says 2 GB; 4000 entries of up to ~490 KB is ~1.95 GB). Flags, not a
-    # mounted file: the redis user could not read a file on the NAS's ACL share.
-    command: ["redis-server", "--bind", "0.0.0.0", "--protected-mode", "no", "--save", "",
-              "--appendonly", "no", "--dir", "/tmp", "--maxmemory", "4gb",
-              "--maxmemory-policy", "noeviction"]
+    # Memory only, 4 GB, noeviction (the iMac's redis-mtap.conf says 2 GB; 4000 entries of up to ~490 KB is ~1.95 GB). Flags and an
+    # ACL file written to /tmp at start, not a mounted file: the redis user could not read a file on the NAS's ACL share.
+    # Users: with REDIS_PASSWORD set, `default` needs it (the store, collector and jobs send it, common/bus); with
+    # MAC_REDIS_PASSWORD also set, `mac` may only read the mtap:evt:* streams (the Mac's recommender, live prices).
+    # Neither set: no AUTH, as before. Published on 127.0.0.1 unless the host sets MTAP_REDIS_PUBLISH (the NAS: its
+    # LAN address); jobs.sh exports only these two secrets for compose.
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      MAC_REDIS_PASSWORD: ${MAC_REDIS_PASSWORD:-}
+    ports:
+      - "${MTAP_REDIS_PUBLISH:-127.0.0.1:6379}:6379"
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        umask 077
+        if [ -n "$${REDIS_PASSWORD:-}" ]; then
+          echo "user default on >$${REDIS_PASSWORD} ~* &* +@all" > /tmp/users.acl
+          if [ -n "$${MAC_REDIS_PASSWORD:-}" ]; then
+            echo "user mac on >$${MAC_REDIS_PASSWORD} resetchannels ~mtap:evt:* -@all +ping +hello +auth +client|setinfo +client|setname +xread +xrange +xrevrange +xlen +xinfo|stream" >> /tmp/users.acl
+          fi
+        else
+          echo "redis: no REDIS_PASSWORD, so no AUTH" >&2
+          echo "user default on nopass ~* &* +@all" > /tmp/users.acl
+        fi
+        run=redis-server
+        if command -v su-exec >/dev/null && id redis >/dev/null 2>&1; then  # as the image's entrypoint: not root
+          chown redis /tmp/users.acl
+          run="su-exec redis redis-server"
+        fi
+        exec $$run --bind 0.0.0.0 --protected-mode no --save "" --appendonly no --dir /tmp \
+          --maxmemory 4gb --maxmemory-policy noeviction --aclfile /tmp/users.acl "$$@"
     restart: unless-stopped
     logging: *logging
 

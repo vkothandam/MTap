@@ -66,8 +66,9 @@ without header or `rec_id`), validates each message before it goes out, and read
 `RECOMMENDATION_OUTCOME` (durable group `mtap-outcomes`). Its audit trail is
 `state/recommender/published/<date>.jsonl`; outcomes go to `state/recommender/outcomes/`.
 When Redis is down (the daily stop) it retries every 5 s and on reconnect re-runs the start
-sequence with `gap_detected`. Not deployed yet: it needs the NAS Redis hardened first
-(REVIEW item 7).
+sequence with `gap_detected`. It runs on the Mac against MBin's contract Redis (`127.0.0.1:6380`,
+MBin REVIEW item 14): `set -a; . ~/.config/mtap/contract.env; set +a` first, which sets `REDIS_URL`,
+`REDIS_USERNAME` and `REDIS_PASSWORD` (credentials from env only, never in the URL).
 
 ## Test (includes schema conformance)
 

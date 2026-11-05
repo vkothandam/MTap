@@ -36,7 +36,7 @@ from pathlib import Path
 
 import httpx
 
-from ..common import config, http
+from ..common import bus, config, http
 from ..common.bus import stream_key
 
 EVENT = "INTRADAY_FEED"
@@ -68,10 +68,7 @@ def read_watchlist(url: str | None = None, *, client=None, count: int = 300) -> 
     """The latest watchlist rows from the collector's Redis stream; {} when Redis is unreachable."""
     try:
         if client is None:
-            import redis
-
-            client = redis.Redis.from_url(url or config.intraday_config()["redis_url"],
-                                          decode_responses=True, socket_timeout=5)
+            client = bus._client(url or config.intraday_config()["redis_url"], socket_timeout=5)
         entries = []
         for _id, fields in client.xrevrange(stream_key(EVENT), count=count):
             try:

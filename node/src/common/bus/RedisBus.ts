@@ -79,7 +79,13 @@ export class RedisBus implements Transport {
     this.maxLen = options.maxLen ?? DEFAULT_MAXLEN;
     // Unique per process so broadcast groups and consumer names never collide.
     this.instanceId = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    this.pub = createClient({ url: this.url });
+    // The ACL user and password come from env REDIS_USERNAME / REDIS_PASSWORD, never the URL
+    // (protocol §2), so the URL is safe to log; no REDIS_PASSWORD = no AUTH (a local Redis).
+    const password = process.env.REDIS_PASSWORD;
+    this.pub = createClient({
+      url: this.url,
+      ...(password ? { username: process.env.REDIS_USERNAME || undefined, password } : {}),
+    });
     this.pub.on("error", (err: Error) => console.error("[RedisBus] publisher error:", err.message));
     this.ready = this.pub.connect().catch((err: Error) => {
       console.error("[RedisBus] initial connect failed:", err.message);

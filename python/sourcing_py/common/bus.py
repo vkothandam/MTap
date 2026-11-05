@@ -12,6 +12,7 @@ and reads MBin's messages from `mbin:evt:`.
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -39,10 +40,15 @@ def stream_key(event: str, prefix: str = STREAM_PREFIX) -> str:
     return f"{prefix}{event}"
 
 
-def _client(url: str):
+def _client(url: str, **kwargs):
+    """A redis-py client. The ACL user and password come from env REDIS_USERNAME /
+    REDIS_PASSWORD (protocol §2: credentials never in the URL, so logging the URL is safe);
+    no REDIS_PASSWORD = no AUTH, as on a local Redis."""
     import redis  # imported lazily so tests without Redis never need the module loaded
 
-    return redis.Redis.from_url(url, decode_responses=True)
+    password = os.environ.get("REDIS_PASSWORD")
+    auth = {"username": os.environ.get("REDIS_USERNAME") or None, "password": password} if password else {}
+    return redis.Redis.from_url(url, decode_responses=True, **auth, **kwargs)
 
 
 class StreamConsumer:

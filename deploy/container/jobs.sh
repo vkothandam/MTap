@@ -58,6 +58,14 @@ for v in MTAP_DATA_DIR MTAP_STATE_DIR MTAP_SECRETS_FILE MTAP_UID MTAP_GID; do
     [ -n "${!v:-}" ] || die "$v is not set in $MTAP_ENV_FILE"
 done
 export MTAP_ENV_FILE
+# The Redis passwords only (compose.yml's redis service), not the rest of the secrets file.
+if [ -f "$MTAP_SECRETS_FILE" ]; then
+    REDIS_PASSWORD="$(sed -n 's/^\(export \)\{0,1\}REDIS_PASSWORD=//p' "$MTAP_SECRETS_FILE" | tail -1)"
+    MAC_REDIS_PASSWORD="$(sed -n 's/^\(export \)\{0,1\}MAC_REDIS_PASSWORD=//p' "$MTAP_SECRETS_FILE" | tail -1)"
+    export REDIS_PASSWORD MAC_REDIS_PASSWORD
+fi
+# Never publish a Redis without AUTH beyond this host.
+if [ -z "${REDIS_PASSWORD:-}" ] || [ -z "${MAC_REDIS_PASSWORD:-}" ]; then export MTAP_REDIS_PUBLISH=127.0.0.1:6379; fi
 LOGS="$MTAP_STATE_DIR/logs"
 SUMMARY_LOG="$LOGS/daily-summary.log"
 ALL=(--profile etrade --profile massive-ws --profile job)
@@ -70,6 +78,8 @@ has_role() { case " ${MTAP_ROLES:-} " in *" $1 "*) return 0 ;; esac; return 1; }
 has_key() { grep -Eq "^(export )?MASSIVE_API_KEY=['\"]?[^'\" ]" "$MTAP_SECRETS_FILE"; }
 data_ready() { [ -f "$MTAP_DATA_DIR/.mtap-data-root" ]; }
 running() { [ -n "$(compose "${ALL[@]}" ps -q "$1" 2>/dev/null)" ]; }
+# redis-cli in the redis container, as `default` (REDISCLI_AUTH: the password never on a command line).
+rcli() { compose "${ALL[@]}" exec -T redis sh -c 'REDISCLI_AUTH="${REDIS_PASSWORD:-}" exec redis-cli "$@"' rcli "$@"; }
 
 # The state folders, owned by the data owner (this runs as root on the NAS).
 prepare_state() {
@@ -324,8 +334,8 @@ status() {
         echo
         echo "=== Redis ==="
         if running redis; then
-            echo "  INTRADAY_FEED length $(compose "${ALL[@]}" exec -T redis redis-cli XLEN mtap:evt:INTRADAY_FEED)," \
-                 "memory $(compose "${ALL[@]}" exec -T redis redis-cli INFO memory | grep -E '^used_memory_human' | cut -d: -f2 | tr -d '\r')"
+            echo "  INTRADAY_FEED length $(rcli XLEN mtap:evt:INTRADAY_FEED)," \
+                 "memory $(rcli INFO memory | grep -E '^used_memory_human' | cut -d: -f2 | tr -d '\r')"
         else
             echo "  not running"
         fi

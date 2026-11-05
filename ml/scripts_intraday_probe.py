@@ -9,6 +9,8 @@ Read-only on the NAS (bars_1m, share snapshots, agg_1s); caches and results go t
   scan      opportunity map (how often big moves follow) and predictability map (skill), per slice
   recs      2026, every minute: how many P(touch) >= 60% recommendations a day, and how many came true
   retime    1 s bars: how much of the move after a new day high / low is gone by the minute end
+  p1        bid-ask bounce check (docs/live-recommendations-plan.md P1): the d = 0 arm again with entries
+            after the last close and with d = 1; resumable per month and per (fold, arm)
 
 uv run python scripts_intraday_probe.py [--parts features,ladder,scan,recs,retime] [--quick]
 """
@@ -181,7 +183,7 @@ def load_month(month, keep):
             PM[f"pm{cut}_{k}"] = arr
     return dict(tk=names[u // 100000], day=u % 100000, V=V, VW=np.where(np.isnan(VW), Cf, VW), Cf=Cf,
                 H=np.where(np.isnan(H), Cf, H), L=np.where(np.isnan(Lo), Cf, Lo),
-                open=Op[np.arange(len(u)), has.argmax(1)], **PM)
+                open=Op[np.arange(len(u)), has.argmax(1)], O=Op, **PM)
 
 
 def months(first, last):
@@ -274,7 +276,7 @@ def build_month(raw, info):
     """The month's eligible stock-days as one namespace: dense bars plus per-row point-in-time values."""
     k = pd.DataFrame({"tk": raw["tk"], "day": raw["day"]}).merge(info, on=["tk", "day"], how="left")
     Q = k[[f"q{round(t * 100):02d}" for t in TAU]].to_numpy(np.float64)
-    M = SimpleNamespace(**{n: raw[n] for n in ("V", "VW", "Cf", "H", "L")}, Q=Q)
+    M = SimpleNamespace(**{n: raw[n] for n in ("V", "VW", "Cf", "H", "L", "O")}, Q=Q)
     for c in ("tk", "day", "open", "prev", "prevclose", "prevhi", "prevlo", "sig", "nv", "ndol", "r1", "r2", "r3",
               "sec", "msig", "ssig", "mcap", "res_code", "days_since", "days_to", "fc_prev"):
         setattr(M, c, k[c].to_numpy() if c == "tk" else k[c].to_numpy(np.float64))
@@ -503,9 +505,10 @@ def future(M):
 WCHUNK = 100000
 
 
-def targets(M, T, r, i, full=True):
-    """Outcomes after decision minute i (bars i ..), measured from p = the last price before i, in sigma."""
-    p = M.Cf[r, i - 1].astype(np.float64)
+def targets(M, T, r, i, full=True, p=None):
+    """Outcomes after decision minute i (bars i ..), measured from p (default: the last price before i), in
+    sigma."""
+    p = (M.Cf[r, i - 1] if p is None else p).astype(np.float64)
     s = M.sig[r]
     lg = np.log
     Y = {}
@@ -699,8 +702,8 @@ def folds(a):
     return out
 
 
-def read_rows(cols, kinds, day_lo, day_hi):
-    fs = sorted((OUT / "rows").glob("*.parquet"))
+def read_rows(cols, kinds, day_lo, day_hi, sub="rows"):
+    fs = sorted((OUT / sub).glob("*.parquet"))
     parts = []
     for f in fs:
         m0 = (pd.Timestamp(f.stem + "-01") - EPOCH).days
@@ -827,23 +830,26 @@ def part_ladder(a, st, R):
     R["ladder"] = ladder_report(a, rng)
 
 
+def arm_scores(g, arm, rng):
+    """Brier skill per LADDER_Y target, rank IC of lean and the top-20 spreads for one arm's predictions."""
+    r = {}
+    for k, col in LADDER_Y.items():
+        yv = g[col].values.astype(np.float64)
+        r[f"brier_{k}"] = ci_skill((g[f"{arm}_{k}"] - yv) ** 2, (g[f"clim_{k}"] - yv) ** 2, g.day.values, rng)
+    ic = rank_ic(g, g[f"{arm}_lean"].values, g.lean_x.values)
+    r["rank_ic"] = ci_mean(ic.values, ic.index.values, rng)
+    tl = top_lists(g, g[f"{arm}_lean"].values)
+    r["top20_lean"] = ci_mean(tl.spread_lean.values, tl.index.values, rng)
+    r["top20_retclose"] = ci_mean(tl.spread_rc.values, tl.index.values, rng)
+    return r
+
+
 def ladder_report(a, rng):
     out = {}
     for y in a.test_years:
         te = pd.read_parquet(OUT / f"pred_{y}.parquet")
         g = te[te.kind == 1]
-        res = {}
-        for arm in ARMS:
-            r = {}
-            for k, col in LADDER_Y.items():
-                yv = g[col].values.astype(np.float64)
-                r[f"brier_{k}"] = ci_skill((g[f"{arm}_{k}"] - yv) ** 2, (g[f"clim_{k}"] - yv) ** 2, g.day.values, rng)
-            ic = rank_ic(g, g[f"{arm}_lean"].values, g.lean_x.values)
-            r["rank_ic"] = ci_mean(ic.values, ic.index.values, rng)
-            tl = top_lists(g, g[f"{arm}_lean"].values)
-            r["top20_lean"] = ci_mean(tl.spread_lean.values, tl.index.values, rng)
-            r["top20_retclose"] = ci_mean(tl.spread_rc.values, tl.index.values, rng)
-            res[arm] = r
+        res = {arm: arm_scores(g, arm, rng) for arm in ARMS}
         tl = top_lists(g, g.b_px_open.values)
         ic = rank_ic(g, g.b_px_open.values, g.lean_x.values)
         res["open_rule"] = {"rank_ic": ci_mean(ic.values, ic.index.values, rng),
@@ -1035,6 +1041,135 @@ def recs_report(rec):
     return out
 
 
+# ---------------------------------------------------------------- P1: bid-ask bounce check
+
+# The ladder's targets start from p = the close of minute i - 1, the same price the d = 0 inputs end on: a
+# close at the ask "reverts" to the bid with no real move. Each arm moves the entry (o_ = minute i's open,
+# v_ = minute i's VWAP with outcomes from minute i + 1) or leaves a 1-minute gap before it (c_ inputs, d = 1).
+P1_Y = list(LADDER_Y.values()) + ["lean_raw", "ret_close", "up_60", "dn_60"]
+P1_ARMS = {"d0_close": ("a_", ""), "d1_close": ("c_", ""), "d0_open": ("a_", "o_"),
+           "d0_vwap1": ("a_", "v_"), "d1_vwap1": ("c_", "v_")}
+P1_SLICES = ["burst", "near_hi", "near_lo"]
+
+
+def save(df, f):
+    """Write via a temporary name, so an interrupted run never leaves a half file that a rerun would skip."""
+    tmp = f.with_suffix(".tmp")
+    df.to_parquet(tmp)
+    tmp.replace(f)
+
+
+def p1_targets(M, T, r, i):
+    """The P1_Y targets from the two bounce-free entries. ok_o: minute i traded; ok_v: it traded and a later
+    minute exists."""
+    o = M.O[r, i].astype(np.float64)
+    ok_o = np.isfinite(o) & (o > 0)
+    ok_v = (M.V[r, i] > 0) & (i < 389)
+    Yo = targets(M, T, r, i, p=np.where(ok_o, o, M.Cf[r, i - 1]))
+    Yv = targets(M, T, r, np.minimum(i + 1, 389), p=M.VW[r, i])
+    return {"ok_o": ok_o, "ok_v": ok_v, **{"o_" + k: Yo[k] for k in P1_Y}, **{"v_" + k: Yv[k] for k in P1_Y}}
+
+
+def part_p1_features(a, st):
+    """Per cached month: the same decision rows, in the same order, with d = 1 inputs and the o_ / v_ targets."""
+    (OUT / "rows_p1").mkdir(exist_ok=True)
+    todo = [f.stem for f in sorted((OUT / "rows").glob("*.parquet")) if not (OUT / "rows_p1" / f.name).exists()]
+    st.start("p1-features", len(todo))
+    if not todo:
+        return
+    info = info_table(pd.concat([pd.read_parquet(f) for f in sorted((OUT / "summ").glob("*.parquet"))]))
+    curve = np.load(OUT / "curve.npy")
+    for m in todo:
+        keys = pd.read_parquet(OUT / "rows" / f"{m}.parquet", columns=["tk", "day", "i", "kind", "p"])
+        sel = info.month == m
+        M = build_month(load_month(m, set(info.tk[sel] + "|" + info.day[sel].astype(str))), info)
+        pos = pd.Series(np.arange(len(M.sig)), index=pd.Series(M.tk) + "|" + pd.Series(M.day).astype(str))
+        r = pos.reindex(keys.tk + "|" + keys.day.astype(str)).values
+        found = np.isfinite(r)
+        r = np.where(found, r, 0).astype(np.int64)
+        i = keys.i.values.astype(np.int64)
+        same = found & np.isclose(M.Cf[r, i - 1], keys.p.values, rtol=1e-5)  # the NAS bars may have been rewritten
+        X = gather(M, dense_features(M, curve), fixed_features(M), r, i, 1)
+        Y = p1_targets(M, future(M), r, i)
+        Y["ok_o"], Y["ok_v"] = Y["ok_o"] & same, Y["ok_v"] & same
+        out = {"tk": keys.tk.values, "day": keys.day.values, "i": keys.i.values, "kind": keys.kind.values,
+               **{"c_" + k: X[k].values for k in X}, **Y}
+        save(pd.DataFrame(out), OUT / "rows_p1" / f"{m}.parquet")
+        st.step(f"{m}: {len(keys):,} rows, {(~same).sum():,} no longer match the bars")
+
+
+def p1_rows(kinds, lo, hi):
+    """rows + rows_p1 side by side, only where every arm's entry exists."""
+    feats = [p + c for c in FULL for p in ("a_",)]
+    x = read_rows(["tk", "day", "i", "kind", "sig", "ndol"] + feats + P1_Y + [f"s_{s}" for s in P1_SLICES],
+                  kinds, lo, hi)
+    y = read_rows(["tk", "day", "i", "ok_o", "ok_v"] + ["c_" + c for c in FULL]
+                  + [p + c for p in ("o_", "v_") for c in P1_Y], kinds, lo, hi, sub="rows_p1")
+    assert len(x) == len(y) and (x.i.values == y.i.values).all() and (x.tk.values == y.tk.values).all()
+    x = pd.concat([x, y.drop(columns=["tk", "day", "i"])], axis=1)
+    return x[x.ok_o & x.ok_v].reset_index(drop=True)
+
+
+def part_p1(a, st, R):
+    """Each arm on the same rows and the same training sample: HGB as in the ladder, one file per (fold, arm)."""
+    (OUT / "p1").mkdir(exist_ok=True)
+    fl = folds(a)
+    pf = {(fo.year, arm): OUT / "p1" / f"pred_{fo.year}_{arm}.parquet" for fo in fl for arm in P1_ARMS}
+    st.start("p1", sum(not f.exists() for f in pf.values()))
+    for fo in fl:
+        arms = [arm for arm in P1_ARMS if not pf[fo.year, arm].exists()]
+        if not arms:
+            continue
+        rng = np.random.default_rng(a.seed + fo.year)  # per fold, so a resumed run draws the same sample
+        tr = p1_rows([0], 0, fo.train_last)
+        cuts = tercile_cuts(tr)
+        early = np.flatnonzero(tr.day.values < fo.cal0)
+        fit = tr.iloc[np.sort(rng.choice(early, min(a.train_n, len(early)), replace=False))]
+        cal = tr[tr.day >= fo.cal0]
+        te = p1_rows([1, 2], *fo.test)
+        log(f"p1 fold {fo.year}: train {len(fit):,} (+{len(cal):,} recal), test {len(te):,}")
+        for arm in arms:
+            fp, yp = P1_ARMS[arm]
+            tab, ov = clim(tr, cuts, [yp + c for c in P1_Y])
+            X, Xc, Xt = (x[[fp + c for c in FULL]].values for x in (fit, cal, te))
+            P = {"day": te.day.values, "i": te.i.values, "kind": te.kind.values,
+                 **{f"s_{s}": te[f"s_{s}"].values for s in P1_SLICES}}
+            for k, col in LADDER_Y.items():
+                mdl = fit_binary(X, fit[yp + col].values, Xc, cal[yp + col].values, a.seed)
+                P[f"{arm}_{k}"] = predict_binary(mdl, Xt).astype(np.float32)
+                P[f"clim_{k}"], P[col] = clim_of(tab, ov, te, cuts, yp + col), te[yp + col].values
+            lx = {n: d[yp + "lean_raw"].values - clim_of(tab, ov, d, cuts, yp + "lean_raw") for n, d in
+                  (("fit", fit), ("te", te))}
+            reg = HistGradientBoostingRegressor(**HGB, random_state=a.seed).fit(X, lx["fit"])
+            P[f"{arm}_lean"], P["lean_x"] = reg.predict(Xt).astype(np.float32), lx["te"]
+            P.update({c: te[yp + c].values for c in ("ret_close", "up_60", "dn_60")})
+            save(pd.DataFrame(P), pf[fo.year, arm])
+            st.step(f"fold {fo.year} {arm}")
+    R["p1"] = p1_report(a)
+
+
+def p1_report(a):
+    rng = np.random.default_rng(a.seed + 4)
+    out = {}
+    for y in a.test_years:
+        res = {}
+        for arm in P1_ARMS:
+            g = pd.read_parquet(OUT / "p1" / f"pred_{y}_{arm}.parquet")
+            r = arm_scores(g[g.kind == 1], arm, rng)
+            for s in P1_SLICES:
+                x = g[g[f"s_{s}"] & ((g.kind == 1) | (s in EXT))]
+                for k in ("tu", "uf"):
+                    if len(x) < 500:
+                        r[f"{s}_{k}"] = (np.nan, np.nan, np.nan, 0)
+                        continue
+                    yv = x[LADDER_Y[k]].values.astype(np.float64)
+                    r[f"{s}_{k}"] = ci_skill((x[f"{arm}_{k}"] - yv) ** 2, (x[f"clim_{k}"] - yv) ** 2,
+                                             x.day.values, rng)
+            res[arm] = r
+        out[str(y)] = res
+    return out
+
+
 # ---------------------------------------------------------------- 1 s re-timing
 
 def part_retime(a, st, R):
@@ -1141,6 +1276,19 @@ def write_report(R):
                          f" typical {mb:6.1%} size {t['size_pct']:.2f}%")
     if "retime" in R:
         L.append(f"\n== 1 s re-timing of new day high / low minutes: {R['retime']}")
+    if "p1" in R:
+        L.append("\n== P1 bounce check: full inputs, same rows per arm (entry: close = last close before i,"
+                 " open = minute i's open, vwap1 = minute i's VWAP with outcomes from i + 1)")
+        for y, res in R["p1"].items():
+            L.append(f"-- test {y}")
+            L.append(f"{'arm':10} {'touch+0.5s/60':>24} {'up first':>24} {'rank IC lean':>26}"
+                     f" {'top20 lean spread (s)':>26} {'top20 ret-close (s)':>26} {'up first near_lo':>24}"
+                     f" {'up first burst':>24}")
+            for arm, r in res.items():
+                L.append(f"{arm:10} {fmt_ci(r['brier_tu']):>24} {fmt_ci(r['brier_uf']):>24}"
+                         f" {fmt_num(r['rank_ic']):>26} {fmt_num(r['top20_lean'], 2):>26}"
+                         f" {fmt_num(r['top20_retclose'], 2):>26} {fmt_ci(r['near_lo_uf']):>24}"
+                         f" {fmt_ci(r['burst_uf']):>24}")
     txt = "\n".join(L)
     (OUT / "report.txt").write_text(txt + "\n")
     (OUT / "results.json").write_text(json.dumps(R, indent=1, default=lambda o: o.item() if hasattr(o, "item")
@@ -1169,14 +1317,14 @@ def main():
     a.train_last = (pd.Timestamp(f"{a.test_years[-1] - 1}-12-31") - EPOCH).days
     a.test_first = (pd.Timestamp(f"{a.test_years[0]}-01-01") - EPOCH).days
     parts = a.parts.split(",")
-    names = [p for p in ("features", "ladder", "scan", "recs-train", "recs", "retime")
-             if p in parts or (p == "recs-train" and "recs" in parts)]
+    names = [p for p in ("features", "ladder", "scan", "recs-train", "recs", "retime", "p1-features", "p1")
+             if p in parts or (p == "recs-train" and "recs" in parts) or (p == "p1-features" and "p1" in parts)]
     st = Status(names)
     R = json.loads((OUT / "results.json").read_text()) if (OUT / "results.json").exists() else {}
     for p, fn in (("features", part_features), ("ladder", part_ladder), ("scan", part_scan), ("recs", part_recs),
-                  ("retime", part_retime)):
+                  ("retime", part_retime), ("p1", part_p1_features), ("p1", part_p1)):
         if p in parts:
-            fn(a, st, R) if p != "features" else fn(a, st)
+            fn(a, st, R) if fn not in (part_features, part_p1_features) else fn(a, st)
             write_report(R)
     (OUT / "status.txt").write_text(f"[done] run {(time.time() - st.t0) / 60:.0f} min · report: {OUT}/report.txt\n")
 

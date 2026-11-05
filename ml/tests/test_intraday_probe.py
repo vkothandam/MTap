@@ -17,13 +17,14 @@ def synth(n=24, seed=0):
     L = Cf * np.exp(-np.abs(rng.normal(0, 0.001, (n, 390))))
     V = rng.integers(0, 2000, (n, 390)).astype(np.float64)
     VW = L + (H - L) * rng.uniform(0, 1, (n, 390))
-    Cf[0, :3] = H[0, :3] = L[0, :3] = VW[0, :3] = np.nan
+    O = Cf * np.exp(rng.normal(0, 0.0005, (n, 390)))
+    Cf[0, :3] = H[0, :3] = L[0, :3] = VW[0, :3] = O[0, :3] = np.nan
     V[0, :3] = 0
     prev = 50 * np.exp(rng.normal(0, 0.01, n))
     Q = prev[:, None] * np.exp(sig[:, None] * norm.ppf(P.TAU)[None, :])
     pm = {f"pm{c}_{k}": rng.uniform(49, 51, n) for c in (555, 570) for k in ("v", "pv", "last", "hi", "lo")}
     return SimpleNamespace(
-        V=V, VW=VW, Cf=Cf, H=H, L=L, Q=Q, tk=np.array([f"S{i}" for i in range(n)], dtype=object),
+        V=V, VW=VW, Cf=Cf, H=H, L=L, O=O, Q=Q, tk=np.array([f"S{i}" for i in range(n)], dtype=object),
         day=20000 + np.arange(n) % 2, open=Cf[:, 3] * 0.999, prev=prev, prevclose=prev * 1.001,
         prevhi=prev * 1.02, prevlo=prev * 0.98, sig=sig, nv=V.sum(1) * 0.9, ndol=V.sum(1) * 50,
         r1=rng.normal(0, 0.01, n), r2=rng.normal(0, 0.01, n), r3=rng.normal(0, 0.01, n),
@@ -58,7 +59,7 @@ def test_dense_features_use_only_bars_before_their_column(c):
     assert not same(F["px_open"][:, c + 1:], G["px_open"][:, c + 1:])
 
 
-@pytest.mark.parametrize("d", [0, 15])
+@pytest.mark.parametrize("d", [0, 1, 15])
 def test_gather_ignores_bars_from_decision_minus_delay(d):
     M = synth()
     i = np.array([1, 5, 16, 30, 120, 389] * 4)
@@ -76,7 +77,7 @@ def test_gather_ignores_bars_from_decision_minus_delay(d):
 def test_gather_per_row_cut():
     """Row-by-row: perturbing bars from that row's own cut never changes that row's inputs."""
     M = synth()
-    for d in (0, 15):
+    for d in (0, 1, 15):
         for ii in (20, 90, 300):
             r, i = np.arange(len(M.sig)), np.full(len(M.sig), ii)
             X = perturb(M, ii - d)
@@ -86,10 +87,10 @@ def test_gather_per_row_cut():
                 assert same(a[k].values, b[k].values), (d, ii, k)
 
 
-def brute_targets(M, r, i):
+def brute_targets(M, r, i, p_of=lambda M, rr, ii: M.Cf[rr, ii - 1]):
     out = {}
     for j, (rr, ii) in enumerate(zip(r, i)):
-        p, s = M.Cf[rr, ii - 1], M.sig[rr]
+        p, s = p_of(M, rr, ii), M.sig[rr]
         for n, lev, kind in P.LEVELS:
             L = lev * s if kind == "s" else lev
             for h in P.REC_H:
@@ -119,6 +120,33 @@ def test_targets_match_brute_force():
     for h in P.HS:
         up = [np.log(np.nanmax(M.H[rr, ii:ii + h]) / M.Cf[rr, ii - 1]) / M.sig[rr] for rr, ii in zip(r, i)]
         assert np.allclose(Y[f"up_{h}"], up), h
+
+
+def test_p1_targets_match_brute_force():
+    """o_: entry at minute i's open, outcomes from bar i; v_: entry at minute i's VWAP, outcomes from bar i + 1."""
+    M = synth(n=10, seed=5)
+    r = np.repeat(np.arange(1, 10), 5)
+    i = np.tile([4, 40, 200, 350, 388], 9)
+    Y = P.p1_targets(M, P.future(M), r, i)
+    assert Y["ok_o"].all() and Y["ok_v"].all()
+    Bo = brute_targets(M, r, i, lambda M, rr, ii: M.O[rr, ii])
+    Bv = brute_targets(M, r, i + 1, lambda M, rr, ii: M.VW[rr, ii - 1])
+    for k in ("tu_0.5s_60", "td_0.5s_60", "upfirst"):
+        name = "race" if k == "upfirst" else k
+        want_o = (Bo[name] == 0) if k == "upfirst" else Bo[name]
+        want_v = (Bv[name] == 0) if k == "upfirst" else Bv[name]
+        assert np.array_equal(Y["o_" + k], want_o), k
+        assert np.array_equal(Y["v_" + k], want_v), k
+    assert np.allclose(Y["o_volbal_up"], Bo["volbal"] > 0.5) and np.allclose(Y["v_volbal_up"], Bv["volbal"] > 0.5)
+    up = [np.log(np.nanmax(M.H[rr, ii + 1:ii + 61]) / M.VW[rr, ii]) / M.sig[rr] for rr, ii in zip(r, i)]
+    assert np.allclose(Y["v_up_60"], up)
+
+
+def test_p1_targets_flag_untraded_entry_minutes():
+    M = synth(n=4, seed=6)
+    M.O[1, 50], M.V[2, 60] = np.nan, 0
+    Y = P.p1_targets(M, P.future(M), np.array([1, 2, 3]), np.array([50, 60, 389]))
+    assert Y["ok_o"].tolist() == [False, True, True] and Y["ok_v"].tolist() == [True, False, False]
 
 
 def test_targets_ignore_bars_before_the_decision():

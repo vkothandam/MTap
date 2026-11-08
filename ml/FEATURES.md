@@ -1,5 +1,8 @@
 # Daily model (tft_vwap): fields, training and testing
 
+The intraday v2 columns are in [docs/intraday-features.md](../docs/intraday-features.md); the older `tft_intraday`
+prototype's are in [FEATURES-intraday.md](FEATURES-intraday.md).
+
 Every panel column and what the TFT does with it. The panel (`panel.parquet`, schema 4 since
 2026-10-27, written by `sourcing-py etrade export-tft`; schema-3 panels and runs still load) is the model's only input: one row per stock and trading
 session. The groups are the tuples in [tft_vwap/config.py](tft_vwap/config.py), and `prepare()`

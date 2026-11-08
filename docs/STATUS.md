@@ -3,7 +3,7 @@
 The one page that says what runs where, when, on what data, with which secrets and limits.
 The details are in the linked docs.
 
-**Last updated: 2026-10-30 PT.**
+**Last updated: 2026-11-06 PT.**
 
 **Keep it current.** Any change to any of these updates this file, in the same change:
 
@@ -41,7 +41,8 @@ MTap sources market data for the ML work.
 | `nas/massive1s/` | Rust 1-second REST backfill, runs on the NAS | [nas/README.md](../nas/README.md) |
 | `ml/` | TFT trainer, report, predict, grade (to move to its own repo) | [ml/README.md](../ml/README.md), [MODEL-STRATEGY.md](../ml/MODEL-STRATEGY.md) |
 | `dashboard/` | Streamlit forecast dashboard (reads run files and the `space/` moment library only) | [dashboard/README.md](../dashboard/README.md) |
-| `space/` | `mtap-space`: the analog-pockets moment library and matcher (`space-build`), used by Intraday → Space | [analog-pockets.md](analog-pockets.md) |
+| `space/` | `mtap-space`: the analog-pockets moment library and matcher (`space-build`), used by Intraday → Space | [intraday-features.md](intraday-features.md) | intraday v2 (2026-11-06): every input and target column with formula, units, sources and a worked example; SPY vs SPX rule; how testing works; run-file columns |
+| [analog-pockets.md](analog-pockets.md) |
 
 ## Hosts
 
@@ -82,7 +83,8 @@ MTap sources market data for the ML work.
 | common-stock universe | `out/tickers_cs/` | Massive reference tickers | by hand |
 | E*TRADE watchlists | `intraday_feed/date=D/source=etrade_watchlist/hHH-*.parquet` | E*TRADE website, every ~2 s and ~20 s | collector → Redis → store, hourly |
 | Massive second bars, live | `agg_1s/date=D/source=massive_ws/`, compacted to `day-D.parquet` | Massive WebSocket `A.*`, 15 min delayed | massive-ws; `evening` compacts |
-| Massive second bars, history | `agg_1s/date=D/source=massive_rest/day-D.parquet` | Massive REST 1-second bars | `nas/massive1s` (2-year run deployed 2026-10-19) |
+| Massive second bars, history | `agg_1s/date=D/source=massive_rest/day-D.parquet` | Massive REST 1-second bars | `nas/massive1s`; 2021-11-08 → 2026-11-06 complete (2026-11-07), plus `day-D.extra.parquet` for 2024-10-21 → 2026-10-16 (readers take every `*.parquet` in the folder) |
+| SPY and SPX for the intraday model | `out/market/{spy_daily,spy_1m,spy_dividends,spx_daily}.parquet` | Massive SPY aggs + dividends; SPX from `docs/transient/spx-history.csv` | `sourcing-py market fetch` by hand (Mac) |
 | news | `news/` | Yahoo raw HTML; a read-only copy of news.duckdb | by hand |
 | treasury yields, inflation | `out/treasury_yields/`, `out/inflation/` (vintage files) | Massive economy endpoints | `daily` (`daily-capture.sh`); yields lag 1 session, CPI used from M+2 |
 | shares outstanding | `out/shares/shares-D.jsonl` (quarter ends) | Massive reference | `daily`, `inputs-backfill` |
@@ -528,3 +530,70 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
   score stays the base rate (`baseline.climatology`). **P2 drafted, not deployed:** NAS Redis AUTH plus a
   read-only `mac` user, published on 192.168.1.100:6379 (deploy/container compose.yml, jobs.sh, synology/host.env).
   Deploy steps in the plan §3; until then the NAS runs as before.
+- 2026-11-06: **Intraday v2 designed, not built** ([intraday-features.md](intraday-features.md), MODEL-STRATEGY Q40):
+  Phase 1 = a TFT on pocket targets over durations, Phase 2 = the GBM. **Data plan (each step waits for the user's OK):**
+  - D1: the 1 s backfill 2021-11 → 2024-10-18 on the NAS (`nas/massive1s`, ~80 GB), with a universe of the
+    stocks of the time (`massive_1s prepare --from-bars`, built 2026-11-06, one list for the range), so delisted and renamed stocks are kept;
+    the one-month trial (2022-03) passed on 2026-11-06: 0 failed, 2.40 GB, 15.7 B/bar, 1 s = 96% of minute volume,
+    delisted stocks present (LEARNINGS "1-second backfill trial"). Finalize is 6.7× faster on the Mac (92 s vs 613 s), but the user kept the run on the NAS so nothing large crosses the LAN. **Full D1 deployed 2026-11-06 ~21:55 PT on the NAS:** 2021-11-08 → 2024-10-18 (the 5-year edge), 741 sessions, 6,882 stocks, ~77 GB, ~5.5 h;
+  - D1b: the stocks missing from the existing two years (5–8% of liquid dollar volume, LEARNINGS `tag-survivorship`)
+    fetched into separate `day-D.extra.parquet` files, nothing rewritten (`massive1s fetch --extra`);
+  - D2: a REST rerun for 2026-10-19 → 2026-11-06 (those days only have `massive_ws`; 2026-10-16 already has REST);
+  - **D2 then D1b queued 2026-11-06 23:23 PT behind D1 on the NAS** (one-off ssh `nohup` waiter, the binary run on the
+    NAS host from `massive_1s/bin/`, inputs in `inputs-d2/` and `inputs-d1b/`, log `massive_1s/logs/queue-d2-d1b.log`;
+    nas/README.md Plan step 4). D1b's universe: 6,297 traded then, each quarter fetching only the ones not in its day files;
+  - D3: SPY minute and 1 s from Massive (not in `bars_1m`), SPX daily from `docs/transient/spx-history.csv` into
+    `out/market/spx_daily.parquet`.
+
+  **Limit found:** `I:SPX` data returns 403 "not entitled" on this key (reference lookup works); index data needs the
+  Indices subscription. The user adds SPX and SPY to the E*TRADE watchlist.
+- 2026-11-07: **S0 data done, 0 failures** (LEARNINGS "1-second backfill, full runs"): D1 4.02B bars / 62 GB in 5 h 26 min,
+  D2 107M bars, D1b 185M bars in 499 `.extra` files; `massive_rest` now 2021-11-08 → 2026-11-06, 119 GB. D3 written by
+  the new `sourcing-py market fetch` to `out/market/` (SPY daily, minute, dividends; SPX daily). Left to delete after the
+  S1 checks, on the user's OK: NAS `massive_1s/bin/`, `inputs-d2/`, `inputs-d1b/`. Next: S1 (`ml/intraday_ft/` code and
+  tests, no runs).
+- 2026-11-07: **S1 code and tests done** (`ml/intraday_ft/`, 39 tests on synthetic frames, no real-data run yet). The new
+  `ml` commands:
+  - `intraday-ft-build`: the month frames;
+  - `intraday-ft`: the thin TFT, train and blind scoring;
+  - `intraday-ft-report`.
+
+  Paths:
+  - the cache goes to `/tmp/mtap/intraday_ft/frames/month=YYYY-MM/` on the Mac (env `MTAP_INTRADAY_FT_CACHE`), with
+    `status.txt` beside it. The full build is ≈ 74 GB; the NAS is only read;
+  - runs go to `ml/runs/intraday_ft/<stamp>-ft-B…`.
+
+  Next: S2, on the user's OK. First a one-month `--check` build, then the full 2023-01 → 2026-10 build, detached.
+- 2026-11-07: **S2 one-month check (2026-01) passed:**
+  - 20,000 stock-days, 1.52M decisions, 1 s data on 100% of them; 1.86 GB a month in `/tmp`.
+  - **3 min a month with `--workers 8`**, down from ~6 h. The cost was the 1 s zig-zag run one stock at a time; it
+    now runs on a day's stocks together, and the days are spread over 8 processes. NAS reads are not the bottleneck:
+    ~0.5 s per 1 s day file, ~10 s per month of minute bars.
+  - The build skips months already built with the same `FRAME_VERSION` and settings; `meta.json` is written last,
+    so a month that was cut short is built again. `--force` rebuilds.
+  - Full build 2023-01 → 2026-10 (46 months): ≈ 2½ h and ≈ 86 GB in `/tmp/mtap/intraday_ft_w8/`.
+- 2026-11-07: **S2 full build running, S3 chained** (user OK). One process, `--workers 12`, ≈ 2.1 min a month, done
+  ≈ 13:52. Chained detached runs in `/tmp/mtap/intraday_ft_w8/` (nohup + caffeinate + absolute uv):
+  - `run_s3.sh`: after `done.txt` says exit 0, a short timing check (`s3_timing.log`), then **IA1** = fold B
+    (train 2023-01 → 2025-12, test 2026-01 → 10; `s3_full.log`, `s3_done.txt`);
+  - `run_s3a.sh`: after IA1 ends with exit 0, **IA1A** = fold A (train → 2024-12, test 2025; `s3a_full.log`,
+    `s3a_done.txt`). If IA1 fails, it writes "skipped" and stops.
+  - `run_s3abl.sh` (user OK 2026-11-07): after fold A ends (any exit), the fold-B ablations one at a time:
+    **IA1-noS** (`--no-seconds`), **IA1-enc120**, **IA1-enc60** (`--encoder`); logs `s3abl_*.log`, one line per run
+    in `s3abl_done.txt`. Skipped if IA1 didn't end with exit 0 (they are compared with it).
+  - Build done 13:57 (46 months, 83 GB). The first timing check failed (loss NaN: undefined `pi_*` targets
+    reached the loss; fix in intraday-features.md change log, no rebuild); the chain was restarted 14:03 and the loss now falls (4.8 → 3.7 in 40 steps).
+  - The second timing check trained and scored, but the report failed on undefined realised targets (fixed,
+    same change log). Chain restarted 14:16; timing check passed 14:18 (`runs/intraday_ft/20261107-141636-ft-B`,
+    label IA0-timing); **IA1 started 14:18**, its own ETA line in `s3_full.log`.
+  - The ablation chain had already skipped itself (it saw the failed timing check). The encoder runs were ~40×
+    slower than IA1, so window mode was made cheaper first (change log); `run_s3abl.sh` restarted 14:22,
+    still waiting for fold A.
+  - **IA1 done 16:24** (`runs/intraday_ft/20261107-141854-ft-B`, 2 h 6 min): no direction edge, size skill real
+    (LEARNINGS "Intraday v2 IA1"). **IA1A (fold A) started 16:24**, ETA ≈ 18:30; the ablations follow it.
+  - **Go rule changed by the user 16:40 (MODEL-STRATEGY Q41):** direction not required; the pocket shape decides
+    (`cm_up` / `cm_dn`, `bulge` / `sag`, `rvol`: skill + ranking vs climatology + calibration). IA1 passes it for `cm` and
+    `rvol`; `bulge` / `sag` bands too narrow at the bottom. The user keeps the Mac awake and approved queuing and running
+    the next runs while away (16:45).
+  - Readout fixes 17:30 (no retrain; `intraday_ft/tft.py` `cdf_at`, `report.py` DUST): IA1's report rebuilt (old copies
+    `/tmp/mtap/IA1-report.v1.md`, `.v2.md`). Fold A loaded the old `cdf_at`, so `run_s3a_rescore.sh` (PID 27157) re-scores it after `s3a_done.txt` (`s3a_rescore_done.txt`; end-of-run copy `IA1A-report.at-end.md`). The ablations start after the fix and use it.

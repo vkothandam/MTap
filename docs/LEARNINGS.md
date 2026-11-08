@@ -24,6 +24,7 @@ Every section carries a `Tags:` line. To find every section on a subject, search
 | `tag-chartiq` | **Topic: Live pre-market sources.** E*TRADE ChartIQ, the watchlist feed and Massive's snapshot before the open: what each gives, how fast |
 | `tag-edgar-results` | **Topic: Results release dates (SEC EDGAR).** Which 8-Ks are earnings releases, which session they date, and how that was checked |
 | `tag-ml-intraday` | **Topic: Intraday experiments.** Intraday prediction checks on minute bars: analog matching, pockets, and what they are scored against |
+| `tag-survivorship` | **Topic: Universe and coverage.** Which stocks a data set holds for a past date: delisted and renamed stocks, ADRs, ETFs, index data |
 | `tag-etrade-watchlist-api` | **Topic: E*TRADE watchlist and view API.** Managing watchlists and their column views over the website's API (`npm run watchlist`): payloads, limits, and what comes back |
 
 ## Adding a learning
@@ -1746,6 +1747,182 @@ A read-only check of the feed, the NAS load and dropped data, against the iMac's
   page); the retry succeeded with no code. The `/login/sar` lines every 30 s are the
   session's keepalive, not errors.
 
+## Universe and coverage
+
+Tags: `tag-survivorship`
+
+Which stocks a data set holds for a past date. A training set made only of the stocks listed today
+drops the ones that later delisted or changed ticker, and every target learnt from it is biased toward
+survivors.
+
+### 2026-11 Delisted and renamed stocks missing from the 1-second data (checked 2026-11-06, minute bars 2021-11 and three later days)
+Tags: `tag-survivorship`, `tag-volume`. Plan: [intraday-features.md](intraday-features.md) §2; MODEL-STRATEGY Q40.
+
+**What was checked:**
+- the tickers in `bars_1m` for 2021-11 against the universe `massive_1s prepare` builds today (active CS,
+  today's ticker, minus `exclusion()`);
+- each missing ticker classified with `out/tickers_cs/tickers_cs-2026-10-27.jsonl` (active, `delisted_utc`,
+  `composite_figi`, CIK): a ticker change where another ticker carries the same FIGI or CIK, a SPAC by name;
+- "liquid" = mean dollar volume ≥ $20M a day in 2021-11.
+
+**Result:** 2,059 of the 5,546 tickers in the 2021-11 minute bars are not in today's 1 s universe.
+
+| kind | all | liquid | share of liquid $ volume |
+| --- | --- | --- | --- |
+| delisted: acquired, dropped, bankrupt (all have `delisted_utc`) | 1,423 | 262 | 5.6% |
+| ticker change: same company, new ticker | 299 | 35 | 0.9% |
+| SPAC | 337 | 5 | 0.1% |
+
+Delistings by year: 2021 48, 2022 288, 2023 385, 2024 282, 2025 239, 2026 181.
+
+- **Renamed history is stored under the ticker in use at the time.** Examples: FI → FISV, MMC → MRSH, BK → BNY, PSTG → P,
+  SAVA → FLNA. FI has 2025-06 minute bars and FISV has none. The 1 s endpoint serves it the same way, so asking
+  for today's ticker over an old date returns nothing. (Fiserv was FISV before 2023 too: in 2022-03 its bars
+  are under FISV, see the 2022-03 trial below.)
+- **Correction.** A first pass (same day) called all 302 liquid ones "delisted" and gave FI / MMC / PSTG / SAVA
+  as examples. Those are ticker changes. The FIGI / CIK check above replaced it.
+- **The existing two years of 1 s data miss them too.** On 2024-11-01 / 2025-06-02 / 2026-06-01, 205 / 204 /
+  169 liquid stocks in `bars_1m` have no `agg_1s` rows: 5–8% of liquid dollar volume.
+  - Part of that is ADRs, left out by design (TSM, ASML, BABA, NVO, ARM, PDD, SAP).
+  - The rest are renamed and delisted names (FI, BPMC, …).
+- **Fix (planned, S0):**
+  - `prepare --from-bars` (built 2026-11-06): the 1 s universe = the tickers that traded in `bars_1m` over
+    the run's range and are typed CS in any `tickers_cs` file (active or not), minus `exclusion()` and ADRs,
+    plus SPY. One list per run range, not per quarter as first planned: the Rust fetcher takes one list for all
+    quarters, and a stock with no trades in a quarter costs only one empty call;
+  - a fill of the missing tickers for the existing two years into separate `.extra` day files;
+  - one stock id across renames: `composite_figi`, else CIK.
+- **Also found:**
+  - `bars_1m` has no SPY, QQQ or other ETFs, and the E*TRADE lists have none either;
+  - `I:SPX` exists in Massive's reference data, but its aggregates, `/prev`, open-close and the index snapshot
+    all return 403 "not entitled" on this key (2026-11-06; see `tag-price`).
+
+### 2026-11 1-second backfill trial, 2022-03 (NAS run 2026-11-06 21:13–21:27 PT; checks on the Mac)
+Tags: `tag-survivorship`, `tag-volume`. Universe from `prepare --from-bars` (5,730 kept of 5,808 traded).
+
+- **The run:**
+  - fetch 142 s, 0 failed, 7,360 calls, 153.1M bars kept (3.0M outside the window dropped), 2.12 GB downloaded at
+    ~15 MB/s with 32 workers;
+  - finalize 613 s on the NAS (pass 1 95 s, pass 2 zstd-19 on 3 threads ~520 s, 2,328 CPU s);
+  - 23 day files, 2.40 GB, **15.7 B/bar**, ~104 MB a day. The 2026-09 month was 16.8 B/bar.
+  - 6.7M bars per session vs 6.3M in 2026-09: the delisted and renamed stocks add bars.
+- **Coverage against `bars_1m`, 09:30–16:00:**
+  - 125,966 stock-days with 1 s rows vs 127,616 with minute bars. The 1,673 without 1 s rows hold 0.07% of
+    the minute volume.
+  - **1 s volume ÷ minute volume = 0.96** (per stock-day with > 1M shares: p10 0.90, median 0.96, p90 0.99).
+    The plan's expectation of ~0.87 was wrong.
+- **Delisted and renamed stocks are present:** TWTR, ATVI, CTXS, CERN (later acquired) have all 23 days, and
+  so do MMC and BK under their old tickers. SPY is there too (2.06B shares over the month).
+- **Correction to the Fiserv example.** In 2022-03 Fiserv traded as **FISV** (in `bars_1m` and in the 1 s
+  bars). FI has nothing that month. It traded as FI only from 2023 to 2025, and is FISV again today. So
+  Massive keeps history under the ticker **in use at the time**, not under "the old ticker". `--from-bars`
+  handles this: it takes the tickers that actually traded in the range.
+- **Finalize on the Mac** (a benchmark on a `/tmp` copy of the staged files, Docker, 16 CPUs):
+
+  | zstd level, threads | time | size | B/bar | CPU s |
+  | --- | --- | --- | --- | --- |
+  | 19, 3 (the NAS: 613 s) | — | 2.40 GB | 15.7 | 2,328 |
+  | 19, 14 | **92 s** | 2.40 GB (byte-identical to the NAS files) | 15.7 | 560 |
+  | 9, 3 | 83 s | 2.53 GB | 16.5 | 132 |
+  | 3, 3 | 73 s | 2.64 GB | 17.2 | 101 |
+
+  - The Mac finalizes a month ~6.7× faster than the NAS at the same settings.
+  - Over SMB, copying the 5,730 staged files to the Mac ran at ~6 MB/s (small files). One 100 MB day file
+    reads at ~56 MB/s, and a 500 MB write runs at ~37 MB/s.
+  - So "NAS fetch, Mac finalize" isn't worth it. If the Mac does the work, it should fetch, finalize
+    locally and copy only the finished day files to the NAS.
+
+### 2026-11 1-second backfill, full runs D1, D2, D1b (NAS, 2026-11-06 21:56 → 2026-11-07 03:46 PT)
+Tags: `tag-survivorship`, `tag-volume`. Runbook: nas/README.md Plan steps 3–4.
+
+| run | range | stocks | sessions | bars | on disk | B/bar | wall time | failures |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| D1 | 2021-11-08 → 2024-10-18 | 6,882 (`--from-bars`) | 741 (13 quarters) | 4.02B | 62.3 GB | 15.5 | 5 h 26 min | 0 |
+| D2 | 2026-10-19 → 2026-11-06 | 5,207 + SPY (today's list) | 15 | 107.2M | 1.80 GB | 16.8 | 9 min | 0 |
+| D1b `--extra` | 2024-10-21 → 2026-10-16 | 6,297 traded, 1,092–2,064 fetched per quarter | 499 | 184.9M | 2.83 GB | 15.3 | 14 min | 0 |
+
+- **The NAS is finalize-bound.** A full quarter fetches in 320–420 s (32 workers, ~12k calls, ~4.5 GB on the
+  wire) and finalizes in 1,300–2,030 s (zstd-19, 3 threads). Peak RSS 3.7 GB.
+- **The estimate was close:** ~77 GB and ~5.5 h planned; 62 GB and 5.4 h measured.
+- **D1b, the stocks the existing two years missed:** 2,064 of 6,297 in 2024-Q4, falling to 1,092 in 2026-10, as the
+  traded-then list converges on today's. They add 184.9M bars, **6.2% on top of** the 3.00B already there for those 499 days
+  (e.g. 2025-06-02: 529k extra next to 5.57M).
+- **SPY 1 s now covers every day from 2021-11-08:** in the D1 and D2 day files, and through the `.extra` files
+  for 2024-10-21 → 2026-10-16 (checked 2022-12-01, 2025-06-02, 2026-10-20).
+- **Total `massive_rest`:** 1,255 day files + 499 extra files, 119 GB, 2021-11-08 → 2026-11-06 with no gaps.
+- **D3** (`sourcing-py market fetch`, Mac, 14 s): `out/market/` spy_daily 1,255 rows, spy_1m 1.05M rows (23 MB),
+  spy_dividends 94 (2003 → 2026-09-18), spx_daily 5,457 (2005-03-01 → 2026-11-05).
+
+### 2026-11 SPY vs SPX: scale, drift and index data (checked 2026-11-06)
+Tags: `tag-survivorship`, `tag-price`. Rule in [intraday-features.md](intraday-features.md) §4.
+
+**Data:** SPX closes from `docs/transient/spx-history.csv` (2005-03-01 → 2026-11-05); SPY daily closes and
+dividends from Massive (`/v2/aggs/ticker/SPY/range/1/day`, `/v3/reference/dividends`).
+
+| date | SPX | SPY | SPY ÷ SPX | SPX day | SPY day |
+| --- | --- | --- | --- | --- | --- |
+| 2026-11-02 | 7,541.40 | 752.10 | 0.09973 | | |
+| 2026-11-03 | 7,568.92 | 754.35 | 0.09967 | +0.36% | +0.30% |
+| 2026-11-04 | 7,688.62 | 766.81 | 0.09973 | +1.58% | +1.65% |
+| 2026-11-05 | 7,353.73 | 733.00 | 0.09968 | −4.36% | −4.41% |
+
+- **SPY is not SPX ÷ 10.** The ratio is 0.0997 and drifts down with SPY's fee and its dividends. SPY ex-dates:
+  2025-12-19 $1.99, 2026-03-20 $1.80, 2026-06-18 $1.90, 2026-09-18 $1.89 (~0.25% each). On those days SPY
+  opens lower by the dividend and SPX doesn't.
+- **Daily moves differ by a few bp** even on ordinary days (11-03: +0.36% vs +0.30%), because of the closing
+  prints: the SPX close is the index's close, SPY's close is its own auction.
+- **Example of the mistake to avoid.** 2026-11-06 10:00, SPY 740.00 and SPX 7,423:
+  - `spy_mv` = ln(740/733) = +0.95%;
+  - SPX's own move = ln(7,423/7,353.73) = +0.94%;
+  - but SPY × 10 against SPX's close = ln(7,400/7,353.73) = +0.63%, a 0.3% fake move.
+- **Index data:**
+  - `I:SPX` reference = 200 (feed CboeGlobalIndicesMain);
+  - aggregates (day, minute), `/prev`, `/v1/open-close` and `/v3/snapshot/indices` = 403 "not entitled". The
+    index data needs the Indices subscription on the account;
+  - SPY 1-second (2026-11-03) = 200;
+  - SPY 1-minute 2021-11-01 = 403 "doesn't include this data timeframe" (before the 5-year edge).
+- **Rebuilding SPX from its members isn't reliable:** it needs the historical membership, float shares and
+  S&P's divisor.
+- **Decision:**
+  - SPY is the minute- and second-level market input;
+  - the SPX file is the daily input;
+  - each is a % change against its own reference;
+  - intraday SPX (E*TRADE) is a monitor column only.
+- **Checked in S0 (2026-11-06): `adjusted=true` does not adjust dividends.** SPY day bars 2026-09-15 → 09-22
+  are identical with `adjusted=true` and `false` (splits only). So `spy_gap` adds the dividend back itself.
+- **The add-back works (5 years, 2021-11-09 → 2026-11-05, 1,253 days, 20 ex-dates).** Gap = ln(open ÷ previous
+  close); SPY's with the dividend ÷ the previous close added back on ex-dates; SPX's from the SPX file:
+
+  | days | \|raw SPY gap − SPX gap\| median / p90 | \|`spy_gap` − SPX gap\| median / p90 | close-to-close \|SPY − SPX\| median |
+  | --- | --- | --- | --- |
+  | ordinary (1,233) | 7 / 26 bp | same (no dividend) | 2.5 bp |
+  | ex-dividend (20) | 41 / 74 bp | 16 / 38 bp | 3.9 bp |
+
+  Correlation of `spy_gap` with the SPX gap: 0.984 on ordinary days. Ex-dates (bp, raw → `spy_gap` vs SPX):
+  2026-09-18 −17 → +8 vs +25; 2026-06-18 +91 → +117 vs +90; 2026-03-20 −50 → −23 vs −18; 2025-12-19 +2 → +31
+  vs +26. The opens differ more than the closes because SPY's open is its first trade at 09:30 while SPX's open
+  is computed as its members open over the first minutes.
+- **The SPX file's opens are usable from 2014 on.** The share of days whose open equals the previous close is 96%
+  in 2005, 26% in 2012–2013, and ≤ 0.4% (one day a year at most) from 2014. All 1,280 sessions 2021-10-01 →
+  2026-11-05 are present, matching the XNYS calendar. Volume is 0 before 2012.
+- **Correction (2026-11-06):** the plan's test "`spy_gap` on 2026-09-18 ≈ 0" assumed SPX opened flat that day;
+  it opened +0.25%. The test is now `spy_gap` ≈ the SPX gap (within ~40 bp on ex-dates, p90).
+
+### 2026-11 How many seconds have a trade: 1-second bar sparsity (checked 2026-11-06, `agg_1s` massive_rest)
+Tags: `tag-survivorship`, `tag-volume`.
+
+- `agg_1s` has a row only for a second with a trade.
+- Liquid stocks (≥ $20M a day) trade in a **median 9% of the 23,400 session seconds**: about 5 seconds a
+  minute (p10 ≈ 2, p90 ≈ 17).
+- The 1 s bars hold ~73% of the day's volume (the auctions aren't in them; 2026-10-19 measure, see
+  `massive-1s-backfill`). Minute bars hold ~84% (the daily `v` is ~19% above Σ minute bars, 2026-10-15).
+  Against the minute bars directly, 09:30–16:00, the 1 s bars hold **96%** (2022-03 trial, below).
+- **So second-level features use the held price:** every second counts at the last trade's price, traded or
+  not. Time at price and the poll grid are built that way. A feature that needs a trade in every second
+  would be empty about 91% of the time.
+- **Example.** Trades at 10:00:05 ($100.01) and 10:00:09 ($100.03): seconds :06–:08 hold $100.01, so 4 s
+  count at $100.01 and the rows for :06–:08 don't exist in `agg_1s`.
+
 ## Intraday experiments
 
 Tags: `tag-ml-intraday`
@@ -1771,6 +1948,115 @@ Tags: `tag-ml-intraday`
 | **Day-bootstrap CI** | The 95% range of a result when whole days are resampled with replacement (2,000 draws). Days, not rows, because stocks on one day move together | skill +2.1% [+0.4, +3.9]: clear of 0 |
 | **Touch** | The price reaches the level at any time within the window (bar high ≥ level), not at the window's end | |
 | **Recommendation (probe count)** | The first minute a (stock, direction, level, window) has a calibrated P(touch) ≥ 60%. It can't fire again for the same key until its window ends. "Came true" = the level was touched within the window | |
+
+### 2026-11 Intraday v2 design decisions (2026-11-06, no run)
+Tags: `tag-ml-intraday`. Full dictionary: [intraday-features.md](intraday-features.md); MODEL-STRATEGY Q40.
+
+What P1 and the probe taught, and what v2 changes because of it:
+
+| finding | v2 decision | example |
+| --- | --- | --- |
+| The last close sits at the bid or ask; a target measured from it shows a fake direction edge (P1: rank IC +0.034 → +0.007) | entry P₀ = the next minute's open (the first trade after the decision second on the 1 s tier); it is only the zero line | 10:14 closes $272.70 at the ask, 10:15 opens $272.66 → P₀ = $272.66 |
+| A single touch (±0.5σ in 60 min) mixes size and timing | targets = volume pockets above / below P₀ over 5 disjoint duration bins, with concentration and rate; nothing at an exact minute | b1: bulge 0.065σ, sag 0.0275σ, cm_up 0.108σ |
+| Volume balance on minute summaries has no edge (mass_up AUC 0.506 vs a base of 0.504) | new second-level inputs: resistance (volume per 1% move), time at price | `res_bal` = ln(4.0/1.5) = +0.98 |
+| Summaries of the minute series (5 / 15 / 60 min windows) may hide shapes | a sequence model over the whole day (≤ 390 steps), Phase 1; the GBM is Phase 2 | |
+| SPY ÷ SPX is 0.0997 and drifts | separate columns, each a % change against its own reference | `spy_mv` +0.95% vs SPY × 10 → +0.63% |
+| A raw score can look good without skill | every score against the realised targets **and** against climatology and persistence on the same rows | Brier 0.184 vs 0.250 → skill +26% |
+
+**Found while writing the S1 code (2026-11-07, no run yet):**
+
+| finding | decision | example |
+| --- | --- | --- |
+| pytorch-forecasting's `TimeSeriesDataSet` makes one window per decision and can't take row-level targets. With a whole-day encoder that means re-reading up to 390 minutes for each of ~74M decisions | a thin TFT built from the library's blocks; one causal pass per stock-day, read at each decision minute | 77 decisions a day share one pass instead of 77 |
+| The 09:30 pre-market cut isn't known live before 09:45, so a single day-level static would leak into 09:31–09:44 | `pm_vwap` / `pm_rvol` as per-minute columns: the 09:15 cut for minutes 0–14, the 09:30 cut from minute 15 | a 09:40 decision sees only pre-market to 09:14 |
+| The whole universe as float16 sequences is ~2.5 GB a month, and the targets ~19 GB at float32 | frames = the day's top 1,000 eligible stocks (the live stand-in); targets kept as float16 | full build ≈ 74 GB in /tmp; fold B training targets ≈ 4 GB |
+
+### 2026-11 Intraday v2 IA1: the whole-day TFT predicts the pocket shape (centres of mass, activity), not the direction (run 2026-11-07, 2 h 6 min)
+Tags: `tag-ml-intraday`. Run `ml/runs/intraday_ft/20261107-141854-ft-B` (report.md there); design
+[intraday-features.md](intraday-features.md); MODEL-STRATEGY Q40. Fold B: train 2023-01 → 2025-12 (last 2 months =
+early stop), test 2026-01 → 10: 1.33M decisions (every 15 min on 25% of the stock-days), 205 days. 15 epochs of
+1000 steps, best validation at epoch 13 (0.978 → 0.907, flat from epoch 11).
+
+**1. Direction: nothing, the go rule fails on fold B.**
+
+| measure, 2026 test | model | climatology | persistence |
+| --- | --- | --- | --- |
+| rank IC of predicted net60 (P50) vs realised | **+0.000** [−0.005, +0.005] | 0 by construction | +0.005 [+0.002, +0.009] |
+| P(mass_up60 > 50%): Brier skill | +0.0% [−0.1, +0.1] vs clim | | −0.1% [−0.1, −0.0] vs pers |
+| P(mass_up60 > 50%): AUC | 0.496 | 0.502 | 0.502 |
+| top-20 minus bottom-20 realised net60 | +0.002σ [−0.000, +0.004] | | |
+| race, up vs down given one side is hit (AUC) | 0.508 | | 0.506 (sign of the past 15 min) |
+
+- The model's P(mass_up60 > 50%) stays between 0.489 and 0.511 (P10–P90): it learnt that the side is a coin flip.
+- Per bin, the net rank IC is +0.005 at b1 (0–5 min) and −0.003 … −0.004 at b2–b5: at most a trace of the
+  short-term reversal, and smaller than the persistence rule's +0.005.
+- The 1 s tier (resistance, time at price, zig-zag), SPY / sector moves and the daily forecast shape didn't change
+  P1's answer (rank IC +0.007 there, on minute summaries and a GBM).
+- Slices: mega caps +0.022 [+0.003, +0.041] (persistence +0.013 [−0.002, +0.028]; 81 stocks, one of ~20 slices,
+  so it may be chance; fold A will tell). The small-cap +0.200 is 2 days with ≥ 5 small caps at a minute: noise.
+
+**2. Size and activity: real skill, as in P1.**
+
+| target | pinball skill vs climatology | vs persistence |
+| --- | --- | --- |
+| `rvol` (bin volume ÷ normal), b1 … b5 | **+18.5 … +23.0%** | |
+| `cm_up` / `cm_dn` (where the volume concentrates) | +1.4 … +5.0% | |
+| `pi_*` (pocket intensity), b1–b4 | +2.3 … +4.1% | |
+| `bulge` / `sag` / `net`, b2–b5 | +0.6 … +2.1% | +31 … +46% |
+| `mass_up` / `occ_*` (which side) | −0.3 … −0.7% | +51% |
+| race "either side hit" (AUC) | 0.83 | |
+
+- How busy the next hour is and how far the volume spreads are predictable; which side it trades on isn't.
+- Persistence is a weak baseline for sizes (one repeated value as every quantile), so the +31 … +65% there says
+  little; climatology is the bar that counts.
+- Quantile coverage: `bulge` / `sag` P10–P90 hold 56–78% of outcomes (target 80%): the bands are too narrow.
+
+**3. Two readout defects found (they don't touch the direction verdict):**
+- **P(bulge60 ≥ 0.5σ), P(sag60 ≥ 0.5σ):** Brier skill −7.7% / −7.1%. Real rate 1.7%, but every prediction is
+  ≥ 0.05: `cdf_at` reads the probability off the 5 quantiles and puts 5% beyond P90 by design, so it can't say
+  less than 5% for a rare event. Fix before S5: a direct head, or a tail fitted past P90.
+- **The race AUC 0.794** in the report is "up first vs not", and 79% of rows are "neither by the close", so it
+  measures activity. Split into up vs down it is 0.508. The report should show both.
+
+**4. Training notes.** ~0.45 s a step, 7.5 min an epoch, scoring 12 min. Three epochs had a high training mean
+(1.42, 1.59; a 50-step window hit 3.0) from single batches with huge `pi_*` values (up to ≈ 3·10⁴); gradient
+clipping held it and validation kept falling. Capping `pi_*` is an option for later runs.
+
+**5. Pocket shape: calibration and ranking** (added 2026-11-07 after the go rule changed, MODEL-STRATEGY Q41;
+report.md "Pocket shape"). "Hits" = share of outcomes at or below each predicted quantile (ideal 0.10 / 0.25 /
+0.50 / 0.75 / 0.90). Rank IC = Spearman across the stocks at a minute between the predicted P50 and the outcome.
+
+| target, b1 … b5 | hits at P10 / P25 / P50 / P75 / P90 | P10–P90 coverage (clim) | rank IC of P50 | climatology's |
+| --- | --- | --- | --- | --- |
+| `cm_up` / `cm_dn` | 0.04–0.09 / 0.19–0.25 / 0.48–0.51 / 0.74–0.77 / 0.89–0.92 | 81–87% (80%) | **+0.27 … +0.30** | +0.12 … +0.17 |
+| `rvol` | 0.04–0.07 / 0.13–0.20 / 0.40–0.46 / 0.68–0.71 / 0.88–0.90 | 80–87% (82–86%) | **+0.54 … +0.61** | +0.07 … +0.13 |
+| `bulge` | 0.29–0.34 / 0.37–0.42 / 0.52–0.55 / 0.76–0.77 / 0.90–0.91 | **56–60%** (89%) | +0.10 … +0.11 | +0.06 … +0.07 |
+| `sag` | 0.13–0.27 / 0.33–0.38 / 0.48–0.53 / 0.76–0.78 / 0.91–0.92 | **69–78%** (89%) | +0.10 … +0.11 | +0.03 … +0.06 |
+
+- The centres of mass are calibrated and rank stocks about twice as well as climatology; `rvol` five times as
+  well, with a slight high bias (P50 holds 40–46%).
+- `bulge` / `sag` fail at the bottom only: 22–31% of bins have no volume on that side (exactly 0), and the
+  quantile loss can't put P10 on a point mass, so it sits just above 0 (median 0.002σ). The upper quantiles are
+  fine.
+- **Fixed in the readout, no retrain (2026-11-07):** quantiles below 0.01σ read as 0. Then P10 is 0 on almost
+  every row, the "below P10" share is 0.00 and "at or below" is 0.22–0.32. That's the zero share, so the 10%
+  lies inside the tie, as it should. P10–P90 coverage becomes 59–69% strictly inside and 90–94% counting the
+  zeros, against 89% for climatology. Pinball skill vs climatology:
+
+  | | b1 bulge | b1 sag | b2–b5 bulge / sag |
+  | --- | --- | --- | --- |
+  | before | −1.5% | −3.0% | +0.6 … +1.8% |
+  | after | **+1.1%** | −0.9% | **+1.8 … +2.1%** |
+
+  Rank IC is unchanged at +0.10 … +0.12. The 0.01σ threshold was picked on fold B, so fold A is the check.
+- **Rare events fixed the same way:** `cdf_at` now uses exponential tails past P10 / P90, not a flat 5%.
+  P(bulge60 > 0.5σ) has a mean p of 0.019 against a real rate of 0.017; Brier skill went −7.7% → +2.5%, AUC 0.86.
+  P(sag60 > 0.5σ) went −7.1% → +2.6%.
+
+**Consequence.** Under the original go rule (direction skill clear of 0) fold B fails by a wide margin: the CI is
+±0.005 around 0. **The user changed the go rule the same day (Q41):** direction isn't required, the pocket shape
+is. On that rule fold B passes for `cm_up` / `cm_dn` and `rvol`. `bulge` / `sag` pass b2–b5 after the zero-readout
+fix; b1 `sag` is still −0.9%. Fold A (2025) is the check that it holds.
 
 ### 2026-11 Intraday P1 bounce check: the d = 0 direction edge was bid–ask bounce (run 2026-11-01, 56 min)
 Tags: `tag-ml-intraday`. Plan: [live-recommendations-plan.md](live-recommendations-plan.md) P1. Script:

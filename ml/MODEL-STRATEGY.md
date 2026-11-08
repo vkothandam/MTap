@@ -19,6 +19,7 @@ changes; details and CIs are in [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-m
 | research base (TFT) | **R1c** `20261028-233305Z-return-4438sym` | R0 + session shape + after-hours | skill 27.0%, P5–P95 88.4%; 0.58% better than R0 (CI clear), most on earnings days; R7 (HGB) now beats it at night |
 | intraday handoff | R0 `20261028-030847Z-return-4438sym/handoff.parquet` | | to rebuild from R1c |
 | intraday (Step 0 probe, 2026-11-01) | `ml/scripts_intraday_probe.py`, HGB, no saved model | all input groups, d = 0 vs d = 15 | 2026: touch ±0.5σ/60m skill +6.3% (size: real); direction ≈ 0: at d = 15, and at d = 0 once bid–ask bounce is removed (P1, 11-01: rank IC +0.034 → +0.007, top-20 +0.41σ → +0.05σ). No intraday direction model; live recs use base rates (`baseline.climatology`); Q38 |
+| intraday v2 IA1 (fold B, run 2026-11-07) | `ml/runs/intraday_ft/20261107-141854-ft-B`: thin TFT over the whole day's 1-min + 1 s series, `ml/intraday_ft/` | schema v2, [docs/intraday-features.md](../docs/intraday-features.md) | **Pocket shape (the go rule since Q41, 2026-11-07): passes on 2026** for the centres of mass and activity: `cm_up` / `cm_dn` rank IC +0.27 … +0.30 (climatology +0.12 … +0.17), pinball skill +1.4 … +5.0%, calibrated (coverage 81–87%); `rvol` rank IC +0.54 … +0.61 (clim +0.07 … +0.13), skill +18.5 … +23.0%. `bulge` / `sag` +1.8 … +2.1% in b2–b5 after the zero-readout fix (b1 sag −0.9%); rare-event readouts fixed (P(bulge60 > 0.5σ) Brier +2.5%, AUC 0.86). Direction (record only): none, net60 rank IC +0.000 [−0.005, +0.005], AUC 0.496. Fold A (2025) + ablations running; LEARNINGS "Intraday v2 IA1"; Q40, Q41 |
 
 **Goal (user, 10-29, Q35):** one model for every forecast at and after 09:30, with full
 pre-market; **the night forecast is dropped**. Ranked first by how well the quantiles hit their
@@ -1176,7 +1177,7 @@ The data volume comes mostly from the third, not the first. Sampling decisions s
 - The per-second detail need not be lost: **summarise each minute's seconds into extra columns** from the 1-second bars (2024-10-21 on), for example the busiest second's share of the minute's volume, the number of seconds with trades, the 1-second volatility, and where in the minute the volume fell. That is "the best of both worlds": a 1-minute grid that still knows whether a minute's volume came in one burst or evenly.
 - Multi-scale windows (Q33 item 5) give the model 5, 15, 30 and 60-minute views at every step without coarser grids.
 
-**Live must match training.** Training reads REST minute bars; live would build minutes from the WebSocket's 1-second bars. The 1-second bars hold about 73% of daily volume, and the minute bars' share isn't checked. Compare minute bars with summed 1-second bars on the same days before training. If they differ, build the training minutes from the same source as live, or rescale.
+**Live must match training.** Training reads REST minute bars; live would build minutes from the WebSocket's 1-second bars. The 1-second bars hold about 73% of daily volume, and 96% of the minute bars' 09:30–16:00 volume (checked 2026-11-06 on 2022-03, LEARNINGS). Compare minute bars with summed 1-second bars on the same days before training. If they differ, build the training minutes from the same source as live, or rescale.
 
 **Size and memory, rough estimates:**
 - 1,500 liquid stocks × 390 minutes × ~1,255 sessions ≈ 730M stock-minutes. That's too much for pytorch-forecasting's in-memory dataset: today's 14.4M rows took 30 GB.
@@ -1405,7 +1406,11 @@ new kind of input (order book, 1 s flow, news), not more minute-bar features.
 
 **Market cap on recommendations.** As of the previous close: shares outstanding from Massive's ticker overview (quarter-end snapshots in `out/shares`; weighted shares, all classes, else `share_class_shares_outstanding`) × the previous close. Bands: mega ≥ $200B, large $10–200B, mid $2–10B, small $250M–2B, micro < $250M. Sent on every MBin RECOMMENDATION.
 
-### Q39 (2026-11-02, open, brainstorm): direction failed on GBM summaries. Does a sequence model on raw 1-min bars, after a GBM shortlist, deserve a test?
+### Q39 (2026-11-02, resolved 2026-11-06 by Q40): direction failed on GBM summaries. Does a sequence model on raw 1-min bars, after a GBM shortlist, deserve a test?
+
+**Resolved (2026-11-06):** yes, but not as a shortlist add-on. Q40 tests a sequence model on its own (Phase 1), on all
+liquid stocks, with new second-level inputs and pocket targets; the GBM comes after (Phase 2). The notes below stay as
+the record.
 
 - **What the GBM saw:** hand-built summaries of the 1-min series (returns over 5 / 15 / 60 min and since the open,
   rvol, range, close location, VWAP deviation, volume at price, signed flow, market / sector), not the raw bar
@@ -1425,3 +1430,123 @@ new kind of input (order book, 1 s flow, news), not more minute-bar features.
   (282k); CPU is 1.5–2.3× slower. pytorch-forecasting's data prep adds ~75 ms per 1,000 symbols. So compute is not
   the limit even every 10 s for the whole market; the limit is fresh data: E*TRADE polls ~1,028 symbols (606 at
   ~2 s, 422 at ~20 s), and Massive's full market is 15 min old.
+
+### Q40 (2026-11-06): Intraday v2. A TFT on the whole day's 1-minute and 1-second series, predicting the volume pockets above and below the entry over durations. What are the inputs and targets, and how is it tested?
+
+**Decided with the user, 2026-11-06.** Every column, formula and worked example:
+[docs/intraday-features.md](../docs/intraday-features.md). Data facts behind it: LEARNINGS `tag-survivorship`,
+`tag-price` (SPY vs SPX), `tag-volume` (1 s sparsity), `tag-ml-intraday` ("Intraday v2 design decisions").
+
+- **Phases.** Phase 1 = the TFT (pytorch-forecasting), or an equivalent sequence model if it's too slow or unstable
+  (our own thin TFT, else PatchTST), on the same tensors. Phase 2, after Phase 1's report = the GBM twin, the input
+  ladder, the GBM track-record overlay, and TFT vs GBM.
+- **Targets: pockets over durations, not points.** For bins 0–5, 5–15, 15–30, 30–60 and 60 → close minutes after the
+  entry:
+  - bulge / sag = volume above / below the entry × distance (σ);
+  - mass_up;
+  - concentration cm_up / cm_dn = the centre of mass of that volume;
+  - net = bulge − sag (the direction readout);
+  - rvol;
+  - time above / below;
+  - the rate: intensity per bin, the time to half the pocket (t50), the peak bin; burst if t50 ≤ 10 min,
+    sustained if ≥ 30.
+
+  Each target is learnt as P10–P90. Entry = the next minute's open, because the last close sits at the bid or ask
+  (P1's bounce).
+- **Inputs, four chunks:**
+  - **0, the daily forecast as five shape numbers** (median, IQR, 90% width, skew, P(up)) plus where the price and
+    VWAP sit in its band. The 09:30 run until 09:44, the 09:45 run after. Walk-forward only, so from 2023-01-23.
+  - **1, the stock's day:**
+    - minute OHLC / VWAP and rvol;
+    - `vol_used` = volume so far ÷ a typical day (the user's definition), `vol_pace`;
+    - resistance = the volume per 1% up / down move (tick rule on seconds);
+    - time at price (value area, POC, lingering at the high / low, TWAP);
+    - a causal zig-zag in σ₁ₘ units (k = 2, 5).
+  - **2, sector and market:** cap-weighted leave-one-out, caps limited to 25%, over the live set; SPY.
+  - **3, yesterday and pre-market:** cuts at 09:15 / 09:30, the same in training and live; SPX daily.
+- **Encoder = the whole day since 09:30** (up to 390 steps; 120 and 60 only as ablations), with pre-market and
+  previous-5-session digests as static inputs.
+- **SPY and SPX** are separate columns, each a % change against its own reference, because SPY ÷ SPX = 0.0997 and
+  drifts with fees and dividends. `spy_gap` adds the dividend back on ex-dates. Intraday SPX (E*TRADE) is a monitor
+  only: there's no history to train on (`I:SPX` is 403 on this plan).
+- **Overlay:** sector, industry and symbol as maskable embeddings. Every test row is scored 4 ways (none / sec / ind /
+  all) into the run file, so the dashboard toggles between stored columns.
+- **Testing:** the realised targets are computed first and stored with each row; the model predicts blind; the scores
+  are measured against the realised values.
+  - Folds: B (train to 2025-12, test 2026-01 → 10) and A (train to 2024-12, test 2025).
+  - Skill vs climatology and vs persistence, both scored on the same realised targets.
+  - **Go only if the direction skill (net rank IC, mass_up AUC) has a day-bootstrap CI clear of 0 vs both baselines
+    on 2026 and holds on 2025.** Size skill alone doesn't count.
+- **Data first:**
+  - the 1 s backfill 2021-11 → 2024-10 on the NAS, with a universe of the stocks of the time
+    (`prepare --from-bars`: what traded in `bars_1m` over the range);
+  - a fill for the renamed and delisted stocks missing from the existing two years;
+  - a REST rerun for 2026-10-17 → now;
+  - SPY minute and 1 s.
+- **Retraining:** the daily recalibration needs no intraday retrain. A new daily model → rebuild Chunk 0, re-score,
+  retrain only if the skill drops outside its CI.
+- **Progress (2026-11-07):**
+  - S0 data is done.
+  - S1 code and tests are done (`ml/intraday_ft/`; the commands `intraday-ft-build`, `intraday-ft`,
+    `intraday-ft-report`). Not built or trained on real data yet.
+  - **The model is a thin TFT of our own**, from pytorch-forecasting's building blocks. The library's dataset
+    can't take a whole-day encoder with many decisions per day, or row-level targets.
+    - It reads each stock-day once, causally (LSTM + attention masked to earlier minutes), and takes its state at
+      every decision minute.
+    - The 5 bins come out as decoder steps.
+  - **Training frames** = the day's top 1,000 eligible stocks by prior dollar volume, as the live stand-in
+    (≈ 966k stock-days, ≈ 74 GB in /tmp).
+  - Full details: [intraday-features.md](../docs/intraday-features.md) §6–7.
+  - S2 one-month check (2026-01) passed: 3 min a month on 8 processes (was ~6 h on one core), 1 s data on every
+    stock-day; the full build is ≈ 2½ h (docs/STATUS.md).
+  - 2026-11-07: the full build is running; S3 is chained after it: IA1 (fold B, test 2026), then IA1A (fold A,
+    test 2025), then the fold-B ablations IA1-noS, IA1-enc120, IA1-enc60 (user OK; docs/STATUS.md).
+  - 2026-11-07 14:18: build done (46 months, 83 GB); two timing-check bugs fixed (NaN loss, report on undefined
+    targets; docs/intraday-features.md change log); IA1 training. Encoder ablations made ~5× cheaper (same
+    output, test), so they keep IA1's budget.
+  - 2026-11-07 16:24: **IA1 done: no direction edge on 2026** (net60 rank IC +0.000 [−0.005, +0.005]; mass_up AUC
+    0.496), size skill real (rvol +18.5 … +23.0% vs climatology). The go rule fails on fold B. Fold A started
+    16:24 (ETA ≈ 18:30), then the ablations. Two readout defects to fix before S5: P(bulge / sag ≥ 0.5σ) floored
+    at 5% by the quantile read-off (Brier −7%), and the race AUC (0.794) measures activity, not side (0.508).
+    Details: docs/LEARNINGS.md "Intraday v2 IA1".
+  - 2026-11-07 16:40: **go rule changed by the user (Q41):** direction not required, the pocket shape decides. On it
+    IA1 passes fold B for `cm_up` / `cm_dn` and `rvol`; `bulge` / `sag` need a better lower tail. Fold A decides.
+
+### Q41 (2026-11-07): IA1 has no direction edge. Must the intraday model predict the direction?
+
+**The question (user, 2026-11-07).** "I do not want the absolute direction to be predicted, it is also ok for the
+direction to be in anyways, as long as the pocket space predicted along with highs/lows which act as the center of
+mass is within good accuracy, that is good enough for me. Does this change anything?"
+
+**Answer: yes, it changes the go rule, and on that rule IA1 passes its first fold.**
+- **New go rule** (docs/intraday-features.md §6.6): direction isn't required. The pocket shape decides: how much
+  volume sits above and below the entry (`bulge` / `sag`), how far out it concentrates (`cm_up` / `cm_dn`, the
+  "high" and "low" centres of mass), and how busy each bin is (`rvol`). Each has to beat climatology on 2026,
+  rank the stocks better than climatology does, be calibrated, and hold on 2025.
+- **IA1 on fold B (2026)**, from the rebuilt report (`ml/runs/intraday_ft/20261107-141854-ft-B/report.md`,
+  "Pocket shape"):
+
+  | target (b4 = 30–60 min) | pinball skill vs climatology | rank IC of P50: model | climatology | P10–P90 coverage | P50 holds |
+  | --- | --- | --- | --- | --- | --- |
+  | `cm_up` (where the volume above concentrates) | +4.9% [+4.5, +5.3] | **+0.274** | +0.144 | 82% | 49% |
+  | `cm_dn` (below) | +4.8% [+4.3, +5.3] | **+0.266** | +0.140 | 83% | 51% |
+  | `rvol` (bin volume ÷ normal) | +23.0% [+22.1, +23.7] | **+0.608** | +0.126 | 83% | 43% |
+  | `bulge` (volume above × distance) | +1.3% [+0.9, +1.5] | +0.098 | +0.058 | **56%** | 53% |
+  | `sag` (below) | +1.8% [+1.4, +2.2] | +0.096 | +0.040 | **78%** | 51% |
+
+  Every bin says the same (b1–b5: `cm` rank IC +0.27 … +0.30 vs climatology +0.12 … +0.17; `rvol` +0.54 … +0.61
+  vs +0.07 … +0.13).
+- **What passes:** the centres of mass and the activity. They're calibrated, and they rank stocks about twice as
+  well as climatology (`rvol` five times as well).
+  Example: at 10:30 the model says stock X's volume above the entry will sit around +0.11σ in 30–60 min (P10
+  +0.02σ, P90 +0.33σ); on a σ = 2% $100 stock that's ≈ $100.22, with an 80% band of $100.04 … $100.66. It
+  doesn't say whether more volume trades above or below.
+- **What fails calibration:** `bulge` / `sag` bands are too narrow at the bottom. About 25% of bins have no volume
+  above the entry at all (bulge exactly 0), yet the model's P10 is above 0 there, so 29–34% of bulge outcomes (13–27% of sag) fall below
+  P10 (should be 10%). Fix: a "no volume on this side" probability next to the quantiles, or a P10 floored at 0.
+- **Fixed the same day, in the readout (no retrain):**
+  - `bulge` / `sag` quantiles below 0.01σ read as 0. The bands then hold the zeros (90–94% coverage), and the
+    pinball skill rises to +1.8 … +2.1% in b2–b5 (b1 `bulge` +1.1%, b1 `sag` still −0.9%).
+  - Rare events get exponential tails: P(bulge60 > 0.5σ) Brier skill −7.7% → +2.5%, AUC 0.86.
+- **Next:** fold A (2025, running) has to show the same (it also checks the 0.01σ threshold picked on 2026); then
+  S5.

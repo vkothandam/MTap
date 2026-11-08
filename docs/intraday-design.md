@@ -1,5 +1,9 @@
 # Intraday model: design
 
+**v2 (2026-11-06):** the next model is a sequence model (TFT) on pocket targets over durations, with the GBM
+as Phase 2. Its columns, targets and tests: [intraday-features.md](intraday-features.md); decisions: MODEL-STRATEGY Q40.
+This file stays as the record of the Stage A/B design and the Step 0 probe.
+
 Status: design agreed 2026-11-01; Step 0 probe implemented (`ml/scripts_intraday_probe.py`), full build
 not started. Supersedes the predictor part of [intraday-redesign.md](intraday-redesign.md) (the analog
 engine stays as the Space page's "similar moments" view). The old prototype `tft_intraday` is not the
@@ -231,7 +235,8 @@ Nothing is final; MTap's answers are in REVIEW items 1–12.
 
 - **RECOMMENDATION (BUY)** only from Stage B (d = 0). Publish when the stock is on the up list, the
   calibrated P(touch +target within the horizon) ≥ max(our threshold, `hints.min_probability`), the
-  up-first race is above typical, the price expiry trigger has not passed, and trading_state = NORMAL.
+  up-first race is above typical, and the price expiry trigger has not passed. It is sent in every
+  `trading_state` (REVIEW item 12: MBin filters, so its outcomes record what was missed).
   - `score` = calibrated P(target before stop), 0–1, comparable across strategies; the expected move
     in % travels in `inputs`.
   - `probability` = `{value, target_pct, horizon}` (horizon `<n>m`, `close`).

@@ -1,0 +1,91 @@
+Let's make few improvements to the intraday modelling. I want to improve on the input parameters to the intraday, and this time we can evaluate how TFT performs, since the momentum and movements within the day are essential, it is worth exploring both TFT and GBM.  Let's first finalize on the fields prior to getting to implementation steps.The input parameters marked with "Tentative input parameter" needs refinement, which can be done as part of the session.
+
+TFT Model inputs
+For each 1 minute data, lets categorize the inputs in to following logical chunks and their parmeters are given under their logical chunks. 
+
+0. Common
+	 - Volume so far  (May be not relevant since its a time series?)
+	 - Daily quantiles to be condensed.
+	 - current market status
+
+	 - What price delta is appropriate?  from yesterday's vwap or todays projected vwap?
+
+1. Capture momentum strength in each direction
+ 	- volume spent for +1%, -1% price movement.
+ 		For each minute, calculate how much volume was spent in each direction.  For instance, if ∆price is positive or negative compared to the previous second, calculate the following for each direction in that minute.  This will give the volume spent for 1% of price movement. Although not an accurate measure, this is a good enough approximation over longer duration during the day.
+ 			calculate -  (∑∆price * ∆volume) / ∑∆price 
+
+ 	- Minute level OHLC and VWAP - prepare this detail for each minute.
+
+ 	- [Tentative input parameter] Maximum momentum in a each direction, expressed as a %. The challenge is to identify what to ignore as direction change, since in a $300+ stock, it is ok to ignore a slight $.05 movement in opposite direction for a second, when it quickly corrects and keep the momentum for following second. Suggest if this adds value and propose an idea.  The zig zag pattern is essential to identify price movement, but it should not be reduced to too fine grained noisy rendering of chart.
+
+ 	- TWAP i.e ∑∆(price from yesterdays vwap or todays projected?) /∆time . For every minute the ∆time = 60.
+
+ 	- Time spent going in each direction.
+ 		
+
+2. Market move at current position
+	- Market movement 
+		- for the stocks same industry and sector, what is the aggregate movement?  Calculate it in the following manner
+		(∑∆ (Todays Signed Price move from yesterday till the minute end) * Market cap) / ∑(Marketcap)
+
+	- Index Movements - SPX (S&P 500)
+		This can be added to existing watchlist, and used as a movement % for the day
+
+ 	
+ 	- total number of minutes in each direction consecutive?
+ 	- Time spent on specific price also correlate with volume?
+ 	- volume minimum, maximum per minute. 	
+ 
+3. what kind of daily prediction have on intraday movement
+	- From Daily - upward or downward?
+	- yesterdays vwap to close gap
+	- yesterdays close to post market close.
+	- today's pre market open price to market open price
+	- Yesterdays % movement for market macro.
+	- Todays market movement for market macro during market open.
+	- projected vwap for today
+ 
+ 
+GBM Inputs
+1. Time & Volume spent on price.  i.e TWAP and VWAP for the day.
+2. Daily quantiles.
+3. market & index movement until the time.
+4. volume spent for +1%, -1% price movement.
+5. time spent for +1%, -1% movement.
+6. Todays minutes aggregate:  What does the aggregate look like? since its not a series.
+
+1. How to calculate volume spent for +1%, compare each seconds data price difference, if its gone up, calculate the ∑(∆volume * ∆price)/price for each direction this way betwen consecutive seconds.   
+
+2. Max Redirection - how much in one direction before considerable change in direction  **  be specific
+	Longest stretch of positive and negative for the minute.  ignore anything <x%  threshold in opposite direction. Refine x
+
+3. Momentum direction - from daily what is the projected direction for tomorrow. keep close/post market/premarket to know. current price may have less relevance.
+
+4. Market Macro movement within the minute. High, low, open, close, time avg
+	- ETrade nyse, nasdaq, S&P - S&P 500 Wins
+
+5. Minute day-so-far aggregate
+
+
+Goal for TFT 
+1. capture momentum strength in each direction
+
+	 - how fast movement in a direction relative to other direction
+
+2. strength and inclination at current position
+	- close to high/low
+	- distance from projected vwap
+
+3. what kind of daily prediction have on intraday movement
+
+4. what kind of overall market macro impact, does it have on individual symbols.
+
+5. morning momentum ?
+
+
+
+Daily improvs
+1. Overlays based on sector and industries.  Even though universal prediction may be bad, for some symbols or sectors or industries may be more accurate?  Wild swinging symbols may be inaccurate, however more stable and predictable swinging one may be good?
+
+2. 

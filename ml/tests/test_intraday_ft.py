@@ -12,6 +12,7 @@ from intraday_ft import build as B
 from intraday_ft import data as D
 from intraday_ft import features as Fe
 from intraday_ft import profile as Pf
+from intraday_ft import recal as Rc
 from intraday_ft import report as R
 from intraday_ft import targets as Tg
 from intraday_ft import tft as T
@@ -687,6 +688,12 @@ def test_tft_train_score_report_end_to_end(frames):
     assert all(len(p["hits"]) == len(R.TAUS) and all(0 <= a <= b <= 1 for a, b in p["hits"]) for p in shape)
     assert all(0 <= p["cover"][0] <= p["cover"][1] <= 1 for p in shape)
     assert "race_auc_side" in rep["folds"][0] and "Pocket shape" in (rd / "report.md").read_text()
+    rc = pd.read_parquet(fd / "recal.parquet")
+    assert set(rc.target) <= set(T.quantile_names()) and set(Rc.OCOLS) <= set(rc.columns)
+    cl = pd.read_parquet(fd / "clim.parquet")
+    assert (cl.cell == -1).any() and {"q10", "q90", "sigma_cuts"} <= set(cl.columns)
+    cr = pd.read_parquet(fd / "clim_rates.parquet")
+    assert set(cr.event) == set(R.EVENTS) and cr.rate.between(0, 1).all()
     card = (rd / "MODEL.md").read_text()
     assert "label: smoke" in card and "status: done" in card and "rank IC" in card
 
@@ -695,3 +702,28 @@ def test_span_formats_tie_ranges():
     assert R._span([0.10, 0.104]) == "0.10"
     assert R._span([0.0, 0.31]) == "0.00-0.31"
     assert R._span([0.80, 0.913], 100) == "80-91"
+
+
+def test_recal_uses_only_past_sessions_and_fixes_a_level_shift():
+    # 30 sessions x 50 rows; the outcomes run 1.0 above the stored quantiles' level from session 0 on
+    rng = np.random.default_rng(0)
+    day = np.repeat([f"2026-01-{d:02d}" for d in range(1, 31)], 50)
+    base = np.array([-1.28, -0.67, 0.0, 0.67, 1.28])
+    q = np.tile(base, (len(day), 1))
+    y = rng.standard_normal(len(day)) + 1.0
+    days, off, n = Rc.fit(q, y, day, window=20)
+    assert (off[:20] == 0).all() and (n[:20] < 20).all() and (n[20:] == 20).all()
+    assert np.allclose(off[20:, 2], 1.0, atol=0.2)   # the median offset finds the shift
+    qc = Rc.apply(q, off[pd.Index(days).get_indexer(day)])
+    late = day >= days[20]
+    assert abs((y[late] <= qc[late, 2]).mean() - 0.5) < 0.08 and (y[late] <= q[late, 2]).mean() < 0.25
+    # a change to session 25's outcomes moves no offset of sessions <= 25
+    y2 = y.copy()
+    y2[day == days[25]] += 50
+    _, off2, _ = Rc.fit(q, y2, day, window=20)
+    assert np.array_equal(off[:26], off2[:26]) and not np.array_equal(off[26:], off2[26:])
+    # clipped into the target's range and kept in order
+    assert Rc.bounds("mass_up_b2") == (0.0, 1.0) and Rc.bounds("net_b1") == (-np.inf, np.inf)
+    assert Rc.bounds("rvol_b4") == (-np.inf, np.inf) and Rc.bounds("bulge60") == (0.0, np.inf)
+    c = Rc.apply(np.array([[0.1, 0.2, 0.5, 0.8, 0.9]]), np.array([[-0.5, 0.0, 0.0, 0.5, -0.2]]), 0.0, 1.0)
+    assert (np.diff(c) >= 0).all() and c.min() >= 0 and c.max() <= 1

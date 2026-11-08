@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from . import data as D
+from . import recal as Rc
 from . import targets as Tg
 from . import windows as W
 
@@ -68,6 +69,24 @@ def climatology(months, root, targets, n_max=2_000_000, seed=0):
         rates[ev] = {"cell": y.groupby(d.cell).mean(), "all": float(y.mean()),
                      "pers": y.groupby(np.sign(d.pers_net.fillna(0))).mean()}
     return {"cuts": cuts, "q": q, "allq": allq, "rates": rates}
+
+
+def write_clim(fd, clim):
+    """fold_<k>/clim.parquet: the climatology quantiles per cell (cell -1 = every cell) and target,
+    with the tercile cuts; clim_rates.parquet: the event rates per cell. So a reader (the dashboard)
+    can score skill vs climatology on any subset of the rows; cell = _cells()."""
+    q = clim["q"].stack(level=0, future_stack=True).reset_index()
+    q.columns = ["cell", "target", *[f"q{round(t * 100)}" for t in TAUS]]
+    a = clim["allq"].T.reset_index()
+    a.columns = ["target", *[f"q{round(t * 100)}" for t in TAUS]]
+    out = pd.concat([q, a.assign(cell=-1)], ignore_index=True)
+    out["sigma_cuts"] = [list(map(float, clim["cuts"]["sigma"]))] * len(out)
+    out["dvol_cuts"] = [list(map(float, clim["cuts"]["dvol"]))] * len(out)
+    out.to_parquet(fd / "clim.parquet", index=False)
+    r = [pd.DataFrame({"cell": v["cell"].index.astype(int), "event": ev, "rate": v["cell"].to_numpy(float)})
+         for ev, v in clim["rates"].items()]
+    r += [pd.DataFrame({"cell": [-1], "event": [ev], "rate": [v["all"]]}) for ev, v in clim["rates"].items()]
+    pd.concat(r, ignore_index=True).to_parquet(fd / "clim_rates.parquet", index=False)
 
 
 def clim_quantiles(clim, cell, t):
@@ -158,7 +177,14 @@ def score_fold(fd, fold, root, seed=0):
             Qr[:, j] = np.where(Qr[:, j] < DUST, 0.0, Qr[:, j])
     day = f.date.to_numpy()
     cell = _cells(f.minute, f.sigma, f.log_dvol, clim["cuts"])
-    out = {"fold": fold, "rows": len(f), "days": int(f.date.nunique()), "pinball": [], "coverage": {}}
+    # the rolling recalibration (recal.py): offsets from the previous WINDOW test sessions' outcomes,
+    # written for the dashboard and scored below on the sessions that have a full window
+    rc = Rc.fit_fold(Qr, qnames, f, zero_mass=ZERO_MASS, dust=DUST)
+    rc.to_parquet(fd / "recal.parquet", index=False)
+    write_clim(fd, clim)
+    warm = pd.Index(f.date.astype(str)).isin(rc.date[rc.n_days >= Rc.WINDOW].unique())
+    out = {"fold": fold, "rows": len(f), "days": int(f.date.nunique()), "pinball": [], "coverage": {},
+           "recal": {"window": Rc.WINDOW, "rows": int(warm.sum()), "days": int(f.date[warm].nunique())}}
     # pinball skill per quantile target vs climatology and (bin targets with a twin) persistence
     for j, t in enumerate(qnames):
         y = f.get(f"real_{t}")
@@ -186,6 +212,15 @@ def score_fold(fd, fold, root, seed=0):
             row["clim_coverage"] = float(((y >= c[:, 0]) & (y <= c[:, -1]))[ok].mean())
             row["ic"] = rank_ic(f, Qr[:, j, 2], y)
             row["clim_ic"] = rank_ic(f, c[:, 2], y)
+            # the same after the recalibration, on the warmed-up sessions (raw skill on those rows too)
+            qc = Rc.apply(Qr[:, j], Rc.offsets_for(rc, t, f.date), *Rc.bounds(t))
+            w = warm & ok
+            q, yy = qc[w], y[w]
+            row["cal"] = {"hits": [[float((yy < q[:, k]).mean()), float((yy <= q[:, k]).mean())] for k in range(len(TAUS))],
+                          "cover": [float(((yy > q[:, 0]) & (yy <= q[:, -1])).mean()),
+                                    float(((yy >= q[:, 0]) & (yy <= q[:, -1])).mean())],
+                          "clim": boot_ratio(day[w], pinball(q, yy), lc[w], seed),
+                          "raw": boot_ratio(day[w], lm[w], lc[w], seed)}
         out["pinball"].append(row)
     # events: Brier skill, AUC, per overlay variant. The `all` variant is re-read from its stored
     # quantiles with the current cdf_at, so runs scored before a readout fix compare like for like.
@@ -306,6 +341,17 @@ def to_markdown(rep):
                 L.append(f"| {p['target']} | {' / '.join(_span(h) for h in p['hits'])} | "
                          f"{_span(p['cover'], 100)}% / {p['clim_coverage'] * 100:.0f}% | "
                          f"{_ic(p['ic'])} | {_ic(p['clim_ic'])} |")
+        rcl = fo.get("recal")
+        if rcl:
+            L += ["", (f"**Recalibrated** (each session's quantiles + the offsets that the previous {rcl['window']} "
+                       f"sessions' outcomes call for; {rcl['days']} sessions with a full window, {rcl['rows']:,} rows)"),
+                  "", "| target | below P10 / P25 / P50 / P75 / P90 | coverage | pinball skill vs clim | raw, same rows |",
+                  "| --- | --- | --- | --- | --- |"]
+            for p in fo["pinball"]:
+                if "cal" in p:
+                    c = p["cal"]
+                    L.append(f"| {p['target']} | {' / '.join(_span(h) for h in c['hits'])} | {_span(c['cover'], 100)}% | "
+                             f"{_ci(c['clim'])} | {_ci(c['raw'])} |")
         L += ["", "**Pinball skill** per target", "", "| target | vs climatology | vs persistence | P10-P90 coverage |",
               "| --- | --- | --- | --- |"]
         for p in fo["pinball"]:

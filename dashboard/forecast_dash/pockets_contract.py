@@ -17,6 +17,9 @@
     <run>/fold_<k>/clim.parquet               optional; the training span's quantiles q10 .. q90 per
                                               (cell, target), cell -1 = all; sigma_cuts, dvol_cuts
     <run>/fold_<k>/clim_rates.parquet         optional; the event rates per (cell, event), cell -1 = all
+    <run>/fold_<k>/extremes.parquet           optional; per dec_row and bin k: hi_b<k> / lo_b<k> = ln(max
+                                              high / P0), ln(min low / P0) in the bin, t_hi_b<k> / t_lo_b<k> =
+                                              their minute after the decision (-1 = none); `intraday-ft-extremes`
     (cell = (minute // 5) * 9 + digitize(sigma, sigma_cuts) * 3 + digitize(log_dvol, dvol_cuts);
     a run scored before 2026-11-07 23:00 has none of the three: re-run `intraday-ft-report` on it)
 
@@ -124,6 +127,12 @@ def load_clim(run: Path, fold: str) -> pd.DataFrame | None:
 
 def load_clim_rates(run: Path, fold: str) -> pd.DataFrame | None:
     return _optional(run, fold, "clim_rates.parquet")
+
+
+def load_extremes(run: Path, fold: str) -> pd.DataFrame | None:
+    """The realised high / low after each decision, indexed by dec_row (None if not computed)."""
+    e = _optional(run, fold, "extremes.parquet")
+    return None if e is None else e.set_index("dec_row")
 
 
 def recalibrate(q: np.ndarray, rc: pd.DataFrame | None, target: str, dates) -> np.ndarray:

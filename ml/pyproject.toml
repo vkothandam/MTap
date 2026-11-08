@@ -39,6 +39,7 @@ tft-intraday-report = "tft_intraday.report:main"
 intraday-ft-build = "intraday_ft.build:main"
 intraday-ft = "intraday_ft.tft:main"
 intraday-ft-report = "intraday_ft.report:main"
+intraday-ft-extremes = "intraday_ft.extremes:main"
 
 [build-system]
 requires = ["hatchling"]

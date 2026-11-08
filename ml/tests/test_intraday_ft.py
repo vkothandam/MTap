@@ -10,6 +10,7 @@ import pytest
 
 from intraday_ft import build as B
 from intraday_ft import data as D
+from intraday_ft import extremes as Ex
 from intraday_ft import features as Fe
 from intraday_ft import profile as Pf
 from intraday_ft import recal as Rc
@@ -727,3 +728,46 @@ def test_recal_uses_only_past_sessions_and_fixes_a_level_shift():
     assert Rc.bounds("rvol_b4") == (-np.inf, np.inf) and Rc.bounds("bulge60") == (0.0, np.inf)
     c = Rc.apply(np.array([[0.1, 0.2, 0.5, 0.8, 0.9]]), np.array([[-0.5, 0.0, 0.0, 0.5, -0.2]]), 0.0, 1.0)
     assert (np.diff(c) >= 0).all() and c.min() >= 0 and c.max() <= 1
+
+
+def test_extremes_use_only_the_bins_after_the_entry():
+    M = synth()
+    r = np.repeat(np.arange(len(M.sig)), 4)
+    i = np.tile([4, 30, 200, 380], len(M.sig))
+    lp0 = np.log(Tg.targets(M, r, i)["p0"])
+    E = Ex.excursions(M.H, M.L, r, i, lp0)
+    for k, (lo, hi) in enumerate(Tg.BINS, 1):
+        for j in range(len(r)):
+            a, b = i[j] + 1 + lo, min(i[j] + 1 + hi, 390)
+            if a >= 390:
+                assert np.isnan(E[f"hi_b{k}"][j]) and E[f"t_hi_b{k}"][j] == -1
+                continue
+            h = M.H[r[j], a:b]
+            assert np.isclose(E[f"hi_b{k}"][j], np.log(h.max()) - lp0[j], atol=1e-6)
+            assert E[f"t_hi_b{k}"][j] == a + int(np.argmax(h)) - i[j]
+            assert np.isclose(E[f"lo_b{k}"][j], np.log(M.L[r[j], a:b].min()) - lp0[j], atol=1e-6)
+    X = perturb(M, 0)
+    for c in (5, 31, 201):     # bars up to and including the decision minute don't matter
+        Y = SimpleNamespace(**vars(M))
+        Y.H, Y.L = M.H.copy(), M.L.copy()
+        Y.H[:, :c], Y.L[:, :c] = X.H[:, :c], X.L[:, :c]
+        Z = Ex.excursions(Y.H, Y.L, r, i, lp0)
+        rows = i + 1 >= c
+        for key in E:
+            assert same(E[key][rows], Z[key][rows]), key
+
+
+def test_extremes_hand_example_and_no_trades():
+    H = np.full((1, 390), np.nan)
+    L = np.full((1, 390), np.nan)
+    H[0, 11:16], L[0, 11:16] = [301, 305, 310, 304, 302], [299.1, 300, 303, 301, 300]
+    E = Ex.excursions(H, L, np.array([0]), np.array([5]), np.log([300.0]))
+    # decision at minute 5: b2 = minutes 11..20 -> the high $310 at minute 13 (+8 from the decision)
+    assert np.isclose(np.exp(E["hi_b2"][0]) - 1, 310 / 300 - 1, atol=1e-6)    # +3.33% (ln = +3.28%)
+    assert np.isclose(E["hi_b2"][0], 0.0328, atol=1e-4) and E["t_hi_b2"][0] == 8
+    assert np.isclose(np.exp(E["lo_b2"][0]) * 300, 299.1, atol=1e-3) and E["t_lo_b2"][0] == 6
+    assert np.isnan(E["hi_b1"][0]) and E["t_hi_b1"][0] == -1     # b1 (minutes 6..10): no trade
+    bad = np.zeros((1, 390), bool)
+    bad[0, 12] = True          # a minute at the frames' clip: its bins are unknown, not a wrong number
+    E = Ex.excursions(H, L, np.array([0]), np.array([5]), np.log([300.0]), bad)
+    assert np.isnan(E["hi_b2"][0]) and np.isnan(E["lo_b2"][0]) and E["t_lo_b2"][0] == -1

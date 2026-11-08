@@ -149,3 +149,95 @@ def test_replay_and_fan_in_dollars(tmp_path):
 def test_sector_labels():
     assert C.sector_label("57") == "57 Technology" and C.sector_label(50) == "50 Energy"
     assert C.sector_label("") == "unknown" and C.sector_label("99") == "99"
+
+
+def test_move_prob_reads_the_centre_quantiles():
+    q = np.array([[0.5, 0.75, 1.0, 1.25, 1.5]])                    # cm in σ
+    sig = np.array([0.01])
+    x = np.expm1(1.0 * 0.01)                                       # the target at the P50: 0.5
+    r = P.move_prob(q, None, sig, x, "up")
+    assert np.isclose(r["p_beyond"][0], 0.5) and np.isclose(r["p"][0], 0.5)
+    xd = -np.expm1(-1.0 * 0.01)                                    # down: −X is ln(1 − X) away
+    assert np.isclose(P.move_prob(q, None, sig, xd, "dn")["p"][0], 0.5)
+    m = np.array([[0.0, 0.02, 0.05, 0.4, 0.6]])                    # mass_up: P(< 5%) = 0.5
+    up = P.move_prob(q, m, sig, x, "up")
+    assert np.isclose(up["p_forms"][0], 0.5) and up["p"][0] <= up["p_forms"][0]
+    dn = P.move_prob(q, m, sig, xd, "dn")                          # mass_up ≤ 0.95 nearly always
+    assert dn["p_forms"][0] > 0.9 and dn["p"][0] <= dn["p_forms"][0]
+
+
+def test_move_outcome_and_extremes_in_dollars():
+    f = pd.DataFrame({"sigma": [0.01, 0.01, 0.01], "real_cm_up_b2": [2.0, 0.5, np.nan],
+                      "real_cm_dn_b2": [0.3, np.nan, np.nan], "real_mass_up_b2": [0.6, 1.0, np.nan]})
+    ext = pd.DataFrame({"hi_b2": np.log([310 / 300, 301 / 300, np.nan]),
+                        "lo_b2": np.log([299.1 / 300, 300 / 300, np.nan]), "t_hi_b2": [11, 3, -1],
+                        "t_lo_b2": [2, 1, -1]})
+    o = P.move_outcome(f, "up", 2, 0.01, ext)
+    assert list(o.reached.iloc[:2]) == [1.0, 0.0] and np.isnan(o.reached.iloc[2])   # no trade: unknown
+    assert np.isclose(300 * (1 + o.centre_pct.iloc[0]), 300 * np.exp(0.02))       # the TSLA example
+    assert list(o.touched.iloc[:2]) == [1.0, 0.0] and np.isclose(o.best_pct.iloc[0], 310 / 300 - 1)
+    assert o.best_min.iloc[0] == 11 and np.isclose(o.worst_pct.iloc[0], 299.1 / 300 - 1)
+    d = P.move_outcome(f, "dn", 2, 0.01, None)
+    assert d.formed.iloc[1] == 0 and d.reached.iloc[1] == 0 and d.touched.isna().all()
+
+
+def test_move_recal_uses_only_earlier_days():
+    rng = np.random.default_rng(0)
+    days = np.repeat([f"d{i:02d}" for i in range(30)], 400)
+    p = rng.uniform(0, 1, len(days))
+    hit = (rng.uniform(0, 1, len(days)) < p * 0.7).astype(float)      # P too bold by 30%
+    cal, warm = P.move_recal(p, hit, days)
+    assert not warm[days < "d20"].any() and warm[days >= "d20"].all()
+    assert np.allclose(cal[~warm], p[~warm])
+    late = warm
+    assert abs(cal[late].mean() - hit[late].mean()) < 0.03                         # fixed
+    assert abs(p[late].mean() - hit[late].mean()) > 0.1
+    h2 = hit.copy()
+    h2[days == "d29"] = 1 - h2[days == "d29"]                       # a later day's outcomes change
+    cal2, _ = P.move_recal(p, h2, days)
+    assert np.allclose(cal2[days < "d29"], cal[days < "d29"])      # earlier days unchanged
+
+
+def test_move_runs_merge_consecutive_decisions():
+    date = ["a"] * 6 + ["b"] * 2
+    sym = ["X", "X", "X", "X", "Y", "Y", "X", "X"]
+    minute = [3, 0, 1, 2, 0, 1, 0, 1]                              # out of order on purpose
+    match = [True, True, True, False, True, False, True, True]
+    start, n = P.move_runs(date, sym, minute, match)
+    assert list(start) == [True, True, False, False, True, False, True, False]
+    assert list(n) == [1, 2, 0, 0, 1, 0, 2, 0]
+
+
+def test_move_tables_add_up(tmp_path):
+    rng = np.random.default_rng(1)
+    k = 300
+    mt = pd.DataFrame({"date": rng.choice(["2026-01-05", "2026-01-06", "2026-01-07"], k),
+                       "side": rng.choice(["up", "dn"], k), "symbol": rng.choice(list("ABCDE"), k),
+                       "minute": rng.integers(0, 390, k), "p": rng.uniform(0.6, 0.9, k),
+                       "reached": rng.choice([0.0, 1.0, np.nan], k, p=[0.3, 0.6, 0.1]),
+                       "touched": rng.choice([0.0, 1.0], k), "formed": 1.0, "centre_pct": 0.01,
+                       "best_pct": 0.02, "captured": 1.0, "warm": True, "p_up": rng.uniform(0, 1, k),
+                       "p_dn": rng.uniform(0, 1, k), "reached_up": 1.0, "reached_dn": 0.0,
+                       "net_p50": 0.1, "real_net": rng.normal(0, 1, k)})
+    s = P.move_summary(mt, {"up": 1000, "dn": 1000})
+    assert list(s.side) == ["up", "dn", "both"]
+    assert s.predictions.iloc[:2].sum() == s.predictions.iloc[2] == k
+    sd = pd.DataFrame([(d, x, 333) for d in ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"]
+                       for x in ("up", "dn")], columns=["date", "side", "decisions"])
+    d = P.move_by_day(mt, sd)
+    assert d.predictions.sum() == k and (d.happened + d.did_not <= d.predictions).all()
+    assert d[d.date == "2026-01-08"].predictions.eq(0).all()        # a day without a match shows 0
+    assert d.happened.sum() == int((mt.reached == 1).sum())
+    t = P.move_times(mt)
+    assert t.predictions.sum() == k and (t.happened + t.did_not + t.unknown == t.predictions).all()
+    lean = P.move_lean(mt)
+    assert lean.predictions.sum() == k and np.isclose(lean.share.sum(), 1)
+    assert P.move_insights(s, lean, 0.01, 2, 0.6, True, 5, 1, True)
+    assert "No decision" in P.move_insights(s.iloc[:0], lean, 0.01, 2, 0.6, True, 0, 0, True)[0].text
+
+
+def test_load_extremes(tmp_path):
+    run = write_pockets_run(tmp_path)
+    e = C.load_extremes(run, "B")
+    assert e.index.name == "dec_row" and {"hi_b2", "t_lo_b5"} <= set(e.columns)
+    assert C.load_extremes(write_pockets_run(tmp_path, "x", extremes=False), "B") is None

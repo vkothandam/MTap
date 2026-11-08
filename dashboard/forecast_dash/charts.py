@@ -752,3 +752,24 @@ def pk_fan(t: pd.DataFrame, p0: float, title: str) -> go.Figure:
     fig.update_xaxes(title="minutes after the entry", type="category")
     fig.update_yaxes(title="centre of mass of the volume ($)", tickprefix="$")
     return _layout(fig, title, height=480)
+
+
+def pk_mv_times(t: pd.DataFrame, title: str) -> go.Figure:
+    """Predictions per time-of-day bucket and side, stacked: the volume centred at or beyond the target
+    (happened), didn't, unknown (no trade in the window); hover = mean P said and the hit rate."""
+    fig = go.Figure()
+    sides = list(dict.fromkeys(t["side"]))
+    for s in sides:
+        d = t[t["side"] == s]
+        x = [d["time"], [s] * len(d)] if len(sides) > 1 else d["time"]
+        for col, name, color in (("happened", "happened", COLORS[2]), ("did_not", "didn't", COLORS[1]),
+                                 ("unknown", "unknown", "lightgrey")):
+            fig.add_bar(x=x, y=d[col], name=name, marker_color=color, legendgroup=col,
+                        showlegend=s == sides[0], customdata=np.stack([d["said"], d["reached"],
+                                                                       d["predictions"]], axis=1),
+                        hovertemplate=f"%{{x}} {s}: {name} %{{y:,}} of %{{customdata[2]:,}}<br>said "
+                                      "%{customdata[0]:.0%}, happened %{customdata[1]:.0%}<extra></extra>")
+    fig.update_layout(barmode="stack")
+    fig.update_xaxes(title="decision time (ET)")
+    fig.update_yaxes(title="predictions")
+    return _layout(fig, title, height=440)

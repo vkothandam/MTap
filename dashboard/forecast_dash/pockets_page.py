@@ -32,7 +32,8 @@ EVENT_T = [t for t, _, _ in P.EVENTS.values()]
 def _columns() -> list[str]:
     real = [f"real_{f}_b{b}" for f in P.SHAPE for b in C.BINS]
     reads = [f"{e}__{v}" for e in P.EVENTS for v in C.OVERLAYS]
-    return [*C.KEYS, "real_p0", *real, *[f"real_{t}" for t in EVENT_T], *reads]
+    moves = [f"real_{t}_b{b}" for t in ("mass_up", "net") for b in C.BINS]
+    return [*C.KEYS, "real_p0", *real, *moves, *[f"real_{t}" for t in EVENT_T], *reads]
 
 
 @st.cache_resource(show_spinner="Loading the pockets run...", max_entries=2)
@@ -55,6 +56,34 @@ def get_q(path: str, fold: str, target: str) -> np.ndarray:
     f = get_frame(path, fold)
     q = C.quantiles(Path(path), fold, f["dec_row"].to_numpy(), [target])[:, 0]
     return P.dust(q, target).astype(np.float32)
+
+
+@st.cache_resource(show_spinner="Reading the highs and lows...", max_entries=2)
+def get_extremes(path: str, fold: str) -> pd.DataFrame | None:
+    """extremes.parquet aligned to the run-file rows (None if the fold has none)."""
+    e = C.load_extremes(Path(path), fold)
+    return None if e is None else e.reindex(get_frame(path, fold)["dec_row"].to_numpy()).reset_index(drop=True)
+
+
+@st.cache_resource(show_spinner="Calibrating the move probabilities...", max_entries=16)
+def get_moves(path: str, fold: str, x: float, b: int) -> dict:
+    """Per run-file row, both sides at ±x in bin b: raw P, P recalibrated on the previous 20
+    sessions (and whether the day had them), and the outcome. Every row, so a day's calibration
+    always sees its 20 earlier sessions whatever the filters."""
+    f = get_frame(path, fold)
+    ext = get_extremes(path, fold)
+    targets = C.targets_of(Path(path), fold)
+    out = {}
+    for side in P.SIDES:
+        q_cm = np.asarray(get_q(path, fold, f"cm_{side}_b{b}"), np.float64)
+        mass = f"mass_up_b{b}"
+        q_m = np.asarray(get_q(path, fold, mass), np.float64) if mass in targets else None
+        pr = P.move_prob(q_cm, q_m, f["sigma"].to_numpy(), x, side)
+        oc = P.move_outcome(f, side, b, x, ext)
+        cal, warm = P.move_recal(pr["p"], oc["reached"].to_numpy(), f["date"].to_numpy())
+        out[side] = {"raw": pr["p"], "cal": cal, "warm": warm, "p50": q_cm[:, 2], "p90": q_cm[:, 4],
+                     "outcome": oc}
+    return out
 
 
 @st.cache_resource(max_entries=4)
@@ -358,6 +387,156 @@ def tab_day(v: View):
         **{c: st.column_config.NumberColumn(c, format="%+.2f") for c in ("rvol_p50", "rvol_real")}})
 
 
+# ---- moves: the ±X% filter ---------------------------------------------------------------------
+
+X_CHOICES = {0.005: "0.5%", 0.01: "1%", 0.015: "1.5%", 0.02: "2%", 0.03: "3%"}
+MV_SIDES = {"both": "both", "up": "up only", "dn": "down only"}
+
+
+def _usd(cols) -> dict:
+    return {c: st.column_config.NumberColumn(c, format="$%.2f") for c in cols}
+
+
+def _signed(cols) -> dict:
+    return {c: st.column_config.NumberColumn(c, format="%+.2f%%") for c in cols}
+
+
+def _moves_controls(v: View):
+    dates = sorted(v.f["date"].unique())
+    a, b, c = st.columns(3)
+    d = a.select_slider("Days", dates, value=(dates[max(0, len(dates) - 10)], dates[-1]), key="pk_mv_dates",
+                        help="the test days to report on (default: the last 10 the sidebar keeps)") \
+        if len(dates) > 1 else (dates[0], dates[0])
+    x = b.selectbox("Move X", list(X_CHOICES), index=1, key="pk_mv_x", format_func=X_CHOICES.get,
+                    help="the target: P0 × (1 ± X)")
+    side = c.selectbox("Side", list(MV_SIDES), key="pk_mv_side", format_func=MV_SIDES.get)
+    a, b, c = st.columns(3)
+    bin_ = a.selectbox("Window", list(C.BINS), index=1, key="pk_mv_bin",
+                       format_func=lambda k: f"b{k}: {C.BINS[k]} after the entry")
+    min_p = b.slider("Minimum P", 0.05, 0.95, 0.4, 0.05, key="pk_mv_min_p",
+                     help="show the decisions whose probability is at least this. The centre "
+                          "reaches ±1% in 30-60 min only ~6% of the time, so a calibrated P "
+                          "rarely goes above 0.6")
+    cal = c.radio("P", ["cal", "raw"], key="pk_mv_mode", horizontal=True,
+                  format_func={"cal": "calibrated", "raw": "raw"}.get,
+                  help="calibrated: each day's P mapped through what happened at each P over the 20 "
+                       "sessions before it (only past outcomes, as live). raw: as the model's quantiles say")
+    first = st.checkbox("One row per stock run (the first decision of consecutive matches)", key="pk_mv_first",
+                        help="a stock often matches at several decisions in a row; this keeps the first of each")
+    return d, x, side, bin_, min_p, cal == "cal", first
+
+
+def tab_moves(v: View):
+    _header("pk_moves")
+    if v.f.empty:
+        st.info("No rows under these filters.")
+        return
+    (d0, d1), x, side, b, min_p, cal, first = _moves_controls(v)
+    mv = get_moves(v.path, v.fold, x, b)
+    ext = get_extremes(v.path, v.fold)
+    keep = (v.f["date"] >= d0).to_numpy() & (v.f["date"] <= d1).to_numpy()
+    rows = v.idx[keep]
+    f = v.full.iloc[rows]
+    sides = ["up", "dn"] if side == "both" else [side]
+    p = {s: (mv[s]["cal"] if cal else mv[s]["raw"])[rows] for s in ("up", "dn")}
+    parts, scored = [], {}
+    both = (p["up"] >= min_p) & (p["dn"] >= min_p)
+    for s in sides:
+        m = p[s] >= min_p
+        o = mv[s]["outcome"].iloc[rows]
+        if first:
+            start, _ = P.move_runs(f["date"], f["symbol"], f["minute"], m)
+            m &= start
+        scored[s] = len(rows)
+        if not m.any():
+            continue
+        g = f[m]
+        oth = "dn" if s == "up" else "up"
+        sig, p0 = g["sigma"].to_numpy(np.float64), g["real_p0"].to_numpy(np.float64)
+        sign = 1.0 if s == "up" else -1.0
+        p50, p90 = mv[s]["p50"][rows][m], mv[s]["p90"][rows][m]
+        oc = o[m]
+        ooc = mv[oth]["outcome"].iloc[rows][m]
+        parts.append(pd.DataFrame({
+            "date": g["date"].to_numpy(), "time": [P.hhmm(t) for t in g["minute"]], "minute": g["minute"].to_numpy(),
+            "symbol": g["symbol"].to_numpy(), "sector": g["sector"].to_numpy(), "side": s,
+            "p0": p0, "target": p0 * (1 + sign * x), "p": p[s][m], "p_raw": mv[s]["raw"][rows][m],
+            "warm": mv[s]["warm"][rows][m],
+            "centre_p50": p0 * np.exp(sign * sig * p50), "centre_p90": p0 * np.exp(sign * sig * p90),
+            "real_centre": p0 * (1 + oc["centre_pct"].to_numpy()),
+            "reached": oc["reached"].to_numpy(), "formed": oc["formed"].to_numpy(),
+            "touched": oc["touched"].to_numpy(), "best": p0 * (1 + oc["best_pct"].to_numpy()),
+            "best_pct": oc["best_pct"].to_numpy(), "best_min": oc["best_min"].to_numpy(),
+            "worst": p0 * (1 + oc["worst_pct"].to_numpy()), "worst_pct": oc["worst_pct"].to_numpy(),
+            "centre_pct": oc["centre_pct"].to_numpy(),
+            "captured": oc["centre_pct"].to_numpy() / np.expm1(sign * sig * p50),
+            "other_p": p[oth][m], "other_reached": ooc["reached"].to_numpy(),
+            "other_centre_pct": ooc["centre_pct"].to_numpy(),
+            "p_up": p["up"][m], "p_dn": p["dn"][m],
+            "reached_up": (oc if s == "up" else ooc)["reached"].to_numpy(),
+            "reached_dn": (ooc if s == "up" else oc)["reached"].to_numpy(),
+            "net_p50": np.asarray(get_q(v.path, v.fold, f"net_b{b}"), np.float64)[rows][m, 2]
+            if f"net_b{b}" in v.targets else np.nan,
+            "real_net": g[f"real_net_b{b}"].to_numpy(np.float64) if f"real_net_b{b}" in g else np.nan,
+        }))
+    mt = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(
+        columns=["date", "side", "symbol", "minute", "p", "reached", "touched", "formed", "centre_pct",
+                 "best_pct", "captured", "warm", "p_up", "p_dn", "reached_up", "reached_dn", "net_p50",
+                 "real_net"])
+    days_in = sorted(f["date"].unique())
+    cold = int((~pd.Series(mv["up"]["warm"][rows]).groupby(f["date"].to_numpy()).all()).sum()) if cal else 0
+    summ = P.move_summary(mt, scored)
+    lean = P.move_lean(mt)
+    _in_short(P.move_insights(summ, lean, x, b, min_p, cal, int(both.sum()), cold, ext is not None))
+    if ext is None:
+        st.warning("No extremes.parquet in this fold: touched, best high / low and their minute are blank. "
+                   "Run `intraday-ft-extremes` on the run.")
+    pct = ["share_flagged", "said", "reached", "gap", "gap_lo", "gap_hi", "touched", "not_formed",
+           "median_centre_pct", "median_best_pct"]
+    _table(summ, "pk_mv_summary", {**_pct_cols(summ, pct),
+                                   "median_captured": st.column_config.NumberColumn("median_captured",
+                                                                                    format="%.2f×")})
+    sd = pd.DataFrame([(dd, s, int((f["date"] == dd).sum())) for dd in days_in for s in sides],
+                      columns=["date", "side", "decisions"])
+    by_day = P.move_by_day(mt, sd) if len(mt) else sd.assign(predictions=0, happened=0, did_not=0, stocks=0)
+    _table(by_day, "pk_mv_days", _pct_cols(by_day, ["said", "reached", "touched", "median_best_pct"]))
+    tm = P.move_times(mt)
+    if len(tm):
+        _chart(charts.pk_mv_times(tm, f"When in the day: predictions per 15 min, {d0} → {d1}"), "pk_mv_times")
+        _table(tm, "pk_mv_times_table", _pct_cols(tm, ["said", "reached"]))
+    if len(lean):
+        _table(lean, "pk_mv_lean", _pct_cols(lean, ["share", "mean_p_up", "mean_p_dn", "went_up",
+                                                    "lean_reached", "other_reached"]))
+    if len(mt):
+        day = st.selectbox("List: day", ["every day", *sorted(mt["date"].unique())[::-1]], key="pk_mv_day")
+        lst = mt if day == "every day" else mt[mt["date"] == day]
+        lst = lst.sort_values("p", ascending=False).head(500)
+        for c in ("best_pct", "worst_pct", "centre_pct", "other_centre_pct"):
+            lst = lst.assign(**{c: lst[c] * 100})
+        cols = ["date", "time", "symbol", "sector", "side", "p0", "target", "p", "p_raw", "centre_p50",
+                "centre_p90", "real_centre", "reached", "touched", "best", "best_pct", "best_min", "worst",
+                "worst_pct", "centre_pct", "captured", "other_p", "other_reached", "other_centre_pct"]
+        lst = lst[cols]
+        _table(lst, "pk_mv_list", {**_usd(["p0", "target", "centre_p50", "centre_p90", "real_centre", "best",
+                                           "worst"]),
+                                   **_pct_cols(lst, ["p", "p_raw", "other_p"]),
+                                   **_signed(["best_pct", "worst_pct", "centre_pct", "other_centre_pct"]),
+                                   "captured": st.column_config.NumberColumn("captured", format="%.2f×"),
+                                   "best_min": st.column_config.NumberColumn("best_min", format="+%d min")})
+        st.caption(f"{len(lst):,} shown (highest P first, at most 500) of {len(mt):,}")
+    # said vs happened over the range, every decision (not just the matches)
+    probs, hits = {}, []
+    for s in sides:
+        probs[P.SIDES[s]] = p[s]
+        hits.append(mv[s]["outcome"]["reached"].to_numpy()[rows])
+    g = pd.concat([P.event_grid({k: pr}, h) for (k, pr), h in zip(probs.items(), hits)], ignore_index=True)
+    if len(g):
+        _chart(charts.reliability(g, f"±{X_CHOICES.get(x, x)} in {C.BINS[b]}: said vs happened "
+                                     f"({'calibrated' if cal else 'raw'}, every decision in the range)",
+                                  min_n=20, group="overlay"), "pk_mv_reliab")
+        _table(g, "pk_mv_cal", _pct_cols(g, ["mean_prob", "hit_rate", "deviation", "ci_lo", "ci_hi"]))
+
+
 # ---- page -------------------------------------------------------------------------------------
 
 def render(root: str):
@@ -365,7 +544,7 @@ def render(root: str):
     v = _sidebar(root)
     if v is None:
         return
-    tabs = st.tabs(["Go rule", "Pocket shape", "By group", "Overlays", "Stock day"])
+    tabs = st.tabs(["Go rule", "Pocket shape", "By group", "Overlays", "Stock day", "Moves"])
     with tabs[0]:
         tab_go(v, st.session_state.get("pk_root", root))
     with tabs[1]:
@@ -376,3 +555,5 @@ def render(root: str):
         tab_overlays(v)
     with tabs[4]:
         tab_day(v)
+    with tabs[5]:
+        tab_moves(v)

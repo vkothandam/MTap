@@ -155,14 +155,14 @@ def space_lib(tmp_path_factory):
     return write_space_lib(tmp_path_factory.mktemp("space"))
 
 
-PK_FAMS = ("bulge", "sag", "cm_up", "cm_dn", "rvol")
+PK_FAMS = ("bulge", "sag", "cm_up", "cm_dn", "rvol", "mass_up", "net")
 PK_TARGETS = [f"{t}_b{k}" for k in range(1, 6) for t in PK_FAMS] + ["mass_up60", "bulge60", "sag60"]
 PK_EVENTS = {"p_mass_up60": "mass_up60", "p_bulge60": "bulge60", "p_sag60": "sag60"}
 PK_TAUS = (0.1, 0.25, 0.5, 0.75, 0.9)
 
 
 def write_pockets_run(root, name="20261107-000000-ft-B", fold="B", seed=0, sessions=26,
-                      label="IA1", side_files=True, report=True):
+                      label="IA1", side_files=True, report=True, extremes=True):
     """A synthetic intraday-ft run: 12 stocks in 3 sectors x `sessions` days x 13 decision minutes.
     Each target's quantiles are a normal around a per-row centre the outcome is drawn from, shifted
     by +0.3 sd (so the raw P50 is too low and the recalibration has something to fix)."""
@@ -194,10 +194,11 @@ def write_pockets_run(root, name="20261107-000000-ft-B", fold="B", seed=0, sessi
     Q = np.empty((n, len(PK_TARGETS), 5), np.float16)
     for j, t in enumerate(PK_TARGETS):
         fam = t.rsplit("_b", 1)[0]
-        lo = -np.inf if fam in ("rvol",) else 0.0
-        hi = 1.0 if fam == "mass_up60" else np.inf
-        mu = (0.5 if fam == "mass_up60" else 0.3) + 0.05 * (si % 4) + rng.normal(0, 0.05, n)
-        sd = 0.15 if fam == "mass_up60" else 0.2
+        share = fam in ("mass_up60", "mass_up")
+        lo = -np.inf if fam in ("rvol", "net") else 0.0
+        hi = 1.0 if share else np.inf
+        mu = (0.5 if share else 0.3) + 0.05 * (si % 4) + rng.normal(0, 0.05, n)
+        sd = 0.15 if share else 0.2
         q = mu[:, None] + sd * z[None, :]
         Q[:, j] = np.clip(q, lo, hi)
         f[f"real_{t}"] = np.clip(mu + sd * (rng.standard_normal(n) + 0.3), lo, hi)
@@ -206,6 +207,14 @@ def write_pockets_run(root, name="20261107-000000-ft-B", fold="B", seed=0, sessi
         for k, v in enumerate(("none", "sec", "ind", "all")):
             f[f"{ev}__{v}"] = np.clip(p + 0.01 * k, 0, 1).astype("float32")
     f.to_parquet(fd / "intraday_ft_pred.parquet", index=False)
+    if extremes:     # the high / low beyond the centre of mass on each side
+        ex = {"dec_row": f.dec_row.to_numpy()}
+        for k in range(1, 6):
+            for side, s_ in (("hi", 1), ("lo", -1)):
+                cm = f[f"real_cm_{'up' if s_ > 0 else 'dn'}_b{k}"].to_numpy() * f.sigma.to_numpy()
+                ex[f"{side}_b{k}"] = (s_ * (cm + np.abs(rng.normal(0, 0.003, n)))).astype("float32")
+                ex[f"t_{side}_b{k}"] = rng.integers(1, 5 * k + 1, n).astype("int16")
+        pd.DataFrame(ex).to_parquet(fd / "extremes.parquet", index=False)
     np.save(fd / "quantiles.npy", Q)
     (fd / "quantiles.json").write_text(json.dumps({"taus": list(PK_TAUS), "targets": PK_TARGETS,
                                                    "row": "dec_row"}))
@@ -250,7 +259,7 @@ def write_pockets_run(root, name="20261107-000000-ft-B", fold="B", seed=0, sessi
                 "ic": ic(0.3), "clim_ic": ic(0.1),
                 "cal": {"hits": [[x, x] for x in PK_TAUS], "cover": [0.8, 0.8], "clim": ci(0.05),
                         "raw": ci(0.04)}}
-               for t in PK_TARGETS if not t.endswith("60")]
+               for t in PK_TARGETS if t.rsplit("_b", 1)[0] in PK_FAMS[:5]]
         pin += [{"target": t, "clim": ci(0.01)} for t in PK_TARGETS if t.endswith("60")]
         rep = {"run": name, "folds": [{"fold": fold, "rows": n, "days": sessions, "pinball": pin,
                                        "rank_ic": {"net60__all": ic(0.001)},

@@ -411,3 +411,266 @@ def overlay_insights(t: pd.DataFrame, event: str, variants) -> list[Insight]:
     d = r[f"skill_{b}"] - r[f"skill_{a}"]
     out.append(Insight(INFO, f"The overlay ({OVERLAYS[b]}) changes the skill by {d * 100:+.2f} pts"))
     return out
+
+
+# ---- moves: the ±X% filter ---------------------------------------------------------------------
+# P(the volume on one side of P0 centres at least X away) in a bin, from the stored quantiles:
+#   p_forms  = P(that side holds >= 5% of the bin's volume) (below it the run has no centre: CM_MIN)
+#   p_beyond = P(centre >= the target | the side formed) = 1 - cdf_at(cm quantiles, distance / σ)
+#   p        = p_forms × p_beyond, optionally recalibrated on the previous 20 sessions' outcomes.
+
+CM_MIN = 0.05              # the trainer's rule: no centre of mass on a side with < 5% of the volume
+SIDES = {"up": "up (+X%)", "dn": "down (−X%)"}
+MOVE_WINDOW = 20           # sessions before the day the calibration learns from
+MOVE_MIN_BIN = 150         # decisions per calibration bin (the top bin too)
+
+
+def move_level(x: float, side: str) -> float:
+    """The target's log distance from P0 (positive): ln(1 + X) up, −ln(1 − X) down."""
+    return float(np.log1p(x) if side == "up" else -np.log1p(-x))
+
+
+def move_prob(q_cm: np.ndarray, q_mass: np.ndarray | None, sigma, x: float, side: str) -> dict:
+    """p_forms, p_beyond and p per row. q_cm: cm_<side>_bK quantiles (σ, a positive distance);
+    q_mass: mass_up_bK quantiles (None: the side is taken as formed)."""
+    v = move_level(x, side) / np.asarray(sigma, np.float64)
+    beyond = 1 - cdf_at(q_cm, v)
+    if q_mass is None:
+        forms = np.ones(len(beyond))
+    else:
+        forms = 1 - cdf_at(q_mass, CM_MIN) if side == "up" else cdf_at(q_mass, 1 - CM_MIN)
+    return {"p_forms": forms, "p_beyond": beyond, "p": forms * beyond}
+
+
+def move_outcome(f: pd.DataFrame, side: str, b: int, x: float, ext: pd.DataFrame | None) -> pd.DataFrame:
+    """What happened in bin b after each decision of f (rows aligned with ext, the extremes):
+    reached = the side's centre of mass at or beyond the target (NaN when the bin had no trade),
+    formed, centre_pct (the centre's move from P0), and from the extremes touched, best_pct /
+    best_min (the high up, the low down, and its minute after the decision), worst_pct (the
+    opposite extreme)."""
+    sig = f["sigma"].to_numpy(np.float64)
+    cm = f[f"real_cm_{side}_b{b}"].to_numpy(np.float64)
+    other = f[f"real_cm_{'dn' if side == 'up' else 'up'}_b{b}"].to_numpy(np.float64)
+    mass = f"real_mass_up_b{b}"
+    known = np.isfinite(f[mass].to_numpy(np.float64)) if mass in f else np.isfinite(cm) | np.isfinite(other)
+    sign = 1.0 if side == "up" else -1.0
+    reach = np.nan_to_num(cm, nan=-np.inf) * sig >= move_level(x, side)
+    out = {"formed": np.where(known, np.isfinite(cm), np.nan),
+           "reached": np.where(known, reach, np.nan),
+           "centre_pct": np.expm1(sign * sig * cm)}
+    if ext is not None:
+        best = ext[f"{'hi' if side == 'up' else 'lo'}_b{b}"].to_numpy(np.float64)
+        worst = ext[f"{'lo' if side == 'up' else 'hi'}_b{b}"].to_numpy(np.float64)
+        t = ext[f"t_{'hi' if side == 'up' else 'lo'}_b{b}"].to_numpy(np.float64)
+        out["touched"] = np.where(np.isfinite(best), sign * best >= move_level(x, side), np.nan)
+        out["best_pct"], out["worst_pct"] = np.expm1(best), np.expm1(worst)
+        out["best_min"] = np.where(t >= 0, t, np.nan)
+    else:
+        for c in ("touched", "best_pct", "worst_pct", "best_min"):
+            out[c] = np.full(len(f), np.nan)
+    return pd.DataFrame(out, index=f.index)
+
+
+def _pav(y: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """Weighted isotonic (non-decreasing) fit by pool-adjacent-violators."""
+    vals, wts, cnt = [], [], []
+    for yi, wi in zip(y, w):
+        vals.append(float(yi))
+        wts.append(float(wi))
+        cnt.append(1)
+        while len(vals) > 1 and vals[-2] > vals[-1]:
+            wsum = wts[-2] + wts[-1]
+            vals[-2] = (vals[-2] * wts[-2] + vals[-1] * wts[-1]) / wsum
+            wts[-2], cnt[-2] = wsum, cnt[-2] + cnt[-1]
+            del vals[-1], wts[-1], cnt[-1]
+    return np.repeat(vals, cnt)
+
+
+def move_recal(p: np.ndarray, hit: np.ndarray, day, window: int = MOVE_WINDOW,
+               min_bin: int = MOVE_MIN_BIN) -> tuple[np.ndarray, np.ndarray]:
+    """Each day's P mapped through what happened at each P on the previous `window` sessions (only
+    past outcomes, as live): those sessions' decisions sorted by P into bins of at least min_bin each,
+    the hit rates made non-decreasing (isotonic), then read off by linear interpolation. Equal-count
+    bins keep the top bin as solid as the rest, so a high P has to have happened that often before.
+    Returns (p_cal, warm): days without a full window (or < 10 bins of rows) keep the raw P, warm False."""
+    p, hit = np.asarray(p, np.float64), np.asarray(hit, np.float64)
+    days, di = np.unique(np.asarray(day), return_inverse=True)
+    ok = np.isfinite(p) & np.isfinite(hit)
+    order = np.argsort(di, kind="stable")
+    cut = np.searchsorted(di[order], np.arange(len(days) + 1))
+    out, warm = p.copy(), np.zeros(len(days), bool)
+    for d in range(window, len(days)):
+        r = order[cut[d - window]:cut[d]]
+        r = r[ok[r]]
+        if len(r) < 10 * min_bin:
+            continue
+        r = r[np.argsort(p[r], kind="stable")]
+        edges = np.linspace(0, len(r), len(r) // min_bin + 1).astype(int)
+        n = np.diff(edges)
+        x = np.add.reduceat(p[r], edges[:-1]) / n
+        y = _pav(np.add.reduceat(hit[r], edges[:-1]) / n, n)
+        t = order[cut[d]:cut[d + 1]]
+        out[t] = np.interp(p[t], x, y)
+        warm[d] = True
+    return out, warm[di]
+
+
+def move_runs(date, symbol, minute, match) -> tuple[np.ndarray, np.ndarray]:
+    """Consecutive matching decisions of a stock-day form one run: (start of a run, its length at
+    the start row, 0 elsewhere). Rows may come in any order."""
+    d = pd.DataFrame({"date": np.asarray(date), "symbol": np.asarray(symbol),
+                      "minute": np.asarray(minute), "m": np.asarray(match, bool)})
+    o = np.lexsort((d.minute.to_numpy(), d.symbol.to_numpy(), d.date.to_numpy()))
+    s = d.iloc[o]
+    same = (s.date.to_numpy()[1:] == s.date.to_numpy()[:-1]) & (s.symbol.to_numpy()[1:] == s.symbol.to_numpy()[:-1])
+    m = s.m.to_numpy()
+    prev = np.r_[False, same & m[:-1]]
+    start = m & ~prev
+    rid = np.cumsum(start)
+    n = np.bincount(rid[m], minlength=rid.max() + 1 if len(rid) else 1)
+    length = np.where(start, n[rid], 0)
+    st_, ln = np.empty(len(d), bool), np.empty(len(d), np.int64)
+    st_[o], ln[o] = start, length
+    return st_, ln
+
+
+_MV_STATS = {"said": "p", "reached": "reached", "touched": "touched", "not_formed": "not_formed",
+             "centre_pct": "centre_move", "best_pct": "best_move", "captured": "captured"}
+
+
+def _mv_agg(g: pd.DataFrame) -> dict:
+    return {"predictions": len(g), "stocks": g["symbol"].nunique(), "said": g["p"].mean(),
+            "reached": g["reached"].mean(), "touched": g["touched"].mean(),
+            "not_formed": 1 - g["formed"].mean(), "median_centre_pct": g["centre_pct"].abs().median(),
+            "median_best_pct": g["best_pct"].abs().median(), "median_captured": g["captured"].median()}
+
+
+def _boot_gap(day, d, seed: int = 0) -> tuple[float, float]:
+    """95% day-bootstrap CI of mean(d) (d = happened − said per row)."""
+    ok = np.isfinite(d)
+    if ok.sum() < 2:
+        return np.nan, np.nan
+    days, inv = np.unique(np.asarray(day)[ok], return_inverse=True)
+    s, n = np.bincount(inv, weights=d[ok]), np.bincount(inv)
+    idx = np.random.default_rng(seed).integers(0, len(days), (N_BOOT, len(days)))
+    g = s[idx].sum(1) / n[idx].sum(1)
+    return float(np.quantile(g, 0.025)), float(np.quantile(g, 0.975))
+
+
+def move_summary(mt: pd.DataFrame, scored: dict[str, int]) -> pd.DataFrame:
+    """The period: one row per side (and both together when there are two): predictions, stocks,
+    days with any, decisions scored, said vs reached (gap with its day-bootstrap CI), touched,
+    never formed, the median centre / best move and momentum captured."""
+    rows = []
+    groups = [(s, mt[mt.side == s]) for s in scored]
+    if len(scored) > 1:
+        groups.append(("both", mt))
+    for s, g in groups:
+        n_scored = sum(scored.values()) if s == "both" else scored[s]
+        r = {"side": s, **_mv_agg(g), "days": g["date"].nunique(), "decisions": n_scored,
+             "share_flagged": len(g) / n_scored if n_scored else np.nan}
+        r["gap"] = r["reached"] - r["said"]
+        r["gap_lo"], r["gap_hi"] = _boot_gap(g["date"], (g["reached"] - g["p"]).to_numpy(np.float64))
+        rows.append(r)
+    cols = ["side", "predictions", "stocks", "days", "decisions", "share_flagged", "said", "reached",
+            "gap", "gap_lo", "gap_hi", "touched", "not_formed", "median_centre_pct", "median_best_pct",
+            "median_captured"]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def move_by_day(mt: pd.DataFrame, scored_days: pd.DataFrame) -> pd.DataFrame:
+    """One row per day and side: predictions, happened (centre reached), didn't, said, the rates.
+    scored_days: date, side, decisions (every scored decision, so days without a match show 0)."""
+    g = mt.groupby(["date", "side"])
+    t = pd.DataFrame({"predictions": g.size(), "happened": g["reached"].apply(lambda s: int((s == 1).sum())),
+                      "did_not": g["reached"].apply(lambda s: int((s == 0).sum())),
+                      "stocks": g["symbol"].nunique(), "said": g["p"].mean(), "reached": g["reached"].mean(),
+                      "touched": g["touched"].mean(), "median_best_pct": g["best_pct"].apply(
+                          lambda s: s.abs().median()), "calibrated": g["warm"].all()})
+    t = scored_days.set_index(["date", "side"]).join(t, how="left")
+    for c in ("predictions", "happened", "did_not", "stocks"):
+        t[c] = t[c].fillna(0).astype(int)
+    t["calibrated"] = t["calibrated"].astype("boolean")
+    return t.reset_index().sort_values(["date", "side"], ascending=[False, True], ignore_index=True)
+
+
+def move_times(mt: pd.DataFrame, width: int = 15) -> pd.DataFrame:
+    """Predictions per `width`-minute bucket of the day and side: happened, didn't, unknown, said."""
+    if mt.empty:
+        return pd.DataFrame(columns=["time", "side", "predictions", "happened", "did_not", "unknown",
+                                     "said", "reached"])
+    b = (mt["minute"] // width) * width
+    g = mt.assign(bucket=b).groupby(["bucket", "side"])
+    t = pd.DataFrame({"predictions": g.size(), "happened": g["reached"].apply(lambda s: int((s == 1).sum())),
+                      "did_not": g["reached"].apply(lambda s: int((s == 0).sum())),
+                      "said": g["p"].mean(), "reached": g["reached"].mean()}).reset_index()
+    t["unknown"] = t["predictions"] - t["happened"] - t["did_not"]
+    t.insert(0, "time", [f"{hhmm(m)}-{hhmm(m + width)}" for m in t["bucket"]])
+    return t.drop(columns="bucket")[["time", "side", "predictions", "happened", "did_not", "unknown",
+                                      "said", "reached"]]
+
+
+def move_lean(mt: pd.DataFrame) -> pd.DataFrame:
+    """Of the predictions, which way the model leaned (P up vs P down at the same decision) and which
+    way the bin's volume went (bulge − sag that happened): per lean, how often the leaned side's centre
+    reached the target, and how often the other side's did."""
+    if mt.empty:
+        return pd.DataFrame()
+    up = mt["p_up"] >= mt["p_dn"]
+    rows = []
+    for lean, m in (("up (P up ≥ P down)", up), ("down (P down > P up)", ~up)):
+        g = mt[m]
+        if g.empty:
+            continue
+        lean_hit = np.where(up[m], g["reached_up"], g["reached_dn"])
+        other_hit = np.where(up[m], g["reached_dn"], g["reached_up"])
+        rows.append({"lean": lean, "predictions": len(g), "share": len(g) / len(mt),
+                     "mean_p_up": g["p_up"].mean(), "mean_p_dn": g["p_dn"].mean(),
+                     "net_p50": g["net_p50"].mean(), "went_up": (g["real_net"] > 0).where(
+                         g["real_net"].notna()).mean(),
+                     "lean_reached": np.nanmean(lean_hit) if np.isfinite(lean_hit).any() else np.nan,
+                     "other_reached": np.nanmean(other_hit) if np.isfinite(other_hit).any() else np.nan})
+    return pd.DataFrame(rows)
+
+
+def move_insights(s: pd.DataFrame, lean: pd.DataFrame, x: float, b: int, min_p: float, calibrated: bool,
+                  both: int, cold_days: int, has_ext: bool) -> list[Insight]:
+    if s.empty or not s["predictions"].sum():
+        return [Insight(INFO, f"No decision with P ≥ {min_p:.0%} for ±{x:.1%} in {BINS[b]} under these "
+                              "filters: lower the minimum P or X.")]
+    out = []
+    for _, r in s[s.side != "both"].iterrows():
+        if not r.predictions:
+            continue
+        sign = "+" if r.side == "up" else "−"
+        txt = (f"{sign}{x:.1%} in {BINS[b]}, P ≥ {min_p:.0%} ({'calibrated' if calibrated else 'raw'}): "
+               f"{r.predictions:,} predictions on {r.stocks:,} stocks over {r.days} days "
+               f"({r.share_flagged:.1%} of {r.decisions:,} decisions); said {r.said:.0%}, the volume "
+               f"centred at {sign}{x:.1%} or beyond in {r.reached:.0%}")
+        if has_ext and np.isfinite(r.touched):
+            txt += (f"; the price touched {sign}{x:.1%} in {r.touched:.0%}, median best "
+                    f"{'high' if r.side == 'up' else 'low'} {sign}{r.median_best_pct:.2%}")
+        ok = np.isfinite(r.gap_lo) and r.gap_lo <= 0 <= r.gap_hi
+        out.append(Insight(GOOD if ok else WARN, txt))
+        if np.isfinite(r.gap_lo):
+            out.append(Insight(GOOD if ok else WARN,
+                               f"{r.side}: happened − said = {r.gap * 100:+.1f} pts [{r.gap_lo * 100:+.1f}, "
+                               f"{r.gap_hi * 100:+.1f}] (days resampled)"
+                               + ("" if ok else ": P is off beyond noise here")))
+    if not lean.empty:
+        u = lean[lean.lean.str.startswith("up")]
+        share = float(u.share.iloc[0]) if len(u) else 0.0
+        hit = (lean.lean_reached * lean.predictions).sum() / lean.predictions.sum()
+        oth = (lean.other_reached * lean.predictions).sum() / lean.predictions.sum()
+        out.append(Insight(INFO, f"Lean: {share:.0%} of the predictions had P up ≥ P down. The leaned "
+                                 f"side reached in {hit:.0%}, the other side in {oth:.0%}"
+                                 + (": the lean picks no direction" if abs(hit - oth) < 0.03 else "")))
+    if both:
+        out.append(Insight(INFO, f"{both:,} decisions matched up and down at once: the model sizes "
+                                 "the move, it doesn't call the direction"))
+    if calibrated and cold_days:
+        out.append(Insight(INFO, f"{cold_days} day(s) in the range have no 20 earlier sessions: raw P there"))
+    if not has_ext:
+        out.append(Insight(WARN, "No extremes.parquet in this fold: touched / best high / low are blank. "
+                                 "Run `intraday-ft-extremes` on the run."))
+    return out

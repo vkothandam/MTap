@@ -374,7 +374,7 @@ def test_space_with_a_moment_before_any_history(tmp_path, monkeypatch):
 
 # ---- Intraday → Pockets model ---------------------------------------------------------------------
 
-PK_TABS = ["Go rule", "Pocket shape", "By group", "Overlays", "Stock day"]
+PK_TABS = ["Go rule", "Pocket shape", "By group", "Overlays", "Stock day", "Moves"]
 
 
 def _pockets(tmp_path, monkeypatch, **kw):
@@ -394,7 +394,7 @@ def test_pockets_renders_five_explained_tabs(tmp_path, monkeypatch):
     assert [t.label for t in at.tabs] == PK_TABS
     assert all(len(t.get("plotly_chart")) >= 1 for t in at.tabs), [t.label for t in at.tabs]
     in_short = {t.label: [m.value for m in t.markdown if m.value.startswith("**In short**")]
-                for t in at.tabs if t.label != "Stock day"}
+                for t in at.tabs if t.label not in ("Stock day",)}
     assert all(in_short.values()), in_short
     go = next(t for t in at.tabs if t.label == "Go rule")
     assert go.dataframe[0].value["passes"].all()
@@ -471,3 +471,71 @@ def test_pockets_without_a_run(tmp_path, monkeypatch):
     assert not at.exception, [e.value for e in at.exception]
     assert any("intraday-ft-train" in i.value for i in at.info)
     assert not at.tabs
+
+
+def _moves(at):
+    return next(t for t in at.tabs if t.label == "Moves")
+
+
+def test_pockets_moves_filter(tmp_path, monkeypatch):
+    at = _pockets(tmp_path, monkeypatch)
+    assert not at.exception, [e.value for e in at.exception]
+    assert _moves(at).slider(key="pk_mv_min_p").value == 0.4
+    at.slider(key="pk_mv_min_p").set_value(0.2)      # the synthetic run's calibrated P stays < 0.4
+    at.run()
+    mv = _moves(at)
+    assert any(m.value.startswith("**In short**") for m in mv.markdown)
+    summ = mv.dataframe[0].value
+    assert list(summ.side) == ["up", "dn", "both"] and summ.predictions.iloc[2] > 0
+    days = mv.dataframe[1].value
+    assert days.predictions.sum() == summ.predictions.iloc[2]       # per day adds up to the period
+    assert days.date.nunique() == 10                                 # the last 10 days by default
+    lst = next(d.value for d in mv.dataframe if "real_centre" in d.value)
+    assert (lst.p >= 0.2).all() and lst.best.notna().all()
+    _assert_explained(at)
+    # every control
+    at.select_slider(key="pk_mv_dates").set_value(("2026-01-05", "2026-02-09"))
+    for x in (0.005, 0.015, 0.02, 0.03):
+        at.selectbox(key="pk_mv_x").set_value(x)
+        at.run()
+        assert not at.exception, (x, [e.value for e in at.exception])
+    at.selectbox(key="pk_mv_x").set_value(0.005)
+    for side in ("up", "dn", "both"):
+        at.selectbox(key="pk_mv_side").set_value(side)
+        at.run()
+        assert not at.exception, (side, [e.value for e in at.exception])
+    for b in (1, 3, 4, 5):
+        at.selectbox(key="pk_mv_bin").set_value(b)
+        at.run()
+        assert not at.exception, (b, [e.value for e in at.exception])
+    at.radio(key="pk_mv_mode").set_value("raw")
+    at.slider(key="pk_mv_min_p").set_value(0.3)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    n_all = _moves(at).dataframe[0].value.predictions.iloc[-1]
+    at.checkbox(key="pk_mv_first").check()
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert _moves(at).dataframe[0].value.predictions.iloc[-1] < n_all  # runs merged
+    day = min(_moves(at).selectbox(key="pk_mv_day").options)
+    at.selectbox(key="pk_mv_day").set_value(day)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    _assert_explained(at)
+    # no match
+    at.slider(key="pk_mv_min_p").set_value(0.95)
+    at.selectbox(key="pk_mv_x").set_value(0.03)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("No decision" in m.value for m in _moves(at).markdown)
+
+
+def test_pockets_moves_without_extremes(tmp_path, monkeypatch):
+    at = _pockets(tmp_path, monkeypatch, extremes=False)
+    at.slider(key="pk_mv_min_p").set_value(0.2)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    mv = _moves(at)
+    assert any("extremes.parquet" in w.value for w in mv.warning)
+    lst = next(d.value for d in mv.dataframe if "real_centre" in d.value)
+    assert lst.best.isna().all() and lst.real_centre.notna().any()

@@ -1384,3 +1384,128 @@ for _s, _lab in (("up", "above"), ("dn", "below")):
         COLUMNS[f"pk_fan_table:{_s}_{_q}_usd"] = (f"centre of mass of the volume {_lab} the entry, "
                                                   f"{_q.upper()}, in $")
     COLUMNS[f"pk_fan_table:{_s}_real_usd"] = f"where the volume {_lab} the entry did concentrate, $"
+
+HELP["pk_moves"] = ("Moves: the ±X% filter", """
+Set a move (±1%, ±1.5% …), a window after the entry and a minimum probability: every decision of
+the range where the model gave at least that probability that **the volume on that side of the
+entry price P0 centres at P0 × (1 ± X) or beyond** in the window, across all stocks the sidebar
+keeps. Then a summary for the period, a report per day, when in the day they came, which way the
+model leaned, the list itself (with the high / low that happened), and how far to trust P.
+
+**P** = P(that side forms: ≥ 5% of the window's volume) × P(its centre of mass ≥ the target |
+formed), both read from the stored quantiles (`mass_up_bK`, `cm_up_bK` / `cm_dn_bK`). Read raw it
+overstates by 5–15 points (when a side barely trades it has no centre), so by default it is
+**calibrated**: each day's P mapped through what happened at each P over the 20 sessions before it.
+Only past outcomes: the same works live.
+
+**Happened** = the volume's centre of mass reached the target (what the model forecasts). **Touched** =
+the price traded at the target at least once (from the bars: `extremes.parquet`). Touching is easier
+and noisier; the centre is where the trading concentrated.
+
+**Direction**: the model sizes moves, it doesn't call them. The stocks flagged for +X are mostly the
+ones flagged for −X too (big movers); the lean table shows that rather than hiding it.
+
+The run file is a sample (a quarter of the stock-days, every 15 minutes), so the counts are a quarter
+of the market's or less; the rates hold.
+""")
+
+PANELS.update({
+    "pk_mv_summary": ("Period summary", """
+One row per side (and both): how many predictions matched, on how many stocks and days, out of how
+many decisions; the mean P said vs how often the centre reached the target (gap with its 95%
+day-bootstrap CI: a CI over 0 = P is fine here), how often the price touched it, how often the side
+never formed, the median centre / best move and the momentum captured.
+"""),
+    "pk_mv_days": ("Per day", """
+One row per day and side: predictions, how many happened (the centre reached the target), how many
+didn't, stocks, said vs happened, touched. Days without a match show 0. `calibrated` = the day had 20
+earlier sessions for the calibration.
+"""),
+    "pk_mv_times": ("When in the day", """
+Predictions per 15 minutes of the day over the range, stacked: happened (green), didn't (red),
+unknown (grey: no trade in the window). Hover for the mean P said and the hit rate.
+"""),
+    "pk_mv_times_table": ("When in the day (table)", """
+The chart's numbers per 15-minute bucket and side.
+"""),
+    "pk_mv_lean": ("Bulge or sag", """
+Of the predictions, the ones where the model gave the up side the higher P (lean up) and the rest
+(lean down): the mean P each way, the mean predicted net (bulge − sag, σ), how often the window's
+volume really sat more above P0 than below (`went_up`), and how often the leaned side and the other
+side reached the target. Leaned ≈ other = no direction call.
+"""),
+    "pk_mv_list": ("The predictions", """
+One row per matching decision, highest P first (at most 500; pick a day above it). The entry P0 and
+the target; the P said (and raw); where the model put the centre of the volume on that side (P50 /
+P90) and where it really was; whether it reached and whether the price touched the target; the best
+high (up) or low (down) in the window and its minute after the decision; the worst move the other way;
+`captured` = the real centre's move ÷ the predicted P50 move (1.0× = as forecast); and the other
+side's P and outcome at the same decision.
+"""),
+    "pk_mv_reliab": ("Said vs happened", """
+Every decision in the range (not just the matches), at this X and window: x = P (10% buckets), y = how
+often the centre reached the target, Wilson 95% bars, size ~ √n. On the diagonal = trust P as said.
+"""),
+    "pk_mv_cal": ("Said vs happened (table)", """
+The chart's numbers per P bucket and side.
+"""),
+})
+
+_MV = {
+    "side": "up = the volume above P0 centres at +X or beyond; dn = below P0 at −X or beyond",
+    "predictions": "decisions with P at or above the minimum",
+    "stocks": "distinct stocks among them",
+    "days": "days with at least one",
+    "decisions": "every decision scored in the range (the filters applied)",
+    "share_flagged": "predictions ÷ decisions",
+    "said": "mean P said",
+    "reached": "share where the side's centre of mass reached the target (happened)",
+    "gap": "reached − said: above 0 = P too cautious, below 0 = too bold",
+    "gap_lo": "low end of the gap's 95% CI (whole days resampled)",
+    "gap_hi": "high end of the gap's 95% CI",
+    "touched": "share where the price traded at the target at least once in the window (bars)",
+    "not_formed": "share where that side held < 5% of the window's volume (no centre: didn't happen)",
+    "median_centre_pct": "median distance of the real centre of mass from P0",
+    "median_best_pct": "median best high (up) / low (down) in the window, distance from P0",
+    "median_captured": "median of real centre move ÷ predicted P50 move (1.0× = as forecast)",
+    "happened": "predictions whose centre reached the target",
+    "did_not": "predictions whose centre didn't (or the side didn't form)",
+    "calibrated": "the day had 20 earlier sessions for the calibration (else raw P)",
+    "date": "test day",
+    "time": "decision time (ET); the entry is the next minute's open",
+    "unknown": "no trade in the window: no outcome",
+    "lean": "which side the model gave the higher P at the decision",
+    "share": "share of the predictions",
+    "mean_p_up": "mean P of the up move",
+    "mean_p_dn": "mean P of the down move",
+    "net_p50": "mean predicted net (bulge − sag, σ) of the window, P50: above 0 = more volume above",
+    "went_up": "share where the window's volume really sat more above P0 than below",
+    "lean_reached": "share where the leaned side's centre reached the target",
+    "symbol": "stock",
+    "sector": "TRBC economic sector",
+    "p0": "entry price: the next minute's open after the decision",
+    "target": "P0 × (1 ± X)",
+    "p": "P said (calibrated or raw, as chosen)",
+    "p_raw": "P as the model's quantiles say, before the calibration",
+    "centre_p50": "where the model put the centre of that side's volume, P50, $",
+    "centre_p90": "the same, P90, $",
+    "real_centre": "where that side's volume really centred, $ (blank: the side didn't form)",
+    "best": "best high (up) or low (down) in the window, $",
+    "best_pct": "best high / low vs P0, %",
+    "best_min": "minute of the best high / low after the decision",
+    "worst": "the opposite extreme in the window (low for up, high for down), $",
+    "worst_pct": "the opposite extreme vs P0, %",
+    "centre_pct": "the real centre of mass vs P0, % in the predicted direction",
+    "captured": "real centre move ÷ predicted P50 move (1.0× = as forecast)",
+    "other_p": "P of the opposite move at the same decision",
+    "other_reached": "whether the opposite side's centre reached its target",
+    "other_centre_pct": "the opposite side's real centre vs P0, %",
+}
+for _p in ("pk_mv_summary", "pk_mv_days", "pk_mv_times_table", "pk_mv_lean", "pk_mv_list"):
+    COLUMNS.update({f"{_p}:{c}": h for c, h in _MV.items()})
+COLUMNS.update({"pk_mv_lean:other_reached": "share where the other side's centre reached its target "
+                                            "(−X for an up lean)",
+                "pk_mv_list:reached": "✓ = the side's centre of mass reached the target (happened)",
+                "pk_mv_list:touched": "✓ = the price traded at the target at least once in the window",
+                "pk_mv_times_table:reached": "share happened (of those with an outcome)",
+                "pk_mv_cal:overlay": "the side"})

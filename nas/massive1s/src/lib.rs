@@ -1,7 +1,7 @@
 //! Massive 1-second bars per common stock -> `agg_1s` day files, run on the NAS.
 //!
 //! Inputs (written on the Mac by `sourcing-py massive-1s prepare`):
-//!     DATA/massive_1s/inputs/universe.csv   ticker,name,exchange,kept,reason
+//!     DATA/massive_1s/inputs/universe.csv   ticker,name,exchange,kept,reason[,listed]
 //!     DATA/massive_1s/inputs/windows.csv    date,start_utc_ms,end_utc_ms
 //!
 //! The range is split into calendar-quarter jobs under DATA/massive_1s/jobs/<d0>_<d1>/.

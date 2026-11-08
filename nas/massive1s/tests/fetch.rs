@@ -16,7 +16,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use massive1s::api::Api;
 use massive1s::bars::{Bar, Cols, schema, staged_name, staged_ticker};
-use massive1s::finalize::day_path;
+use massive1s::finalize::{day_file, day_path, day_symbols};
 use massive1s::inputs::{Windows, load_universe};
 use massive1s::job::{Layout, Opts, fetch_job, run};
 
@@ -133,7 +133,8 @@ fn windows_validate_and_split_by_quarter() {
 fn universe_keeps_only_kept_rows() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("universe.csv");
-    std::fs::write(&p, "ticker,name,exchange,kept,reason\nZZ,Z Corp,XNYS,1,\nAA,\"A, Inc\",XNAS,1,\nAB,A Notes due 2030,XNYS,0,note\n").unwrap();
+    // `listed` (prepare --from-bars) is read by nobody here: extra columns are ignored
+    std::fs::write(&p, "ticker,name,exchange,kept,reason,listed\nZZ,Z Corp,XNYS,1,,1\nAA,\"A, Inc\",XNAS,1,,0\nAB,A Notes due 2030,XNYS,0,note,1\n").unwrap();
     assert_eq!(load_universe(&p).unwrap(), ["AA", "ZZ"]);
 }
 
@@ -376,4 +377,72 @@ fn sessions_with_a_day_file_are_left_out_and_a_started_job_keeps_its_sessions() 
     log.lock().unwrap().clear();
     assert!(run(&api, &layout, &windows(), &tickers, &opts).unwrap());
     assert!(log.lock().unwrap().is_empty() && !layout.jobs.join(format!("{D1}_{D2}")).exists());
+}
+
+#[test]
+fn extra_run_adds_only_the_missing_stocks_next_to_the_day_files() {
+    let (base, log) = serve(Arc::new(|_: &str, target: &str| {
+        let t = target.split('/').nth(4).unwrap_or("").to_string();
+        let bars = match t.as_str() {
+            "CCC" => vec![bar(S1, 3.0, 1.0, 1.0), bar(S2, 3.1, 1.0, 1.0)],
+            _ => vec![bar(S1 + 1000, 1.0, 1.0, 1.0), bar(S2 + 1000, 1.0, 1.0, 1.0)],
+        };
+        (
+            200,
+            format!(r#"{{"results":[{}]}}"#, bars.join(",")).into_bytes(),
+            false,
+        )
+    }));
+    let api = fast(Api::new(&base, "K").unwrap());
+    let data = tempfile::tempdir().unwrap();
+    let opts = Opts {
+        workers: 2,
+        zstd_level: 3,
+        finalize_threads: 2,
+    };
+    // the full run had AAA and BBB
+    let full = Layout::full(data.path());
+    let first: Vec<String> = ["AAA", "BBB"].map(String::from).to_vec();
+    assert!(run(&api, &full, &windows(), &first, &opts).unwrap());
+    let before = std::fs::read(day_path(&full.out, D1)).unwrap();
+    assert_eq!(
+        day_symbols(&day_path(&full.out, D1)).unwrap(),
+        ["AAA", "BBB"].map(String::from).into()
+    );
+
+    // the extra run's list has CCC too: only CCC is fetched, into day-D.extra.parquet
+    let extra = Layout::extra(data.path());
+    let all: Vec<String> = ["AAA", "BBB", "CCC"].map(String::from).to_vec();
+    log.lock().unwrap().clear();
+    assert!(run(&api, &extra, &windows(), &all, &opts).unwrap());
+    let targets = log.lock().unwrap().clone();
+    assert_eq!(targets.len(), 1, "{targets:?}");
+    assert!(targets[0].contains("/ticker/CCC/"), "{}", targets[0]);
+    assert_eq!(
+        std::fs::read(day_path(&full.out, D1)).unwrap(),
+        before,
+        "day file untouched"
+    );
+    for d in [D1, D2] {
+        let x = read_day(&day_file(&extra.out, d, ".extra"));
+        let syms: Vec<&str> = x
+            .column(0)
+            .as_string::<i32>()
+            .iter()
+            .map(Option::unwrap)
+            .collect();
+        assert_eq!(syms, ["CCC"]);
+    }
+    assert!(extra.jobs.join(format!("{D1}_{D2}")).join("done").exists());
+
+    // run again: every session has its extra file, nothing is fetched
+    log.lock().unwrap().clear();
+    assert!(run(&api, &extra, &windows(), &all, &opts).unwrap());
+    assert!(log.lock().unwrap().is_empty());
+
+    // no day file at all: an extra run has nothing to add to and fetches nothing
+    let data = tempfile::tempdir().unwrap();
+    let extra = Layout::extra(data.path());
+    assert!(run(&api, &extra, &windows(), &all, &opts).unwrap());
+    assert!(log.lock().unwrap().is_empty() && !day_file(&extra.out, D1, ".extra").exists());
 }

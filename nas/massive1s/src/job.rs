@@ -12,6 +12,10 @@
 //! interrupted run resumes. Sessions that already have a day file when a job starts are
 //! left out of it. A job is finalized only when every ticker is staged; the
 //! finalize of one quarter runs while the next quarter is fetched.
+//!
+//! An --extra run (jobs-extra/<d0>_<d1>/) adds stocks to sessions that already have a day
+//! file: it fetches only the tickers in none of the quarter's day files and writes
+//! day-D.extra.parquet next to day-D.parquet.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -28,10 +32,14 @@ use crate::inputs::Windows;
 use crate::{finalize, log};
 
 /// Where jobs and day files go. A `--tickers` run is a sample: it gets its own folders so
-/// it can never replace a full day file with a partial one.
+/// it can never replace a full day file with a partial one. An `--extra` run adds stocks
+/// to days that already have a day file: its jobs are in jobs-extra/ and it writes
+/// day-D.extra.parquet next to day-D.parquet, never touching it.
 pub struct Layout {
     pub jobs: PathBuf,
     pub out: PathBuf,
+    /// "" or ".extra", see `finalize::day_file`
+    pub tag: &'static str,
 }
 
 impl Layout {
@@ -39,6 +47,15 @@ impl Layout {
         Layout {
             jobs: data.join("massive_1s/jobs"),
             out: data.join("agg_1s"),
+            tag: "",
+        }
+    }
+
+    pub fn extra(data: &Path) -> Self {
+        Layout {
+            jobs: data.join("massive_1s/jobs-extra"),
+            out: data.join("agg_1s"),
+            tag: ".extra",
         }
     }
 
@@ -46,6 +63,7 @@ impl Layout {
         Layout {
             jobs: data.join("massive_1s/sample/jobs"),
             out: data.join("massive_1s/sample/agg_1s"),
+            tag: "",
         }
     }
 }
@@ -245,6 +263,20 @@ pub fn fetch_job(
     Ok(failures.len())
 }
 
+/// The tickers in none of the day files of `win` (an --extra job's stock list). The day
+/// files never change, so a resumed job gets the same list.
+fn not_in_day_files(out: &Path, win: &Windows, tickers: &[String]) -> Result<Vec<String>> {
+    let mut have = HashSet::new();
+    for d in &win.dates {
+        have.extend(finalize::day_symbols(&finalize::day_path(out, d))?);
+    }
+    Ok(tickers
+        .iter()
+        .filter(|t| !have.contains(*t))
+        .cloned()
+        .collect())
+}
+
 /// Every quarter of `win`: fetch, then finalize in the background. True when all done.
 pub fn run(
     api: &Api,
@@ -277,11 +309,17 @@ pub fn run(
             // Sessions that already have a day file (an earlier run, e.g. the one-month
             // test) are left out. A started job keeps its windows.csv, so a resume
             // fetches the same sessions even after some of its day files were written.
+            // An --extra job takes the sessions that have a day file but no extra file yet.
             let started = dir.join("windows.csv");
             let jw = if started.exists() {
                 Windows::load(&started)?
-            } else {
+            } else if layout.tag.is_empty() {
                 q.select(|d| !finalize::day_path(&layout.out, d).exists())
+            } else {
+                q.select(|d| {
+                    finalize::day_path(&layout.out, d).exists()
+                        && !finalize::day_file(&layout.out, d, layout.tag).exists()
+                })
             };
             if jw.is_empty() {
                 log!(
@@ -298,7 +336,22 @@ pub fn run(
                     jw.len()
                 );
             }
-            let failed = fetch_job(api, &dir, &jw, tickers, opts.workers)?;
+            let todo = if layout.tag.is_empty() {
+                tickers.to_vec()
+            } else {
+                let missing = not_in_day_files(&layout.out, &jw, tickers)?;
+                log!(
+                    "job {name}: {} of {} tickers are in none of its {} day files",
+                    missing.len(),
+                    tickers.len(),
+                    jw.len()
+                );
+                if missing.is_empty() {
+                    continue;
+                }
+                missing
+            };
+            let failed = fetch_job(api, &dir, &jw, &todo, opts.workers)?;
             if failed > 0 {
                 all_ok = false;
                 log!(
@@ -309,9 +362,9 @@ pub fn run(
             if let Some(h) = pending.take() {
                 h.join().expect("finalize thread panicked")?;
             }
-            let out = &layout.out;
+            let (out, tag) = (&layout.out, layout.tag);
             pending = Some(s.spawn(move || {
-                finalize::finalize(&dir, &jw, out, opts.zstd_level, opts.finalize_threads)
+                finalize::finalize(&dir, &jw, out, tag, opts.zstd_level, opts.finalize_threads)
             }));
         }
         if let Some(h) = pending.take() {

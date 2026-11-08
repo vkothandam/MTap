@@ -45,6 +45,14 @@ Watch from the Mac:
   only those stocks. To give up on them, finalize anyway by running
   `massive1s finalize --data /data <quarter>` in the container.
 - **Fetch a finished quarter again:** delete `MTap-Data/massive_1s/jobs/<quarter>/`, then Run.
+- **Add stocks to days that already have a file (`--extra`):** `massive1s fetch --extra` fetches only the
+  universe's tickers that are in none of the quarter's day files, and writes `day-D.extra.parquet` next to
+  `day-D.parquet` (never touching it). Jobs go in `massive_1s/jobs-extra/`; finalize one by hand with
+  `massive1s finalize --extra --data /data <quarter>`. Readers of a day must take every `*.parquet` in
+  `date=D/source=massive_rest/`.
+- **A second run's inputs (`--name`):** `sourcing-py massive-1s prepare ... --name N` writes
+  `massive_1s/inputs-N/` instead of `inputs/` (which a running or resumable job reads), and
+  `massive1s fetch --inputs .../inputs-N` uses it.
 
 If a Run seems to do nothing, `deploy.sh status` shows `logs/task.log`: what the task
 printed, including Docker errors and the output of a container that exited at once.
@@ -79,6 +87,11 @@ exchange calendar and the ticker list live there:
 - **universe.csv:** the stocks listed today, from the newest `out/tickers_cs` file. Notes,
   preferreds, depositary shares, funds and rights are excluded, even though Massive types
   them as CS.
+  - With `--from-bars` (`./nas/deploy.sh FROM TO --from-bars`): instead the tickers that traded in
+    `bars_1m` over the range, under the ticker they traded as, typed CS in any `tickers_cs` file (listed
+    or not), minus the same names and ADRs, plus SPY. One list covers the whole range; a stock that
+    did not trade in a quarter costs one empty call there. The column `listed` = 0 marks a stock no
+    longer listed under that ticker (delisted or renamed); the fetcher reads only `ticker` and `kept`.
 - **windows.csv:** `[09:00, close + 7 min)` per session, with half days ending at 13:07.
 
 ## One-time setup
@@ -123,6 +136,39 @@ of concurrent requests (default 32).
    billion bars, ~48 GB downloaded, ~54 GB on disk, a few hours in total (finalize-bound).
 3. Then 5 years, with an earlier start date. The paid plan's 5-year edge rolls forward daily
    (2021-10-21 on 2026-10-18); a date before it fails with HTTP 403.
+   **Deployed 2026-11-06 ~21:55 PT on the NAS** (the NAS kept on overnight):
+   - `./nas/deploy.sh 2021-11-08 2024-10-18 --from-bars`: 741 sessions, 6,882 stocks (of 7,457 traded; 2,642 no
+     longer listed under that ticker; excluded: 465 ADRs, 67 notes, 32 preferreds, 11 funds).
+   - 2021-11-08 was the first date the 5-year edge allowed (2021-11-05 returned 403 on 2026-11-07 UTC). A resume
+     days later can get 403s on the oldest sessions: finalize that quarter anyway (see Failures above).
+   - About 77 GB and ~5.5 h, finalize-bound (613 s a month on the NAS); the 2022-03 trial days are skipped.
+   - The universe is the stocks that traded then (`./nas/deploy.sh 2021-11-01 2024-10-18 --from-bars`, built
+     2026-11-06): today's list drops delisted stocks, and renamed ones are stored under their old ticker
+     (LEARNINGS `tag-survivorship`). One list for the range, not one per quarter (the fetcher takes one list).
+   - SPY is added by name.
+   - The stocks missing from step 2's range go into separate `day-D.extra.parquet` files.
+4. **Queued behind step 3 on 2026-11-06 23:23 PT** (one-off, no DSM task): a `nohup setsid` shell started
+   over ssh as the NAS user waits for D1's process to exit, then runs the binary directly on the NAS host
+   (`massive_1s/bin/massive1s`, built for x86_64 in Mac Docker; no docker or root needed). Log
+   `massive_1s/logs/queue-d2-d1b.log`; each run's own log lines go there too.
+   - **D2:** `--inputs inputs-d2`, 2026-10-19 → 2026-11-06 (15 sessions, today's list 5,207 + SPY). Those days
+     had only `source=massive_ws`; `massive_rest` is then the one training source.
+   - **D1b:** `--inputs inputs-d1b --extra`, 2024-10-21 → 2026-10-16 (499 sessions). Universe = traded in
+     `bars_1m` then (`--from-bars`: 6,297 kept, 1,079 no longer listed under that ticker, 437 ADRs out); each
+     quarter fetches only the ones missing from its day files.
+   - Delete `massive_1s/bin/` and `inputs-d2/`, `inputs-d1b/` after both finish and are checked.
+   - **Done 2026-11-07, 0 failures:** D1 03:21 PT (4.02B bars, 62.3 GB, 15.5 B/bar, 5 h 26 min; a quarter fetches in
+     ~6 min and finalizes in 22–34 min), D2 03:31 (107M bars, 1.80 GB), D1b 03:46 (184.9M bars, 2.83 GB in 499 extra
+     files). Per-quarter numbers in LEARNINGS "1-second backfill, full runs".
+   - **The one-month trial (2022-03) passed on 2026-11-06:**
+     - 5,730 stocks, 0 failed;
+     - fetch 142 s, finalize 613 s;
+     - 2.40 GB on disk (15.7 B/bar);
+     - 1 s = 96% of minute volume;
+     - delisted stocks present.
+
+     The same finalize took 92 s on the Mac (zstd-19, 14 threads), and zstd-9 cuts its CPU about 4× for 5% more disk.
+     Numbers in LEARNINGS (2022-03 trial).
 
 ## Developing
 

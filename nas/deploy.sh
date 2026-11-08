@@ -3,6 +3,9 @@
 #
 #   ./nas/deploy.sh 2026-09-01 2026-09-30   inputs for that range + copy the source to the
 #                                           share; then press Run on the NAS task
+#   ./nas/deploy.sh 2022-03-01 2022-03-31 --from-bars
+#                                           the same, with the stocks that traded then in
+#                                           bars_1m (delisted and renamed ones included)
 #   ./nas/deploy.sh status                  jobs, day files and the newest log lines
 #
 # Nothing here fetches: the NAS does. Needs the share mounted (default
@@ -21,14 +24,14 @@ M1S="$MTAP_DATA/massive_1s"
 
 status() {
     local p any=0
-    for p in "$M1S"/jobs/*/progress.json; do
+    for p in "$M1S"/jobs/*/progress.json "$M1S"/jobs-extra/*/progress.json; do
         [ -f "$p" ] || continue
         any=1
         jq -r '"\(.job)  \(.phase)  \(.done)/\(.tickers) tickers, \(.failed) failed, \(.calls) calls, "
             + "\(.bars / 1e6 | floor)M bars, \(.wire_bytes / 1e9 * 100 | floor / 100) GB, \(.elapsed_s) s"' "$p"
     done
     [ "$any" = 1 ] || echo "no jobs yet"
-    echo "day files (source=massive_rest): $(find "$MTAP_DATA/agg_1s" -maxdepth 3 -path '*source=massive_rest/day-*.parquet' 2>/dev/null | wc -l | tr -d ' ')"
+    echo "day files (source=massive_rest): $(find "$MTAP_DATA/agg_1s" -maxdepth 3 -path '*source=massive_rest/day-*.parquet' ! -name '*.extra.parquet' 2>/dev/null | wc -l | tr -d ' ')"
     local log
     log="$(ls -t "$M1S"/logs/run-*.log 2>/dev/null | head -1 || true)"
     [ -f "$M1S/logs/task.log" ] && { echo "--- $M1S/logs/task.log (the NAS task)"; tail -n 8 "$M1S/logs/task.log"; }
@@ -40,15 +43,15 @@ if [ "${1:-}" = status ]; then
     status
     exit 0
 fi
-[ $# -eq 2 ] || die "usage: $0 FROM TO (YYYY-MM-DD) | status"
-FROM="$1" TO="$2"
+[ $# -eq 2 ] || { [ $# -eq 3 ] && [ "$3" = --from-bars ]; } || die "usage: $0 FROM TO (YYYY-MM-DD) [--from-bars] | status"
+FROM="$1" TO="$2" FROM_BARS="${3:-}"
 for d in "$FROM" "$TO"; do [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "bad date $d"; done
 
 # The NAS user: MTAP_NAS_USER, else the user the share is mounted as.
 NAS_USER="${MTAP_NAS_USER:-$(mount | sed -n 's#^//\([^@]*\)@.* on /Volumes/Backups .*#\1#p' | head -1)}"
 [ -n "$NAS_USER" ] || die "set MTAP_NAS_USER in .env (the DSM user that owns the key file)"
 
-sourcing_py massive-1s prepare --fromdate "$FROM" --todate "$TO"
+sourcing_py massive-1s prepare --fromdate "$FROM" --todate "$TO" ${FROM_BARS:+--from-bars}
 mkdir -p "$MTAP_DATA/nas/massive1s"
 rsync -rlt --delete --exclude target/ "$MTAP_REPO/nas/massive1s/" "$MTAP_DATA/nas/massive1s/"
 printf 'FROM=%s\nTO=%s\nNAS_USER=%s\nWORKERS=%s\n' "$FROM" "$TO" "$NAS_USER" "${MASSIVE1S_WORKERS:-32}" > "$M1S/.run.args.tmp"

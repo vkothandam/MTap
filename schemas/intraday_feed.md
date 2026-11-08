@@ -129,8 +129,12 @@ the Rust tool in `nas/massive1s` (runbook: [nas/README.md](../nas/README.md)).
   13:06:59 on a half day), the live feed's span. The endpoint itself returns 04:00–19:59
   every day, so the cut is made on each bar's timestamp.
 - Universe: the common stocks listed when the inputs were prepared (`massive_1s/inputs/
-  universe.csv`, notes, preferreds, depositary shares, funds and rights removed). Stocks
-  delisted before then are not in it.
+  universe.csv`, notes, preferreds, depositary shares, funds and rights removed), or with
+  `--from-bars` the ones that traded then under the ticker they traded as (delisted ones
+  kept, ADRs out); SPY is added by name.
+- `day-D.extra.parquet` (same columns, sorted the same way) can sit next to `day-D.parquet`:
+  stocks added later by `massive1s fetch --extra`, never in the day file too. A reader of a
+  day takes every `*.parquet` in the folder.
 - Mapping: `c→price`, `o/h/l→open_i/high_i/low_i`, `vw→vwap_i`, `v→volume_i` (rounded) and
   `volume_i_dec`, `round(v/n)→avg_trade_size`, `otc=false`.
 - **Always null:** `volume_cum`, `volume_cum_dec`, `vwap_session`, `day_open`. In the live feed

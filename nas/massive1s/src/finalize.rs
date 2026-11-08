@@ -3,10 +3,11 @@
 //! Pass 1 reads the staged files in ticker order and appends each ticker-day slice to a
 //! per-date Arrow IPC bucket (LZ4), so every bucket is already sorted by (symbol, ts_utc)
 //! and no global sort is needed. Pass 2 turns each bucket into
-//! OUT/date=D/source=massive_rest/day-D.parquet (zstd, 1M-row groups), several dates in
+//! OUT/date=D/source=massive_rest/day-D.parquet (or day-D.extra.parquet; zstd, 1M-row groups), several dates in
 //! parallel: temp file, row count checked against pass 1, fsync, rename. Then the job's
 //! staging and buckets are removed and `done` is written.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -21,8 +22,8 @@ use arrow::datatypes::TimestampMillisecondType;
 use arrow::ipc::CompressionType;
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::{FileWriter, IpcWriteOptions};
-use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::{ArrowWriter, ProjectionMask};
 
 use crate::bars::{SOURCE, schema, staged_name, writer_props};
 use crate::inputs::Windows;
@@ -32,9 +33,35 @@ use crate::log;
 const BUCKET_FLUSH_ROWS: usize = 262_144;
 
 pub fn day_path(out: &Path, date: &str) -> PathBuf {
+    day_file(out, date, "")
+}
+
+/// `day-D{tag}.parquet`: tag "" for the day file, ".extra" for stocks fetched later for a
+/// day that already has one (readers take every *.parquet in the folder).
+pub fn day_file(out: &Path, date: &str, tag: &str) -> PathBuf {
     out.join(format!("date={date}"))
         .join(format!("source={SOURCE}"))
-        .join(format!("day-{date}.parquet"))
+        .join(format!("day-{date}{tag}.parquet"))
+}
+
+/// The symbols in a day file (its first column; the file is sorted by symbol).
+pub fn day_symbols(path: &Path) -> Result<HashSet<String>> {
+    let b = ParquetRecordBatchReaderBuilder::try_new(
+        File::open(path).with_context(|| format!("opening {}", path.display()))?,
+    )?;
+    let mask = ProjectionMask::roots(b.parquet_schema(), [0]);
+    let mut out = HashSet::new();
+    for batch in b.with_projection(mask).with_batch_size(65_536).build()? {
+        let batch = batch?;
+        let mut last: Option<&str> = None;
+        for v in batch.column(0).as_string::<i32>().iter().flatten() {
+            if last != Some(v) {
+                out.insert(v.to_string());
+                last = Some(v);
+            }
+        }
+    }
+    Ok(out)
 }
 
 struct Bucket {
@@ -155,6 +182,7 @@ pub fn finalize(
     dir: &Path,
     win: &Windows,
     out: &Path,
+    tag: &str,
     zstd_level: i32,
     threads: usize,
 ) -> Result<()> {
@@ -186,7 +214,7 @@ pub fn finalize(
                 while let Some(&i) = todo.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let (d, n) = (&win.dates[i], rows[i]);
                     let bucket = buckets.join(format!("{d}.arrow"));
-                    match write_day(&bucket, &day_path(out, d), n, zstd_level) {
+                    match write_day(&bucket, &day_file(out, d, tag), n, zstd_level) {
                         Ok(size) => {
                             bytes.fetch_add(size as usize, Ordering::Relaxed);
                             let _ = std::fs::remove_file(&bucket);

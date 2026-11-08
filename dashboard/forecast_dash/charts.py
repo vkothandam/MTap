@@ -625,3 +625,130 @@ def space_day_path(t: pd.DataFrame, decision: int, prev: float, title: str) -> g
     fig.update_yaxes(title="price ($)", tickprefix="$", row=1, col=1)
     fig.update_yaxes(title="shares", row=2, col=1)
     return _layout(fig, title + " (grey dashed: previous VWAP)", height=520)
+
+
+# ---- intraday pockets (intraday-ft runs) -------------------------------------------------------
+
+def pk_go(t: pd.DataFrame) -> go.Figure:
+    """Pinball skill vs climatology per shape target and bin, raw (bars, 95% CI) and after the
+    rolling recalibration (diamonds)."""
+    fig = go.Figure()
+    for i, (fam, d) in enumerate(t.groupby("family", sort=False)):
+        x = [f"b{b}" for b in d["bin"]]
+        fig.add_bar(x=x, y=d["skill_clim"], name=fam, marker_color=COLORS[i % len(COLORS)],
+                    offsetgroup=fam, legendgroup=fam,
+                    error_y={"type": "data", "symmetric": False,
+                             "array": d["skill_hi"] - d["skill_clim"],
+                             "arrayminus": d["skill_clim"] - d["skill_lo"], "thickness": 1},
+                    customdata=np.stack([d["rank_ic"], d["clim_rank_ic"]], axis=1),
+                    hovertemplate=f"{fam} %{{x}}: skill %{{y:+.1%}}<br>rank IC %{{customdata[0]:+.3f}} "
+                                  "(climatology %{customdata[1]:+.3f})<extra></extra>")
+        if "cal_skill_clim" in d and d["cal_skill_clim"].notna().any():
+            fig.add_scatter(x=x, y=d["cal_skill_clim"], mode="markers", name=f"{fam} recalibrated",
+                            offsetgroup=fam, legendgroup=fam, showlegend=False,
+                            marker={"symbol": "diamond", "size": 9, "color": "black"},
+                            hovertemplate=f"{fam} %{{x}} recalibrated: %{{y:+.1%}}<extra></extra>")
+    fig.add_hline(y=0, line=IDEAL)
+    fig.update_layout(barmode="group", scattermode="group")
+    fig.update_xaxes(title="duration bin (b1 0-5, b2 5-15, b3 15-30, b4 30-60 min, b5 60 min-close)")
+    fig.update_yaxes(title="pinball skill vs climatology", tickformat="+.0%")
+    return _layout(fig, "Pocket shape: skill vs climatology (◆ = after the recalibration)", height=440)
+
+
+def pk_hits(raw: pd.DataFrame, cal: pd.DataFrame | None, title: str) -> go.Figure:
+    """Share of outcomes at or below each quantile, raw and recalibrated, against the diagonal."""
+    fig = go.Figure(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", line=IDEAL, name="ideal",
+                               hoverinfo="skip"))
+    for t, name, color in ((raw, "raw", COLORS[0]), (cal, "recalibrated", COLORS[2])):
+        if t is None:
+            continue
+        fig.add_scatter(x=t["level"], y=t["observed"], mode="lines+markers", name=name,
+                        line={"color": color}, customdata=t["gap"],
+                        hovertemplate="P%{x:.0%}: %{y:.1%} at or below (gap %{customdata:+.1%})"
+                                      "<extra></extra>")
+    fig.update_xaxes(title="forecast quantile", tickformat=PCT, range=[0, 1])
+    fig.update_yaxes(title="outcomes at or below it", tickformat=PCT, range=[0, 1])
+    return _layout(fig, title, height=420)
+
+
+def pk_groups(t: pd.DataFrame, key: str, min_n: int) -> go.Figure:
+    """Per group: skill vs climatology with its 95% CI; groups below min_n greyed."""
+    t = t.sort_values("skill_clim")
+    small = t["n"] < min_n
+    fig = go.Figure(go.Bar(
+        y=t[key], x=t["skill_clim"], orientation="h",
+        marker_color=np.where(small, "lightgrey", COLORS[0]),
+        error_x={"type": "data", "symmetric": False, "array": t["skill_hi"] - t["skill_clim"],
+                 "arrayminus": t["skill_clim"] - t["skill_lo"], "thickness": 1},
+        customdata=np.stack([t["n"], t["p50_hit"], t["cover80"]], axis=1),
+        hovertemplate="%{y}: skill %{x:+.1%}<br>n=%{customdata[0]:,}  P50 hit %{customdata[1]:.0%}"
+                      "  coverage %{customdata[2]:.0%}<extra></extra>"))
+    fig.add_vline(x=0, line=IDEAL)
+    fig.update_xaxes(title="pinball skill vs climatology", tickformat="+.0%")
+    fig.update_yaxes(type="category")
+    return _layout(fig, f"Skill by {key.replace('_', ' ')} (grey: n below {min_n:,})",
+                   height=max(320, 26 * len(t) + 120))
+
+
+def pk_timeline(r: pd.DataFrame, variants: dict[str, str], hit: pd.Series, title: str) -> go.Figure:
+    """One stock-day: the event's probability at each decision under each overlay, and whether
+    it came true (markers at 0 / 1)."""
+    fig = go.Figure()
+    for i, (v, name) in enumerate(variants.items()):
+        fig.add_scatter(x=r["time"], y=r[v], mode="lines+markers", name=name,
+                        line={"color": COLORS[i % len(COLORS)]}, marker={"size": 4},
+                        hovertemplate=f"%{{x}} {name}: %{{y:.1%}}<extra></extra>")
+    fig.add_scatter(x=r["time"], y=hit, mode="markers", name="came true (1) / not (0)",
+                    marker={"symbol": "x", "size": 7, "color": "black"},
+                    hovertemplate="%{x}: %{y:.0f}<extra></extra>")
+    fig.update_xaxes(title="decision time (ET)")
+    fig.update_yaxes(title="probability", tickformat=PCT, range=[-0.05, 1.05])
+    return _layout(fig, title, height=420)
+
+
+def pk_replay(r: pd.DataFrame, title: str) -> go.Figure:
+    """One stock-day: the entry price and, per decision, the P10-P90 band of where the volume
+    above / below it concentrates in the chosen bin (cm_up / cm_dn in $), with what happened."""
+    fig = go.Figure()
+    for side, color, fill in (("up", COLORS[2], "rgba(44,160,44,0.18)"),
+                              ("dn", COLORS[1], "rgba(214,39,40,0.15)")):
+        name = "above the entry" if side == "up" else "below the entry"
+        fig.add_scatter(x=r["time"], y=r[f"{side}_p90"], mode="lines", line={"width": 0},
+                        hoverinfo="skip", showlegend=False)
+        fig.add_scatter(x=r["time"], y=r[f"{side}_p10"], mode="lines", line={"width": 0},
+                        fill="tonexty", fillcolor=fill, name=f"{name}: P10–P90")
+        fig.add_scatter(x=r["time"], y=r[f"{side}_p50"], mode="lines", name=f"{name}: P50",
+                        line={"color": color, "dash": "dot"})
+        fig.add_scatter(x=r["time"], y=r[f"{side}_real"], mode="markers", name=f"{name}: happened",
+                        marker={"color": color, "size": 5})
+    fig.add_scatter(x=r["time"], y=r["p0"], mode="lines", name="entry price P0",
+                    line={"color": "grey", "width": 1.5})
+    fig.update_xaxes(title="decision time (ET)")
+    fig.update_yaxes(title="price ($)", tickprefix="$")
+    return _layout(fig, title, height=520)
+
+
+def pk_fan(t: pd.DataFrame, p0: float, title: str) -> go.Figure:
+    """One decision across the bins: the P10-P90 and P25-P75 ranges of the centre of mass above
+    and below the entry (in $), the P50, and what happened."""
+    fig = go.Figure()
+    x = t["window"]
+    for side, color in (("up", COLORS[2]), ("dn", COLORS[1])):
+        name = "above" if side == "up" else "below"
+        for lo, hi, w in (("p10", "p90", 6), ("p25", "p75", 14)):
+            fig.add_scatter(x=x, y=t[f"{side}_{hi}_usd"], mode="markers", marker={"size": 0.1},
+                            showlegend=False, hoverinfo="skip",
+                            error_y={"type": "data", "symmetric": False, "array": [0] * len(t),
+                                     "arrayminus": t[f"{side}_{hi}_usd"] - t[f"{side}_{lo}_usd"],
+                                     "thickness": w, "width": 0, "color": color})
+        fig.add_scatter(x=x, y=t[f"{side}_p50_usd"], mode="markers", name=f"{name}: P50 (bars P10–P90, "
+                                                                            "P25–P75)",
+                        marker={"color": "white", "size": 8, "line": {"color": color, "width": 2}},
+                        hovertemplate=f"%{{x}} {name}: P50 $%{{y:,.2f}}<extra></extra>")
+        fig.add_scatter(x=x, y=t[f"{side}_real_usd"], mode="markers", name=f"{name}: happened",
+                        marker={"color": "black", "symbol": "x", "size": 8},
+                        hovertemplate=f"%{{x}} {name} happened: $%{{y:,.2f}}<extra></extra>")
+    fig.add_hline(y=p0, line=IDEAL, annotation_text=f"entry P0 ${p0:,.2f}")
+    fig.update_xaxes(title="minutes after the entry", type="category")
+    fig.update_yaxes(title="centre of mass of the volume ($)", tickprefix="$")
+    return _layout(fig, title, height=480)

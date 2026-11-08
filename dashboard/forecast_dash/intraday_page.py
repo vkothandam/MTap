@@ -1,5 +1,6 @@
-"""The Intraday section, two views (sidebar View, ?view=):
+"""The Intraday section, three views (sidebar View, ?view=):
 - Space (pockets): where the later volume traded after moments like this one (space_page.py).
+- Pockets model: the intraday-ft model (intraday v2) on pocket targets, graded (pockets_page.py).
 - Model runs: six tabs grading the intraday model (VWAP of the next minutes, the rest of the day,
   the whole day) on the days it never trained on. Run `tft-intraday` to make a run (see
   intraday_contract.py for the files)."""
@@ -11,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from forecast_dash import charts, space_page
+from forecast_dash import charts, pockets_page, space_page
 from forecast_dash import intraday_calib as ic
 from forecast_dash.contract import run_label
 from forecast_dash.intraday_contract import (
@@ -53,7 +54,7 @@ def get_summary(path: str, ref: str) -> pd.DataFrame:
 
 # ---- page -----------------------------------------------------------------------------------
 
-VIEWS = {"space": "Space (pockets)", "runs": "Model runs"}
+VIEWS = {"space": "Space (pockets)", "pockets": "Pockets model", "runs": "Model runs"}
 
 
 def view_radio() -> str:
@@ -64,7 +65,8 @@ def view_radio() -> str:
     label = st.sidebar.radio("View", list(VIEWS.values()), key="id_view",
                              help="Space: where the later volume traded after moments like a "
                                   "chosen one, matched across stocks (no model). Model runs: "
-                                  "the intraday model graded on its test days")
+                                  "the intraday model graded on its test days. Pockets model: the "
+                                  "intraday v2 model on pocket targets, graded")
     slug = next(k for k, v in VIEWS.items() if v == label)
     if st.query_params.get("view") != slug:
         st.query_params["view"] = slug
@@ -77,9 +79,12 @@ def open_runs():
     st.query_params["view"] = "runs"
 
 
-def render(root: str, space_root: str):
-    if view_radio() == "space":
+def render(root: str, space_root: str, pockets_root: str):
+    view = view_radio()
+    if view == "space":
         return space_page.render(space_root)
+    if view == "pockets":
+        return pockets_page.render(pockets_root)
     render_runs(root)
 
 

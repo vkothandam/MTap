@@ -1,4 +1,5 @@
-"""`forecast-dash [--runs DIR] [--intraday-runs DIR] [--space-lib DIR] [streamlit options]`:
+"""`forecast-dash [--runs DIR] [--intraday-runs DIR] [--pockets-runs DIR]
+[--space-lib DIR] [streamlit options]`:
 launch the dashboard."""
 
 from __future__ import annotations
@@ -17,6 +18,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--intraday-runs", default=None,
                    help="directory of intraday runs (default: <runs>/intraday, or "
                         "$FORECAST_DASH_INTRADAY_RUNS)")
+    p.add_argument("--pockets-runs", default=None,
+                   help="directory of intraday-ft runs for Intraday → Pockets model (default: "
+                        "<runs>/intraday_ft, or $FORECAST_DASH_POCKETS_RUNS)")
     p.add_argument("--space-lib", default=None,
                    help="directory of moment libraries for Intraday → Space (default: "
                         "../out/space, or $FORECAST_DASH_SPACE_LIB)")
@@ -31,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
                 "--", "--runs", str(Path(a.runs).resolve())]
     if a.intraday_runs:
         sys.argv += ["--intraday-runs", str(Path(a.intraday_runs).resolve())]
+    if a.pockets_runs:
+        sys.argv += ["--pockets-runs", str(Path(a.pockets_runs).resolve())]
     if a.space_lib:
         sys.argv += ["--space-lib", str(Path(a.space_lib).resolve())]
     return stcli.main()

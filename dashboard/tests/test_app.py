@@ -2,7 +2,7 @@ import ast
 import json
 from pathlib import Path
 
-from conftest import write_intraday_run, write_run, write_space_lib
+from conftest import write_intraday_run, write_pockets_run, write_run, write_space_lib
 from streamlit.testing.v1 import AppTest
 
 PKG = Path(__file__).parents[1] / "forecast_dash"
@@ -97,14 +97,15 @@ def test_every_panel_and_column_has_help():
         return {n.args[1].value for n in ast.walk(ast.parse((PKG / name).read_text()))
                 if isinstance(n, ast.Call) and getattr(n.func, "id", None) in ("_chart", "_table")}
 
-    daily, intraday, home, space = (panels(f) for f in ("app.py", "intraday_page.py", "home.py",
-                                                         "space_page.py"))
-    used = daily | intraday | home | space
+    daily, intraday, home, space, pockets = (panels(f) for f in (
+        "app.py", "intraday_page.py", "home.py", "space_page.py", "pockets_page.py"))
+    used = daily | intraday | home | space | pockets
     assert len(daily) >= 30 and len(intraday) >= 10 and home, (daily, intraday, home)
     assert len(space) >= 10, space
     assert used <= set(PANELS), used - set(PANELS)
     assert all(k.startswith("id_") for k in intraday)
     assert all(k.startswith("sp_") for k in space)
+    assert len(pockets) >= 10 and all(k.startswith("pk_") for k in pockets), pockets
     assert "Wilson" in column_help("ci_lo")
     assert column_help("low (P10)").endswith("10% chance the VWAP ends at or below it")
     assert column_help("up_said") and column_help("P(>= +1.0%)")
@@ -113,8 +114,10 @@ def test_every_panel_and_column_has_help():
     assert column_help("came_true", "lv_table") != column_help("came_true")
 
 
-def _section(root, section, monkeypatch, intraday=None, space=None, view=None, **params):
+def _section(root, section, monkeypatch, intraday=None, space=None, view=None, pockets=None,
+             **params):
     monkeypatch.setenv("FORECAST_DASH_RUNS", str(root))
+    monkeypatch.setenv("FORECAST_DASH_POCKETS_RUNS", str(pockets or Path(root) / "no-pockets"))
     if intraday is not None:
         monkeypatch.setenv("FORECAST_DASH_INTRADAY_RUNS", str(intraday))
     monkeypatch.setenv("FORECAST_DASH_SPACE_LIB", str(space or Path(root) / "no-space"))
@@ -367,3 +370,104 @@ def test_space_with_a_moment_before_any_history(tmp_path, monkeypatch):
                   sp_stock=tk, sp_date=first)
     assert not at.exception, [e.value for e in at.exception]
     assert any("No earlier moments" in i.value for i in at.info)
+
+
+# ---- Intraday → Pockets model ---------------------------------------------------------------------
+
+PK_TABS = ["Go rule", "Pocket shape", "By group", "Overlays", "Stock day"]
+
+
+def _pockets(tmp_path, monkeypatch, **kw):
+    write_run(tmp_path / "runs")
+    root = tmp_path / "pk"
+    write_pockets_run(root, "20261107-000000-ft-B", **kw)
+    return _section(tmp_path / "runs", "intraday", monkeypatch, view="pockets", pockets=root)
+
+
+def test_pockets_renders_five_explained_tabs(tmp_path, monkeypatch):
+    write_pockets_run(tmp_path / "pk", "20261106-000000-ft-A", fold="A", label="IA1A", seed=2)
+    at = _pockets(tmp_path, monkeypatch)
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.radio(key="id_view").value == "Pockets model"
+    assert at.selectbox(key="pk_run").value == "20261107-000000-ft-B"     # newest first
+    assert any(p.proto.popover.label.startswith("ℹ️ IA1") for p in at.sidebar.get("popover"))
+    assert [t.label for t in at.tabs] == PK_TABS
+    assert all(len(t.get("plotly_chart")) >= 1 for t in at.tabs), [t.label for t in at.tabs]
+    in_short = {t.label: [m.value for m in t.markdown if m.value.startswith("**In short**")]
+                for t in at.tabs if t.label != "Stock day"}
+    assert all(in_short.values()), in_short
+    go = next(t for t in at.tabs if t.label == "Go rule")
+    assert go.dataframe[0].value["passes"].all()
+    assert sorted(r.split(" · ")[0] for r in go.dataframe[1].value["run"]) == ["IA1", "IA1A"]
+    _assert_explained(at)
+    raw = next(t for t in at.tabs if t.label == "Pocket shape").dataframe[0].value
+    assert (raw["p50_hit"] < 0.45).all()                                 # the synthetic shift
+    # recalibrated: the shift is fixed on the warm days
+    at.radio(key="pk_mode").set_value("recal")
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    cal = next(t for t in at.tabs if t.label == "Pocket shape").dataframe[0].value
+    assert (abs(cal["p50_hit"] - 0.5) < 0.06).all() and (cal["n"] < raw["n"]).all()
+    _assert_explained(at)
+
+
+def test_pockets_follows_every_control(tmp_path, monkeypatch):
+    at = _pockets(tmp_path, monkeypatch)
+    for fam in ("cm_dn", "bulge", "sag", "rvol"):
+        at.selectbox(key="pk_shape_family").set_value(fam)
+        at.selectbox(key="pk_shape_bin").set_value(1)
+        at.run()
+        assert not at.exception, (fam, [e.value for e in at.exception])
+    for key in ("sector", "industry", "minute_bucket", "symbol", "live_set"):
+        at.selectbox(key="pk_group_by").set_value(key)
+        at.selectbox(key="pk_ov_by").set_value(key)
+        at.run()
+        assert not at.exception, (key, [e.value for e in at.exception])
+        grp = next(t for t in at.tabs if t.label == "By group").dataframe[0].value
+        assert key in grp and grp["n"].sum() > 0
+    for ev in ("p_bulge60", "p_sag60"):
+        at.selectbox(key="pk_event").set_value(ev)
+        at.selectbox(key="pk_day_event").set_value(ev)
+        at.run()
+        assert not at.exception, (ev, [e.value for e in at.exception])
+    _assert_explained(at)
+    # the stock day follows its pickers
+    at.selectbox(key="pk_day").set_value("2026-01-06")
+    at.selectbox(key="pk_sym").set_value("S3")
+    at.selectbox(key="pk_day_bin").set_value(2)
+    at.select_slider(key="pk_when").set_value("10:04")
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    day = next(t for t in at.tabs if t.label == "Stock day")
+    assert any("S3 · 2026-01-06" in c.value for c in day.caption)
+    assert len(day.dataframe[0].value) == 5
+    # the filters cut the rows; an empty selection says so
+    at.multiselect(key="pk_sector").set_value(["10"])  # not a TRBC code: shown as is
+    at.checkbox(key="pk_live").check()
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.sidebar.caption[-1].value.startswith("1,014 of 4,056 decisions · 3 stocks")
+    at.multiselect(key="pk_stocks").set_value(["S11"])                  # S11 is not live
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("No rows" in i.value for i in at.info)
+
+
+def test_pockets_without_side_files_or_report(tmp_path, monkeypatch):
+    at = _pockets(tmp_path, monkeypatch, side_files=False, report=False)
+    assert not at.exception, [e.value for e in at.exception]
+    assert [t.label for t in at.tabs] == PK_TABS
+    assert any("clim.parquet" in w.value for w in at.sidebar.warning)
+    at.radio(key="pk_mode").set_value("recal")
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("no recal.parquet" in w.value for w in at.sidebar.warning)
+    assert any("clim_rates.parquet" in i.value for i in at.info)
+
+
+def test_pockets_without_a_run(tmp_path, monkeypatch):
+    write_run(tmp_path / "runs")
+    at = _section(tmp_path / "runs", "intraday", monkeypatch, view="pockets")
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("intraday-ft-train" in i.value for i in at.info)
+    assert not at.tabs

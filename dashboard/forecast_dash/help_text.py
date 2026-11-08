@@ -1191,3 +1191,196 @@ COLUMNS.update({
     "sp_dial_table:p_up": "P(rest of day above now), blended with everything",
     "sp_dial_table:above_now": "share of later volume above now, blended with everything",
 })
+
+
+# ---- Intraday → Pockets model (intraday-ft runs, pockets_page.py) ------------------------------
+
+PK_TERMS = """
+**Words used on this page**
+- **decision**: one (stock, day, minute). The entry price **P0** is the next minute's open, the
+  price you could buy at (the last close sits at the bid or the ask, a fake direction edge).
+- **duration bins**: b1 0–5, b2 5–15, b3 15–30, b4 30–60 min and b5 60 min → close after the entry.
+  Nothing is forecast at an exact minute.
+- **pocket shape**: per bin, where the volume traded relative to P0, in the stock's σ (the std of
+  its daily VWAP change over 20 sessions). `cm_up` / `cm_dn` = the centre of mass of the volume
+  above / below P0 (how far out it concentrates: the "high" and the "low"); `bulge` / `sag` = the
+  volume share above / below × that distance; `rvol` = log(bin volume ÷ its normal).
+- **quantiles**: the model gives P10 / P25 / P50 / P75 / P90 of each one.
+- **climatology**: the training span's quantiles per 5-minute slot × σ tercile × liquidity tercile.
+  It knows nothing about the moment, so skill vs climatology is the model's real edge.
+- **pinball skill** = 1 − model loss ÷ climatology loss: above 0 beats it. CIs = whole test days
+  resampled.
+- **rank IC**: the Spearman correlation of P50 with what happened across the stocks at the same
+  minute (≥ 10 of them), averaged per day then over days. Climatology ranks by σ, liquidity and time
+  only.
+- **recalibrated**: each day's quantiles shifted by what the 20 test sessions before it got wrong
+  (one shift per target and quantile, the same for every stock, so the rank IC can't change). Only
+  past outcomes are used, as live. The first 20 days have no shift and are left out of its scores.
+- **overlays**: the event probabilities are stored four ways: no identity, + sector, + industry,
+  + symbol (the model was trained with each masked at random).
+- **go rule (Q41)**: direction isn't required. The pocket shape must beat climatology with a CI
+  clear of 0, rank the stocks better than climatology, and be calibrated (P50 hit 45–55%, P10–P90
+  coverage 75–85%), raw or after the recalibration, and hold on both test years.
+"""
+
+HELP.update({
+    "pk_go": ("Go rule: the pocket shape", f"""
+The intraday v2 model (`intraday_ft`) forecasts, at every decision minute, the shape of the volume
+pocket around the entry price over five duration bins. This tab is the run's own report: per shape
+target and bin, whether it passes the go rule. Below it, every pockets run's headline numbers.
+
+**Sidebar**: the run, the fold, raw or recalibrated quantiles, the filters (days, sector, industry,
+cap band, stocks, live set) and the minimum rows per group. The filters apply to the other tabs.
+{PK_TERMS}"""),
+    "pk_shape": ("Pocket shape: calibration and skill", """
+One shape target on the filtered rows: how often the outcome fell at or below each quantile
+(raw and recalibrated), then its scores in every bin. Pick the target and the bin above the chart.
+"""),
+    "pk_groups": ("Pocket shape by group", """
+The same scores split by cap band, sector, industry, time of day, stock or live set. A group with
+fewer rows than the sidebar minimum is greyed: its CI is wide and its rate noise. The stock split
+shows the 60 stocks with the most rows (rank IC needs many stocks at a minute, so it is blank there).
+"""),
+    "pk_overlays": ("Events and identity overlays", """
+Three event probabilities (most of the next hour's volume above P0; an up / down pocket of at least
+0.5σ in the next hour), each stored without identity and with + sector, + industry, + symbol.
+Graded by Brier skill vs climatology's rate per cell, overall and per group. If an overlay only
+moves the number without improving the skill, the identity adds nothing.
+"""),
+    "pk_day": ("One stock, one day", """
+A stock's test day decision by decision: where the volume above and below the entry concentrated
+in a bin (P10–P90 band, P50, what happened), an event's probability under each overlay, and, for
+one decision, the pocket across all five bins in $.
+"""),
+})
+
+PANELS.update({
+    "pk_go_chart": ("Skill per target and bin", """
+Bars: pinball skill vs climatology, raw, with its 95% day-bootstrap CI. Diamonds: the same after
+the rolling recalibration (on the days that have it). Hover for the rank IC next to climatology's.
+"""),
+    "pk_go_table": ("Go rule per target and bin", """
+One row per shape target and bin from the run's report (all test rows). `passes` = skill CI above
+0, rank IC above climatology's, and calibrated raw or after the recalibration.
+"""),
+    "pk_runs": ("Every pockets run", """
+The headline numbers of each run and fold under the runs directory, to compare ablations (no 1 s
+tier, a 120- or 60-minute encoder) and the two test years.
+"""),
+    "pk_shape_hits": ("Quantile calibration", """
+x = the forecast quantile, y = the share of outcomes at or below it, on the filtered rows. On the
+diagonal = calibrated; above it = the quantiles are too low. Raw and recalibrated.
+"""),
+    "pk_shape_bins": ("Scores per bin", """
+The chosen target in each of the five bins, in the chosen mode (raw or recalibrated), on the
+filtered rows.
+"""),
+    "pk_groups_chart": ("Skill per group", """
+Pinball skill vs climatology per group with its 95% CI. Grey bars have fewer rows than the
+sidebar minimum.
+"""),
+    "pk_groups_table": ("Scores per group", """
+The chosen target and bin per group, in the chosen mode, on the filtered rows.
+"""),
+    "pk_ov_reliab": ("Said vs came true per overlay", """
+One line per overlay: x = the probability said (10% buckets), y = how often it happened, Wilson
+95% bars, marker size ~ √n. On the diagonal = calibrated. Points with few rows are hidden.
+"""),
+    "pk_ov_table": ("Brier skill per overlay", """
+All filtered rows: how often the event happened, the mean probability each overlay said, and its
+Brier skill vs climatology's rate for the row's cell (CI for the first and the last overlay).
+"""),
+    "pk_ov_groups": ("Brier skill per overlay and group", """
+The same per group (the sidebar's minimum rows marks `enough_n`). An overlay that helps a group
+shows as a higher skill than `none` on that row, beyond the CI.
+"""),
+    "pk_replay": ("Where the volume concentrated", """
+At each decision (x): the entry price P0 (grey), and the bin's centre of mass of the volume above
+it (green) and below it (red) in $: P10–P90 band, P50 dotted, dots = what happened. A dot outside
+its band is one of the 20% the band should miss.
+"""),
+    "pk_timeline": ("Event probability through the day", """
+The chosen event's probability at each decision under each overlay; × = whether it happened (1) or
+not (0). Lines that sit together = the identity doesn't move the forecast for this stock.
+"""),
+    "pk_fan": ("The pocket over the bins", """
+One decision: per bin, the centre of mass of the volume above (green) and below (red) the entry,
+in $: thin bar P10–P90, thick bar P25–P75, circle P50, × = what happened.
+"""),
+    "pk_fan_table": ("The pocket over the bins (table)", """
+The chart's numbers: per bin the P10 / P50 / P90 of the centre of mass above and below the entry in
+$, what happened, and the bin's volume vs normal (log).
+"""),
+})
+
+_PK_SCORES = {
+    "n": "rows (decisions) with an outcome",
+    "skill_clim": "pinball skill vs climatology: 1 − model loss ÷ climatology loss. Above 0 beats it",
+    "skill_lo": "low end of the skill's 95% CI (whole test days resampled)",
+    "skill_hi": "high end of the skill's 95% CI",
+    "p50_hit": "share of outcomes at or below P50. Calibrated = 50% (45–55% passes)",
+    "cover80": "share of outcomes inside P10–P90. Calibrated = 80% (75–85% passes)",
+    "rank_ic": "rank IC of P50: Spearman correlation with what happened across the stocks at the "
+               "same minute, mean over days. Blank for groups with few stocks per minute",
+    "bin": "duration bin: b1 0–5, b2 5–15, b3 15–30, b4 30–60 min, b5 60 min → close",
+    "window": "minutes after the entry the bin covers",
+    "enough_n": "the group has at least the sidebar's minimum rows (else read it as noise)",
+}
+for _p in ("pk_go_table", "pk_shape_bins", "pk_groups_table"):
+    COLUMNS.update({f"{_p}:{c}": h for c, h in _PK_SCORES.items()})
+COLUMNS.update({
+    "pk_go_table:target": "shape target and bin (cm_up_b4 = centre of mass above P0 in 30–60 min)",
+    "pk_go_table:family": "cm_up / cm_dn: centre of mass of the volume above / below P0 (σ); "
+                          "bulge / sag: volume share × distance; rvol: bin volume vs normal (log)",
+    "pk_go_table:passes": "passes the go rule: skill CI above 0, rank IC above climatology's, "
+                          "calibrated (raw or after the recalibration)",
+    "pk_go_table:n": "rows with an outcome",
+    "pk_go_table:clim_rank_ic": "climatology's rank IC (it ranks by time, σ and liquidity only)",
+    "pk_go_table:calibrated": "P50 hit 45–55% and P10–P90 coverage 75–85%, raw. For bulge / sag "
+                              "an outcome of exactly 0 ties with a quantile at 0, so each rate is a "
+                              "span (below … at or below); it passes if the span reaches the band",
+    "pk_go_table:cal_skill_clim": "skill vs climatology after the recalibration (its warm days)",
+    "pk_go_table:cal_p50_hit": "P50 hit after the recalibration",
+    "pk_go_table:cal_cover80": "P10–P90 coverage after the recalibration",
+    "pk_go_table:calibrated_after_recal": "calibrated after the recalibration",
+    "pk_runs:run": "the run (MODEL.md label · directory)",
+    "pk_runs:fold": "the test block: B = 2026-01 → 10, A = 2025",
+    "pk_runs:rows": "test decisions",
+    "pk_runs:days": "test days",
+    "pk_runs:net60_rank_ic": "direction (record only): rank IC of the next hour's net pocket, "
+                             "+ symbol overlay. 0 = no direction edge",
+    "pk_runs:mass_up60_auc": "direction (record only): AUC of P(most of the next hour's volume "
+                             "above P0), no overlay. 0.5 = none",
+})
+for _t in ("cm_up_b1", "cm_up_b4", "cm_dn_b4", "bulge_b4", "sag_b4", "rvol_b1", "rvol_b4"):
+    COLUMNS[f"pk_runs:{_t}_skill"] = f"`{_t}` pinball skill vs climatology (raw)"
+    COLUMNS[f"pk_runs:{_t}_ic"] = f"`{_t}` rank IC of P50 across the stocks at a minute"
+for _k, _lab in (("cap_band", "market-cap band (point in time)"), ("sector", "sector code"),
+                 ("industry", "industry code"), ("minute_bucket", "time of day (ET) of the decision"),
+                 ("symbol", "stock ticker"), ("live_set", "in the E*TRADE lists (the live set)")):
+    COLUMNS[f"pk_groups_table:{_k}"] = _lab
+for _p in ("pk_ov_table", "pk_ov_groups"):
+    COLUMNS.update({
+        f"{_p}:group": "the group (all rows, or the value of the Group by choice)",
+        f"{_p}:n": "rows with an outcome",
+        f"{_p}:came_true": "share of rows where the event happened",
+        f"{_p}:enough_n": "at least the sidebar's minimum rows",
+    })
+    for _v, _lab in (("none", "no identity"), ("sec", "+ sector"), ("ind", "+ industry"),
+                     ("all", "+ symbol")):
+        COLUMNS.update({
+            f"{_p}:said_{_v}": f"mean probability said, {_lab}",
+            f"{_p}:skill_{_v}": f"Brier skill vs climatology's rate, {_lab}. Above 0 beats it",
+            f"{_p}:skill_{_v}_lo": f"low end of the 95% CI of the skill, {_lab}",
+            f"{_p}:skill_{_v}_hi": f"high end of the 95% CI of the skill, {_lab}",
+        })
+COLUMNS.update({
+    "pk_fan_table:window": "the bin: minutes after the entry",
+    "pk_fan_table:rvol_p50": "the bin's volume vs normal, P50 (log: 0 = normal, +0.69 = double)",
+    "pk_fan_table:rvol_real": "the bin's volume vs normal that happened (log)",
+})
+for _s, _lab in (("up", "above"), ("dn", "below")):
+    for _q in ("p10", "p50", "p90"):
+        COLUMNS[f"pk_fan_table:{_s}_{_q}_usd"] = (f"centre of mass of the volume {_lab} the entry, "
+                                                  f"{_q.upper()}, in $")
+    COLUMNS[f"pk_fan_table:{_s}_real_usd"] = f"where the volume {_lab} the entry did concentrate, $"

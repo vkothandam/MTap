@@ -55,6 +55,14 @@ def _default_intraday_root() -> str:
     return given or str(Path(_default_root()) / "intraday")
 
 
+def _default_pockets_root() -> str:
+    """--pockets-runs, else $FORECAST_DASH_POCKETS_RUNS, else <daily runs>/intraday_ft."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--pockets-runs", default=os.environ.get("FORECAST_DASH_POCKETS_RUNS"))
+    given = p.parse_known_args(sys.argv[1:])[0].pockets_runs
+    return given or str(Path(_default_root()) / "intraday_ft")
+
+
 def _default_space_root() -> str:
     """--space-lib, else $FORECAST_DASH_SPACE_LIB, else ../out/space."""
     p = argparse.ArgumentParser(add_help=False)
@@ -839,7 +847,8 @@ def main():
     if section == "home":
         return home.render(_default_root(), _default_intraday_root())
     if section == "intraday":
-        return intraday_page.render(_default_intraday_root(), _default_space_root())
+        return intraday_page.render(_default_intraday_root(), _default_space_root(),
+                                   _default_pockets_root())
     if section == "watchlist":
         return watchlist_page.render(_default_screener_root())
     title, body = HELP["overview"]

@@ -26,6 +26,7 @@ uv run forecast-dash --runs ../ml/runs/<run_id> --port 8502
 FORECAST_DASH_RUNS=../ml/runs uv run forecast-dash --port 8503
 uv run forecast-dash --runs ../ml/runs --intraday-runs ../ml/runs/intraday   # the default
 uv run forecast-dash --runs ../ml/runs --space-lib ../out/space               # the default
+uv run forecast-dash --runs ../ml/runs --pockets-runs ../ml/runs/intraday_ft  # the default
 ```
 
 To run tests:
@@ -103,9 +104,11 @@ The sidebar **Section** radio switches between three views (it follows `?section
   `report/by_target.parquet` if the run has it, else computed). A card says so when there is no run (`tft-intraday` has not
   been run).
 - **Cross-day**: the next-day forecast tabs below, with their own sidebar filters.
-- **Intraday**: a sidebar **View** radio (`?view=space` or `runs`) picks **Space (pockets)**
-  (the default, see *Intraday → Space* below) or **Model runs**, the six tabs for the intraday
-  model described under *Intraday* below. Home's *Open Intraday* button opens Model runs.
+- **Intraday**: a sidebar **View** radio (`?view=space`, `pockets` or `runs`) picks **Space
+  (pockets)** (the default, see *Intraday → Space* below), **Pockets model** (the intraday-ft
+  model graded on its test months, *Intraday → Pockets model* below) or **Model runs**, the six
+  tabs for the older `tft_intraday` model described under *Intraday* below. Home's *Open
+  Intraday* button opens Model runs.
 
 ## Sidebar (applies to every Cross-day tab)
 
@@ -242,6 +245,51 @@ WebGL; check the look with headless Chrome (`--use-angle=metal` on a Mac; SwiftS
 | Dial curve | Matches, stocks and independent days, P(up) and share above now for dials 0.25 … 2 | A reading that only moves away from everything at a dial with few days is noise. |
 | Day path | The stock's minute VWAP, session VWAP and volume that day, the decision time and the previous VWAP | What actually happened after the moment. |
 
+## Intraday → Pockets model
+
+The intraday v2 model (`ml/intraday_ft`, plan in `docs/intraday-features.md`): at every decision
+(stock, day, minute) it gives P10 / P25 / P50 / P75 / P90 of the **pocket shape** over five
+duration bins after the entry price P0 (b1 0–5, b2 5–15, b3 15–30, b4 30–60 min, b5 60 min →
+close): where the volume above / below P0 concentrates (`cm_up` / `cm_dn`, σ), volume share ×
+distance (`bulge` / `sag`), and how busy the bin is (`rvol`). Plus event probabilities under four
+identity overlays (none, + sector, + industry, + symbol). The page grades them against what
+happened. Runs are found under `--pockets-runs DIR` or `FORECAST_DASH_POCKETS_RUNS` (default
+`<runs>/intraday_ft`); `intraday-ft-train` makes a run and `intraday-ft-report` scores it.
+
+### Pockets run contract (`forecast_dash/pockets_contract.py`)
+
+```
+<run>/config.json                         model == "intraday_ft", label
+<run>/MODEL.md, <run>/report.json         optional; the card and the run's own report
+<run>/fold_<k>/intraday_ft_pred.parquet   a row per decision: date, minute (0 = 09:30 ET), symbol,
+                                          sector (TRBC code), industry, cap_band, live_set, sigma,
+                                          log_dvol, dec_row, real_p0, real_<target>,
+                                          <event>__{none,sec,ind,all}
+<run>/fold_<k>/quantiles.npy / .json      (decisions, targets, 5) float16 + the target names
+<run>/fold_<k>/recal.parquet              optional; per (date, target) offsets o10 .. o90 from the
+                                          previous 20 sessions' outcomes, lo / hi, n_days
+<run>/fold_<k>/clim.parquet               optional; climatology quantiles per (cell, target)
+<run>/fold_<k>/clim_rates.parquet         optional; climatology event rates per (cell, event)
+```
+
+Without the three optional fold files (runs scored before 2026-11-07 23:00) the page says so:
+skill vs climatology is blank and the recalibrated mode shows raw. `bulge` / `sag` quantiles under
+0.01σ are read as 0 and the `+ symbol` event probability is re-read from its quantiles, both as in
+the report, so the page's numbers equal the report's.
+
+- **Sidebar.** Run (by MODEL.md label), fold, **Quantiles**: raw or recalibrated (each day
+  shifted by the errors of the 20 test sessions before it; the first 20 days are left out of the
+  recalibrated scores). Filters: test days, sector, industry, cap band, stocks, live set only;
+  min rows per group.
+
+| Tab | What it shows | How to read it |
+| --- | --- | --- |
+| Go rule | The run report's pass / fail per shape target and bin (Q41: skill CI above 0, rank IC above climatology's, calibrated raw or after the recalibration), and every run's headline numbers side by side | The page's verdict on the model. Not filtered. For `bulge` / `sag` an outcome of exactly 0 ties with a quantile at 0, so a hit rate is a span; it passes if the span reaches the ideal band |
+| Pocket shape | One target: share of outcomes at or below each quantile, raw and recalibrated; every bin's scores on the filtered rows | On the diagonal = calibrated. Skill above 0 beats climatology; rank IC says how well P50 orders the stocks at a minute |
+| By group | The scores by cap band, sector, industry, time of day, stock or live set | Groups under the minimum rows are noise. A group worse than climatology beyond its CI is where the model fails |
+| Overlays | One event (most of the next hour's volume above P0; bulge / sag ≥ 0.5σ): said vs came true per overlay, Brier skill vs climatology with CIs, by group | Whether sector / industry / symbol identity changes the forecast. An overlay that moves the number but not the skill only adds noise |
+| Stock day | One stock and day: the centres of mass above / below P0 at each decision in $ (P10–P90 band, P50, what happened), the event timeline per overlay, and at a chosen time the pocket over all five bins | What the model said through the day against what traded |
+
 ## Layout
 
 ```
@@ -258,6 +306,9 @@ forecast_dash/
   space_page.py        Intraday → Space: sidebar, evidence, four tabs (reads a mtap_space library)
   space_calc.py        Space tables from a library and a query (pure)
   space3d/space3d.js   the built 3-D view (from js/, do not edit)
+  pockets_page.py      Intraday → Pockets model: sidebar, five tabs (reads intraday-ft runs)
+  pockets_calc.py      pocket-shape and overlay scores, go rule, replay (pure)
+  pockets_contract.py  discover / load intraday-ft runs, quantiles, recalibration
   intraday_contract.py discover / load intraday runs
   intraday_calib.py    intraday scores, built on calib.py (pure)
   cli.py        forecast-dash entry point -> streamlit run app.py

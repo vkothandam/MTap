@@ -2127,6 +2127,41 @@ stock at a minute, so the rank IC can't change. The first 20 test days have no o
 build and to run live, with no loss of shape skill. Needs a fold A check (enc120 + noS together) before it replaces
 IA1.
 
+### 2026-11 Intraday v2 Moves: P(the volume centres at or beyond ±X%) read off the stored quantiles (2026-11-08, no training)
+Tags: `tag-ml-intraday`. Runs IA1 (`20261107-141854-ft-B`, 2026) and IA1A (`20261107-162439-ft-A`, 2025), read only.
+Dashboard Intraday → Pockets model → Moves; MODEL-STRATEGY Q42. Code: `dashboard/forecast_dash/pockets_calc.py`
+(`move_*`), `ml/intraday_ft/extremes.py`.
+
+**How P is made.** P(+X%) = P(the side above P0 forms: `mass_up` ≥ 5%) × P(its centre of mass `cm_up` ≥ ln(1+X)/σ),
+both read off the stored P10…P90 with `cdf_at`; −X% the same with `cm_dn` and ln(1−X). Then a rolling 20-session
+isotonic map from earlier days' outcomes (equal-count bins of ≥ 150 rows, past only; the first 20 days stay raw).
+No model change: the predictions are the same numbers, read a new way.
+
+**What we found:**
+- **Where the side formed, the centre's quantiles are already calibrated for ±X** (b4, +1%: said 60%, happened 60%,
+  n 8,366). **The full P isn't, raw:** in 34–40% of the high-P rows the side barely traded (< 5% of the bin's
+  volume), so raw P overstates by 5–15 points. Hence the rolling calibration.
+- **Calibrated, P is good to a few points up to about 0.4–0.5, bold above.** Rows with P ≥ 0.4 (all days, b4,
+  ±1%): fold B said 0.43, happened 0.41; ≥ 0.3: 0.36 → 0.34. At ≥ 0.5: B up 0.52 → 0.48, B down 0.55 → 0.52, A up
+  0.53 → 0.41, A down 0.55 → 0.51, A b3 up 0.54 → 0.35. Almost nothing reaches 0.6. Tried and not better: 20 fixed
+  bins, Platt scaling, recalibrating the quantiles first.
+- **Why P stays small:** the centre reaches ±1% in 30–60 min in only ~6% of decisions. The top 0.1% by raw P
+  happen 48–62% of the time: an 8–10× lift over the base rate, never a sure thing.
+- **The last 10 test days (dashboard default, b4, ±1%, P ≥ 0.4):** fold B 120 predictions on 20 stocks, said 48%,
+  happened 40% (gap −8 pts, CI −20 … −0.2); fold A 336 on 54 stocks, said 45%, happened 50% (+5, CI −7 … +14).
+  All down-side: in those days no up-side decision reached 0.4.
+- **Touched runs 15–20 points above happened:** the price reaches ±X much more often than the volume centres there
+  (B b4 down ≥ 0.5: centre 52%, touched 64%). The median best high / low in the window is 2–3% for a 1% call.
+- **Size, not direction (again):** the +1% picks are the same stocks as the −1% picks (P up vs P down correlation
+  1.00, 96% overlap; both sides reached in 43%). The bulge-vs-sag lean is shown as a fact, not a signal.
+- **Extremes facts:** the frames' ±10σ clip turned big-gap days (MRNA, CAR, ETHZ) into false highs above +20%;
+  clipped minutes now give NaN (b2 0.06%, b4 7.8% of rows NaN, with no-trade bins). A when-issued line (APTV /
+  APTVw) shares its company's stock_id, so the match is on (stock_id, symbol, day). 5 spot checks (KKR, SNOW, CTAS,
+  CW, SOFI, 2026-09) equal `bars_1m` exactly. The centre lies beyond the high in only 0.04–0.2% of rows (VWAP
+  inside the bar range, as it must).
+- **The run file is a 25% sample** (about 250 of 1,000 stocks a day, every 15 min). A re-score of the trained models
+  over every stock-day (no training, ~5 h both folds) would give full counts; not run.
+
 ### 2026-11 Intraday P1 bounce check: the d = 0 direction edge was bid–ask bounce (run 2026-11-01, 56 min)
 Tags: `tag-ml-intraday`. Plan: [live-recommendations-plan.md](live-recommendations-plan.md) P1. Script:
 `ml/scripts_intraday_probe.py --parts p1`. Same rows in every arm (stock-minutes where minute i traded), full

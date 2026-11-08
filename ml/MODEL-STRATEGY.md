@@ -19,7 +19,7 @@ changes; details and CIs are in [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-m
 | research base (TFT) | **R1c** `20261028-233305Z-return-4438sym` | R0 + session shape + after-hours | skill 27.0%, P5–P95 88.4%; 0.58% better than R0 (CI clear), most on earnings days; R7 (HGB) now beats it at night |
 | intraday handoff | R0 `20261028-030847Z-return-4438sym/handoff.parquet` | | to rebuild from R1c |
 | intraday (Step 0 probe, 2026-11-01) | `ml/scripts_intraday_probe.py`, HGB, no saved model | all input groups, d = 0 vs d = 15 | 2026: touch ±0.5σ/60m skill +6.3% (size: real); direction ≈ 0: at d = 15, and at d = 0 once bid–ask bounce is removed (P1, 11-01: rank IC +0.034 → +0.007, top-20 +0.41σ → +0.05σ). No intraday direction model; live recs use base rates (`baseline.climatology`); Q38 |
-| intraday v2 IA1 (fold B, run 2026-11-07) | `ml/runs/intraday_ft/20261107-141854-ft-B`: thin TFT over the whole day's 1-min + 1 s series, `ml/intraday_ft/` | schema v2, [docs/intraday-features.md](../docs/intraday-features.md) | **Pocket shape (the go rule since Q41, 2026-11-07): passes on 2026** for the centres of mass and activity: `cm_up` / `cm_dn` rank IC +0.27 … +0.30 (climatology +0.12 … +0.17), pinball skill +1.4 … +5.0%, calibrated (coverage 81–87%); `rvol` rank IC +0.54 … +0.61 (clim +0.07 … +0.13), skill +18.5 … +23.0%. `bulge` / `sag` +1.8 … +2.1% in b2–b5 after the zero-readout fix (b1 sag −0.9%); rare-event readouts fixed (P(bulge60 > 0.5σ) Brier +2.5%, AUC 0.86). Direction (record only): none, net60 rank IC +0.000 [−0.005, +0.005], AUC 0.496. **Fold A (2025) holds:** `cm` rank IC +0.29 … +0.31 (clim +0.14 … +0.18), `rvol` +0.57 … +0.63 (+0.09 … +0.14), `bulge` / `sag` skill +0.9 … +3.3%; P50 calibration drifts between years (`rvol` P50 hits 0.40–0.46 in 2026, 0.52–0.56 in 2025); direction none again (rank IC +0.002). **Rolling 20-session recalibration (2026-11-08): 25 of 25 shape targets calibrated on both folds** (18 raw). **Ablations:** no 1 s tier 25/25 and as good or better; 120-min encoder as good (`rvol` +20.8 … +25.5%); 60 min worse (23/25). Dashboard Intraday → Pockets model. LEARNINGS "Intraday v2 IA1"; Q40, Q41 |
+| intraday v2 IA1 (fold B, run 2026-11-07) | `ml/runs/intraday_ft/20261107-141854-ft-B`: thin TFT over the whole day's 1-min + 1 s series, `ml/intraday_ft/` | schema v2, [docs/intraday-features.md](../docs/intraday-features.md) | **Pocket shape (the go rule since Q41, 2026-11-07): passes on 2026** for the centres of mass and activity: `cm_up` / `cm_dn` rank IC +0.27 … +0.30 (climatology +0.12 … +0.17), pinball skill +1.4 … +5.0%, calibrated (coverage 81–87%); `rvol` rank IC +0.54 … +0.61 (clim +0.07 … +0.13), skill +18.5 … +23.0%. `bulge` / `sag` +1.8 … +2.1% in b2–b5 after the zero-readout fix (b1 sag −0.9%); rare-event readouts fixed (P(bulge60 > 0.5σ) Brier +2.5%, AUC 0.86). Direction (record only): none, net60 rank IC +0.000 [−0.005, +0.005], AUC 0.496. **Fold A (2025) holds:** `cm` rank IC +0.29 … +0.31 (clim +0.14 … +0.18), `rvol` +0.57 … +0.63 (+0.09 … +0.14), `bulge` / `sag` skill +0.9 … +3.3%; P50 calibration drifts between years (`rvol` P50 hits 0.40–0.46 in 2026, 0.52–0.56 in 2025); direction none again (rank IC +0.002). **Rolling 20-session recalibration (2026-11-08): 25 of 25 shape targets calibrated on both folds** (18 raw). **Ablations:** no 1 s tier 25/25 and as good or better; 120-min encoder as good (`rvol` +20.8 … +25.5%); 60 min worse (23/25). Dashboard Intraday → Pockets model. **Moves (2026-11-08, Q42):** P(centre at or beyond ±X%) read off the stored quantiles, rolling 20-session isotonic calibration: good to a few points up to P ≈ 0.4–0.5 (B ≥ 0.4: said 43%, happened 41%), bold above on fold A up-side (53% → 41%); base rate ~6% at ±1% / 30–60 min. LEARNINGS "Intraday v2 IA1", "Intraday v2 Moves"; Q40, Q41, Q42 |
 
 **Goal (user, 10-29, Q35):** one model for every forecast at and after 09:30, with full
 pre-market; **the night forecast is dropped**. Ranked first by how well the quantiles hit their
@@ -1583,3 +1583,41 @@ mass is within good accuracy, that is good enough for me. Does this change anyth
     and stock (S5).
   - **Next (the user's call):** a fold A check of noS + enc120 together, which would become the cheaper base;
     then Phase 2 (GBM) only if asked.
+
+### Q42 (2026-11-08): Filter the pocket predictions by ±X%: when did the model say "the volume will centre at or beyond +1%", and did it happen? Does that change the prediction, can it run live, and can MBin set such filters?
+
+**The question (user, 2026-11-08).** Set ±X% (1%, 1.5% …), a window, a minimum probability and a date range; see
+every moment across stocks where the model said that, the probability against what happened, a report per day and
+a summary for the period, the bulge-vs-sag lean and how far the price really went (TSLA at $300: $303 forecast in
+5–15 min at 70%; it touched $303, made a high of $310, the volume centred at $306). Then: "does this change the
+prediction? can it be done for the live prediction as well? The MTap predictions go to MBin, where I'm hoping to set
+such filters on predictions, is that feasible?"
+
+**Answer: built as Intraday → Pockets model → Moves. No retraining, and the predictions don't change.**
+- **How:** the model already gives P10…P90 of where the volume above P0 centres (`cm_up`) and below (`cm_dn`), and
+  how much of it is above (`mass_up`), per window. P(+X%) = P(the side above forms) × P(its centre ≥ +X%), read off
+  those quantiles. That's a reading of the stored forecast, not a new forecast.
+- **Calibrated with past outcomes only:** read raw, P overstates by 5–15 points (often the side barely trades). A
+  rolling 20-session isotonic map from earlier days fixes most of it. **Trust the shown P to a few points up to about
+  0.4–0.5** (fold B ≥ 0.4: said 43%, happened 41%). Above 0.5 it can still be bold: fold A up-side 53% → 41%. P above
+  0.6 almost never happens: the centre reaches ±1% in 30–60 min in only ~6% of decisions, so 45% is already 7–8×
+  the base rate. The minimum P therefore defaults to 0.4, and the summary shows "happened − said" with a CI.
+- **Two outcomes are kept apart:** "happened" = the volume centred at or beyond ±X; "touched" = the price reached it
+  (15–20 points more often). The list shows both, the best high / low with its minute, and "captured" (real centre
+  move ÷ predicted P50 move). Example row (fold A): P0 $313.40, target −1% $310.27, low $299.99 (−4.3%), captured
+  1.15×.
+- **Size, not direction:** the +1% and −1% picks are the same stocks. The lean is shown, not used as a signal.
+- **Live: yes.** The same calculation runs on each minute's quantiles; the calibration map needs the previous 20
+  sessions' outcomes, which the live pipeline will have once it grades its own predictions (the extremes after each
+  window closes, `intraday-ft-extremes` as code). Not built yet: the live intraday scorer itself.
+- **In MBin: feasible, with one addition to contract M13.** RECOMMENDATION v2 already carries `distributions` (per
+  bin quantiles, `sigma_vs_price_ref`) and `events` (`touch` / `first` with `level`, `value`, `base_rate`,
+  `calibrated`). Two ways:
+  1. **MTap sends a calibrated ladder** (recommended): per window and side, P(centre ≥ X) for X = 0.5 / 1 / 1.5 / 2 / 3%
+     as `events` entries (a new event name, e.g. `centre`, with `level` and the base rate). MBin filters on them;
+     the calibration stays where the outcomes are.
+  2. MTap sends the raw `cm_up` / `cm_dn` / `mass_up` quantiles and a daily calibration table; MBin computes any X.
+     More flexible, but MBin then owns the maths and the table must stay in step.
+  Either needs a proposal to MBin (`MBin/docs/contracts/proposed/`, live-recommendations-plan P13). Not drafted.
+- **Open:** the run file is a 25% sample; a re-score over every stock-day (~5 h, no training) gives full counts.
+  LEARNINGS "Intraday v2 Moves".

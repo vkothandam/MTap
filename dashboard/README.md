@@ -270,6 +270,9 @@ happened. Runs are found under `--pockets-runs DIR` or `FORECAST_DASH_POCKETS_RU
                                           previous 20 sessions' outcomes, lo / hi, n_days
 <run>/fold_<k>/clim.parquet               optional; climatology quantiles per (cell, target)
 <run>/fold_<k>/clim_rates.parquet         optional; climatology event rates per (cell, event)
+<run>/fold_<k>/extremes.parquet           optional; per dec_row and bin: hi_b<k> / lo_b<k> = ln(high
+                                          / P0), ln(low / P0), t_hi_b<k> / t_lo_b<k> = their minute
+                                          after the decision; `intraday-ft-extremes RUN` writes it
 ```
 
 Without the three optional fold files (runs scored before 2026-11-07 23:00) the page says so:
@@ -289,6 +292,7 @@ the report, so the page's numbers equal the report's.
 | By group | The scores by cap band, sector, industry, time of day, stock or live set | Groups under the minimum rows are noise. A group worse than climatology beyond its CI is where the model fails |
 | Overlays | One event (most of the next hour's volume above P0; bulge / sag ≥ 0.5σ): said vs came true per overlay, Brier skill vs climatology with CIs, by group | Whether sector / industry / symbol identity changes the forecast. An overlay that moves the number but not the skill only adds noise |
 | Stock day | One stock and day: the centres of mass above / below P0 at each decision in $ (P10–P90 band, P50, what happened), the event timeline per overlay, and at a chosen time the pocket over all five bins | What the model said through the day against what traded |
+| Moves | Set ±X% (0.5–3%), side, window, minimum P and a date range: every decision where the model put P(the volume's centre of mass at or beyond ±X%) at or above it, across the filtered stocks. Period summary (said vs happened with a day-bootstrap CI, touched, never formed, median best high / low), a per-day report, when in the day, bulge vs sag lean, the list in $ (P0, target, predicted centre P50 / P90, real centre, best high / low and its minute, captured) and said vs happened over every decision | P = P(that side forms) × P(its centre ≥ X), read off the stored `mass_up` / `cm_*` quantiles; **calibrated** = a rolling 20-session isotonic map from earlier days' outcomes (the first 20 days stay raw). Trust it to a few points up to P ≈ 0.4–0.5; above that it can still be bold (fold A up 10–20 pts). "Happened" = the centre reached ±X; "touched" = the price did (15–20 pts more often). Up and down picks are the same stocks: size, not direction. The run file is a 25% sample |
 
 ## Layout
 
@@ -306,7 +310,7 @@ forecast_dash/
   space_page.py        Intraday → Space: sidebar, evidence, four tabs (reads a mtap_space library)
   space_calc.py        Space tables from a library and a query (pure)
   space3d/space3d.js   the built 3-D view (from js/, do not edit)
-  pockets_page.py      Intraday → Pockets model: sidebar, five tabs (reads intraday-ft runs)
+  pockets_page.py      Intraday → Pockets model: sidebar, six tabs (reads intraday-ft runs)
   pockets_calc.py      pocket-shape and overlay scores, go rule, replay (pure)
   pockets_contract.py  discover / load intraday-ft runs, quantiles, recalibration
   intraday_contract.py discover / load intraday runs

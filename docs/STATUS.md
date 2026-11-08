@@ -608,3 +608,6 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
     calibrated, recalibrated 25/25 on both folds. Commit e433ec2.
   - Dashboard: Intraday → **Pockets model** (`pockets_contract.py`, `pockets_calc.py`, `pockets_page.py`; five tabs;
     `--pockets-runs` / `FORECAST_DASH_POCKETS_RUNS`, default `<daily runs>/intraday_ft`). Commit dca286b.
+  - Dashboard: Intraday → Pockets model → **Moves** tab (±X% filter, per-day report, period summary, lean, list in
+    $, said vs happened; default minimum P 0.4). `intraday-ft-extremes RUN` writes `fold_<k>/extremes.parquet`
+    (the high / low after each decision); written for IA1 and IA1A. Commit c2825c0. No model change (MODEL-STRATEGY Q42).

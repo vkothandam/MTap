@@ -472,6 +472,12 @@ P10 / P90.
 - `model.pt`, `prep.json` (scaler + vocab), `history.json`.
 - At the run level: `config.json`, `report.json`, `report.md` and MODEL.md, written by
   `intraday-ft-report`.
+- `extremes.parquet` (optional, `intraday-ft-extremes RUN`, no training, ~2 min a fold): per `dec_row` and bin k,
+  `hi_bk` / `lo_bk` = ln(max high / P0), ln(min low / P0) over the bin's minutes after the entry, and
+  `t_hi_bk` / `t_lo_bk` = their minute counted from the decision (−1 = none). Read from the cached frames'
+  `m_h` / `m_l`; a bin holding a minute at the frames' ±10σ clip (a big gap from yesterday's close) is NaN, as is a
+  bin without a trade (b2 0.06%, b4 7.8% of IA1 rows). Matched on (stock_id, symbol, day): a when-issued line
+  (APTVw) shares its company's stock_id. Checked against `bars_1m` on 5 stocks (exact).
 
 The dashboard's "Intraday pockets" page reads only this file, and its MODEL.md (which records the daily run
 label used for Chunk 0).
@@ -495,3 +501,4 @@ label used for Chunk 0).
 | 2026-11-08 | **Rolling recalibration** (`intraday_ft/recal.py`; report writes `fold_k/recal.parquet` + a "Recalibrated" table): per day, target and quantile the offset from the previous 20 test sessions' errors (past only; the cal20s rule, not the validation months). All 25 shape targets calibrated on both folds after it (18 raw). The report also writes `clim.parquet` / `clim_rates.parquet` (climatology per cell) so the dashboard grades without ml/ code. |
 | 2026-11-08 | **Ablations (fold B):** no 1 s tier = same or better shape skill (25/25 pass); a 120-min encoder = same or better (`rvol` +2 pts); 60 min worse (early stop at epoch 9). The S-tier inputs and the whole-day encoder aren't needed for the pocket shape (LEARNINGS "Intraday v2 IA1" §6). |
 | 2026-11-08 | Dashboard Intraday → **Pockets model** reads the run files (§7 + the three side files); sector codes are TRBC economic sectors (57 = Technology). |
+| 2026-11-08 | **Moves tab + `extremes.parquet`** (§7): the dashboard reads P(centre at or beyond ±X%) off the stored `mass_up` / `cm_*` quantiles, calibrated by a rolling 20-session isotonic map; no model change. Extremes written for IA1 and IA1A. |

@@ -176,16 +176,15 @@ class Recommender:
 
     def recommend(self, candidate: dict[str, Any]) -> dict | None:
         """Turn a scorer candidate into a RECOMMENDATION and publish it. Returns the message,
-        or None when it is invalid, a repeat of a decision already sent, or entries are
-        closed (trading_state other than NORMAL)."""
+        or None when it is invalid or a repeat of a decision already sent. It is sent in every
+        trading_state: MBin filters, so its outcomes record what was missed (REVIEW item 12)."""
         extra = set(candidate) - CANDIDATE_FIELDS
         if extra:
             log.error("candidate has unknown fields %s; dropped", sorted(extra))
             return None
         state = (self.params or {}).get("trading_state")
         if state and state != "NORMAL":
-            log.info("trading_state %s: candidate %s not sent", state, candidate.get("symbol"))
-            return None
+            log.info("trading_state %s: candidate %s sent, MBin filters", state, candidate.get("symbol"))
         body = {"instrument": "EQ", "action": "BUY", **candidate}
         if body.get("cap_band") is None and body.get("market_cap") is not None:
             body["cap_band"] = c.cap_band(body["market_cap"])

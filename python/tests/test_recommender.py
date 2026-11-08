@@ -141,9 +141,10 @@ def test_same_decision_is_sent_once_and_invalid_is_not_sent(rec):
     assert len(rec.client.of("RECOMMENDATION")) == 1
 
 
-def test_no_entries_unless_trading_state_normal(rec):
+def test_entries_still_sent_when_not_normal(rec):
+    # REVIEW item 12: MTap keeps producing in CLOSE_ONLY / FLATTENING; MBin filters.
     rec.on_params({**PARAMS, "trading_state": "CLOSE_ONLY"})
-    assert rec.recommend(candidate()) is None
+    assert rec.recommend(candidate()) is not None
 
 
 def test_defaults_record_params_version(rec):

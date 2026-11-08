@@ -2056,7 +2056,22 @@ report.md "Pocket shape"). "Hits" = share of outcomes at or below each predicted
 **Consequence.** Under the original go rule (direction skill clear of 0) fold B fails by a wide margin: the CI is
 ±0.005 around 0. **The user changed the go rule the same day (Q41):** direction isn't required, the pocket shape
 is. On that rule fold B passes for `cm_up` / `cm_dn` and `rvol`. `bulge` / `sag` pass b2–b5 after the zero-readout
-fix; b1 `sag` is still −0.9%. Fold A (2025) is the check that it holds.
+fix; b1 `sag` is still −0.9%. **Fold A (2025) holds it** (run `ml/runs/intraday_ft/20261107-162439-ft-A`, 1.62M decisions, 250 days, early stop at
+epoch 13, best validation 0.906; re-scored with the readout fixes):
+
+| target, b1 … b5 | pinball skill vs climatology | rank IC of P50 (climatology) | P10–P90 coverage |
+| --- | --- | --- | --- |
+| `cm_up` / `cm_dn` | +4.6 … +6.9% | **+0.29 … +0.31** (+0.14 … +0.18) | 78–87% |
+| `rvol` | +24.4 … +35.1% | **+0.57 … +0.63** (+0.09 … +0.14) | 80–84% |
+| `bulge` / `sag` | +0.9 … +3.3%, every bin clear of 0 | +0.08 … +0.13 (+0.05 … +0.08) | 90–93% with the zeros |
+
+- Direction is nothing again: net60 rank IC +0.002 [−0.002, +0.006], P(mass_up60 > 50%) AUC 0.502 (climatology 0.507).
+  The 2026 mega-cap slice (+0.022) was chance to the extent fold A can tell; it isn't repeated here.
+- The 0.01σ zero cut-off and the exponential tails (picked on 2026) work on 2025: P(bulge60 > 0.5σ) Brier skill
+  +3.9%, P(sag60 > 0.5σ) +3.7%.
+- **Calibration drifts between years.** `rvol` P50 held 40–46% of outcomes in 2026 (too high) and 52–56% in 2025
+  (too low); `cm` P10 holds 0.10–0.13 and P50 0.51–0.57 in 2025 b1–b4. The ranking is stable, the level isn't, so the
+  recalibration fitted on the validation months (the go rule allows it) is worth building before S5.
 
 ### 2026-11 Intraday P1 bounce check: the d = 0 direction edge was bid–ask bounce (run 2026-11-01, 56 min)
 Tags: `tag-ml-intraday`. Plan: [live-recommendations-plan.md](live-recommendations-plan.md) P1. Script:

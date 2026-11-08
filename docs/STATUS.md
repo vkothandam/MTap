@@ -596,4 +596,4 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
     `rvol`; `bulge` / `sag` bands too narrow at the bottom. The user keeps the Mac awake and approved queuing and running
     the next runs while away (16:45).
   - Readout fixes 17:30 (no retrain; `intraday_ft/tft.py` `cdf_at`, `report.py` DUST): IA1's report rebuilt (old copies
-    `/tmp/mtap/IA1-report.v1.md`, `.v2.md`). Fold A loaded the old `cdf_at`, so `run_s3a_rescore.sh` (PID 27157) re-scores it after `s3a_done.txt` (`s3a_rescore_done.txt`; end-of-run copy `IA1A-report.at-end.md`). The ablations start after the fix and use it.
+    `/tmp/mtap/IA1-report.v1.md`, `.v2.md`). **IA1A done 18:15 (exit 0, early stop at epoch 13): the pocket shape holds on 2025** (Scoreboard; LEARNINGS). Re-scored 18:17 and the first ablation (IA1-noS) started 18:20. Fold A loaded the old `cdf_at`, so `run_s3a_rescore.sh` (PID 27157) re-scores it after `s3a_done.txt` (`s3a_rescore_done.txt`; end-of-run copy `IA1A-report.at-end.md`). The ablations start after the fix and use it.

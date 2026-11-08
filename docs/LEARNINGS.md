@@ -2073,6 +2073,60 @@ epoch 13, best validation 0.906; re-scored with the readout fixes):
   (too low); `cm` P10 holds 0.10–0.13 and P50 0.51–0.57 in 2025 b1–b4. The ranking is stable, the level isn't, so the
   recalibration fitted on the validation months (the go rule allows it) is worth building before S5.
 
+**6. Recalibration and the three ablations** (2026-11-08; all fold B runs re-scored with the same report).
+
+*Rolling recalibration* (`ml/intraday_ft/recal.py`): each day, per target and quantile, the offset that would have
+made the previous 20 **test sessions'** outcomes hit that quantile at its level (past outcomes only, all known live
+by the next morning; the daily model's cal20s rule, not a refit on the validation months). One offset for every
+stock at a minute, so the rank IC can't change. The first 20 test days have no offsets and are left out.
+
+| run, target | P50 holds, raw → recal | P10–P90, raw → recal | pinball skill vs clim, raw → recal (same rows) |
+| --- | --- | --- | --- |
+| IA1 (2026) `rvol_b4` | 43% → **50%** | 83% → 80% | +22.6% → **+23.9%** [+23.0, +24.9] |
+| IA1 `cm_up_b1` | 48% → 50% | 86% → 80% | +3.1% → +4.5% |
+| IA1 `sag_b1` | 51–55% → 50–54% | 66–94% → 61–90% | **−1.1% → +1.6%** [+1.4, +1.8] |
+| IA1A (2025) `sag_b1` | 16–34% → 50% | 65–91% → 64–90% | +2.4% → +3.1% |
+| IA1A `cm_dn_b1` | 58% → 50% | 87% → 80% | +5.5% → +6.7% |
+
+- Raw, 18 of 25 shape targets are calibrated on each fold (P50 45–55%, P10–P90 75–85%; noS 22, enc60 19);
+  **after the recalibration all 25 in every run**. On the rows both cover, skill changes by −0.2 … +3.0 points on
+  IA1 and −0.6 … +1.9 on IA1A (the b1 bins gain most; b4 is unchanged). A 2026 `rvol_b4`
+  offset averages +0.05 at P50 (std 0.01 over days): a steady level error, which is what the rule fixes.
+- IA1's one go-rule failure is `sag_b1` (raw skill −0.9% [−1.2, −0.6]); recalibrated it is +1.6% [+1.4, +1.8].
+  The rule is scored on the raw skill, so the page shows both.
+- For `bulge` / `sag` an outcome of exactly 0 ties with a quantile at 0, so "P50 holds" is a span (below … at or
+  below); the dashboard and this table count a target as calibrated when the span reaches the band.
+
+*Ablations* (fold B, the same budget of ≤ 15 epochs, early stop after 3 epochs without a better validation loss):
+
+| run | epochs (best valid) | go rule (raw) | `cm` skill b1…b5 | `cm` rank IC | `rvol` skill | `rvol` rank IC | `bulge` / `sag` skill | net60 IC |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **IA1** (whole day, M + S tier) | 15 (0.907) | 24/25 | +1.4 … +5.0% | +0.27 … +0.30 | +18.5 … +23.0% | +0.54 … +0.61 | −0.9 … +2.1% | +0.000 |
+| **IA1-noS** (no 1 s tier) | 15 (0.908) | **25/25** | +3.6 … +5.2% | +0.26 … +0.30 | +19.2 … +24.5% | +0.55 … +0.62 | +1.0 … +2.3% | −0.002 |
+| **IA1-enc120** (last 120 min) | 15 (**0.904**) | 24/25 | −0.6 … +5.6% | +0.27 … +0.30 | **+20.8 … +25.5%** | +0.56 … +0.62 | +1.4 … +2.5% | +0.001 |
+| **IA1-enc60** (last 60 min) | **9** (0.921) | 23/25 | −3.5 … +4.6% | +0.27 … +0.29 | +13.8 … +19.4% | +0.52 … +0.58 | −0.3 … +2.2% | −0.005 |
+
+- **The 1 s tier adds nothing to the pocket shape.** Without it every family is within ±1 point of IA1 or better,
+  and the rank ICs are the same. Resistance, time at price and the 1 s zig-zag don't carry signal the minute series
+  lacks (direction neither: −0.002). Consequence: the live model can run on minute bars plus prices, and the 1 s
+  backfill isn't needed for this model (it stays for Phase 2's ladder).
+- **The whole-day encoder isn't needed either.** 120 minutes of history ties or beats the whole day (`rvol` +2.3 …
+  +2.5 points; best validation 0.904); the day's running digests already carry the earlier session. Its one failing
+  bin is `cm_dn_b1` (−0.6% raw).
+- **60 minutes is too short, or it stopped too early.** It early-stopped at epoch 9 after a lucky epoch 6 (0.921,
+  then 0.977), so part of its gap is training noise; `rvol` loses 4–5 points and `cm_up_b1` falls to −3.5% (69%
+  of outcomes fall below its P50, P10–P90 holds only 75%; recalibrated, −3.6% → +3.3%). The `cm` rank ICs barely
+  move, `rvol` loses 0.02–0.03. Its failures: `sag_b1`, `cm_up_b1`.
+- No arm finds direction (net60 rank IC −0.005 … +0.001; mass_up60 AUC 0.496 … 0.507).
+- In the three ablations the identity overlays (none / +sector / +industry / +symbol) agree within 0.1 point on
+  every event; the rare events P(bulge60 ≥ 0.5σ) and P(sag60 ≥ 0.5σ) have Brier skill +2.4 … +2.7% vs
+  climatology in all four runs. (IA1's stored none / sec / ind bulge and sag readouts were written before the
+  tail-rule fix and read −7%; its `all`, re-read, agrees: +2.5%, +2.6%.)
+
+**Decision proposed for the next run:** minute tier only, 120-minute encoder, recalibrated output. That's cheaper to
+build and to run live, with no loss of shape skill. Needs a fold A check (enc120 + noS together) before it replaces
+IA1.
+
 ### 2026-11 Intraday P1 bounce check: the d = 0 direction edge was bid–ask bounce (run 2026-11-01, 56 min)
 Tags: `tag-ml-intraday`. Plan: [live-recommendations-plan.md](live-recommendations-plan.md) P1. Script:
 `ml/scripts_intraday_probe.py --parts p1`. Same rows in every arm (stock-minutes where minute i traded), full

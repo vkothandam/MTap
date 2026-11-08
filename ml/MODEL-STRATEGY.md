@@ -19,7 +19,7 @@ changes; details and CIs are in [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-m
 | research base (TFT) | **R1c** `20261028-233305Z-return-4438sym` | R0 + session shape + after-hours | skill 27.0%, P5–P95 88.4%; 0.58% better than R0 (CI clear), most on earnings days; R7 (HGB) now beats it at night |
 | intraday handoff | R0 `20261028-030847Z-return-4438sym/handoff.parquet` | | to rebuild from R1c |
 | intraday (Step 0 probe, 2026-11-01) | `ml/scripts_intraday_probe.py`, HGB, no saved model | all input groups, d = 0 vs d = 15 | 2026: touch ±0.5σ/60m skill +6.3% (size: real); direction ≈ 0: at d = 15, and at d = 0 once bid–ask bounce is removed (P1, 11-01: rank IC +0.034 → +0.007, top-20 +0.41σ → +0.05σ). No intraday direction model; live recs use base rates (`baseline.climatology`); Q38 |
-| intraday v2 IA1 (fold B, run 2026-11-07) | `ml/runs/intraday_ft/20261107-141854-ft-B`: thin TFT over the whole day's 1-min + 1 s series, `ml/intraday_ft/` | schema v2, [docs/intraday-features.md](../docs/intraday-features.md) | **Pocket shape (the go rule since Q41, 2026-11-07): passes on 2026** for the centres of mass and activity: `cm_up` / `cm_dn` rank IC +0.27 … +0.30 (climatology +0.12 … +0.17), pinball skill +1.4 … +5.0%, calibrated (coverage 81–87%); `rvol` rank IC +0.54 … +0.61 (clim +0.07 … +0.13), skill +18.5 … +23.0%. `bulge` / `sag` +1.8 … +2.1% in b2–b5 after the zero-readout fix (b1 sag −0.9%); rare-event readouts fixed (P(bulge60 > 0.5σ) Brier +2.5%, AUC 0.86). Direction (record only): none, net60 rank IC +0.000 [−0.005, +0.005], AUC 0.496. **Fold A (2025) holds:** `cm` rank IC +0.29 … +0.31 (clim +0.14 … +0.18), `rvol` +0.57 … +0.63 (+0.09 … +0.14), `bulge` / `sag` skill +0.9 … +3.3%; P50 calibration drifts between years (`rvol` P50 hits 0.40–0.46 in 2026, 0.52–0.56 in 2025); direction none again (rank IC +0.002). Ablations running; LEARNINGS "Intraday v2 IA1"; Q40, Q41 |
+| intraday v2 IA1 (fold B, run 2026-11-07) | `ml/runs/intraday_ft/20261107-141854-ft-B`: thin TFT over the whole day's 1-min + 1 s series, `ml/intraday_ft/` | schema v2, [docs/intraday-features.md](../docs/intraday-features.md) | **Pocket shape (the go rule since Q41, 2026-11-07): passes on 2026** for the centres of mass and activity: `cm_up` / `cm_dn` rank IC +0.27 … +0.30 (climatology +0.12 … +0.17), pinball skill +1.4 … +5.0%, calibrated (coverage 81–87%); `rvol` rank IC +0.54 … +0.61 (clim +0.07 … +0.13), skill +18.5 … +23.0%. `bulge` / `sag` +1.8 … +2.1% in b2–b5 after the zero-readout fix (b1 sag −0.9%); rare-event readouts fixed (P(bulge60 > 0.5σ) Brier +2.5%, AUC 0.86). Direction (record only): none, net60 rank IC +0.000 [−0.005, +0.005], AUC 0.496. **Fold A (2025) holds:** `cm` rank IC +0.29 … +0.31 (clim +0.14 … +0.18), `rvol` +0.57 … +0.63 (+0.09 … +0.14), `bulge` / `sag` skill +0.9 … +3.3%; P50 calibration drifts between years (`rvol` P50 hits 0.40–0.46 in 2026, 0.52–0.56 in 2025); direction none again (rank IC +0.002). **Rolling 20-session recalibration (2026-11-08): 25 of 25 shape targets calibrated on both folds** (18 raw). **Ablations:** no 1 s tier 25/25 and as good or better; 120-min encoder as good (`rvol` +20.8 … +25.5%); 60 min worse (23/25). Dashboard Intraday → Pockets model. LEARNINGS "Intraday v2 IA1"; Q40, Q41 |
 
 **Goal (user, 10-29, Q35):** one model for every forecast at and after 09:30, with full
 pre-market; **the night forecast is dropped**. Ranked first by how well the quantiles hit their
@@ -1563,4 +1563,23 @@ mass is within good accuracy, that is good enough for me. Does this change anyth
   52–56% in 2025; `cm` P50 and P10 are 3–10 points off in 2025 b1–b4 (P10 holds 0.10–0.13, P50 0.51–0.57). The coverage rule
   (75–85%) is met by `cm` and `rvol`; the P50 rule (0.45–0.55) isn't in every bin. That's the case for the
   recalibration fitted on the validation months that the go rule allows.
-- **Next:** the ablations (noS, enc120, enc60) overnight, then S5.
+- **Follow-up (2026-11-08): recalibration and the ablations done.**
+  - **The drift is fixed by a rolling recalibration**, not one fitted on the validation months: each day's
+    quantiles get the offset the previous 20 test sessions' errors call for (past outcomes only, the daily model's
+    cal20s rule; `ml/intraday_ft/recal.py`). Calibrated targets go from 18 of 25 raw to **25 of 25 on both folds**;
+    skill changes by −0.6 … +3.0 points (IA1 `sag_b1` −1.1% → +1.6%), and the rank IC can't change.
+  - **Ablations (fold B):**
+
+    | run | go rule (raw) | `cm` skill | `rvol` skill | `rvol` rank IC |
+    | --- | --- | --- | --- | --- |
+    | IA1 (whole day, 1-min + 1 s) | 24/25 | +1.4 … +5.0% | +18.5 … +23.0% | +0.54 … +0.61 |
+    | noS (1-min only) | **25/25** | +3.6 … +5.2% | +19.2 … +24.5% | +0.55 … +0.62 |
+    | enc120 (last 2 h) | 24/25 | −0.6 … +5.6% | **+20.8 … +25.5%** | +0.56 … +0.62 |
+    | enc60 (last 1 h; early stop at epoch 9) | 23/25 | −3.5 … +4.6% | +13.8 … +19.4% | +0.52 … +0.58 |
+
+    In plain words: the 1 s inputs and the whole-day history add nothing to the pocket shape; 2 hours of
+    1-minute bars do as well. One hour is worse. No arm finds direction (net60 rank IC −0.005 … +0.001).
+  - **Dashboard:** Intraday → Pockets model grades every run, raw or recalibrated, by sector, industry, cap band
+    and stock (S5).
+  - **Next (the user's call):** a fold A check of noS + enc120 together, which would become the cheaper base;
+    then Phase 2 (GBM) only if asked.

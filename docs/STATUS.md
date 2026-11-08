@@ -597,3 +597,14 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
     the next runs while away (16:45).
   - Readout fixes 17:30 (no retrain; `intraday_ft/tft.py` `cdf_at`, `report.py` DUST): IA1's report rebuilt (old copies
     `/tmp/mtap/IA1-report.v1.md`, `.v2.md`). **IA1A done 18:15 (exit 0, early stop at epoch 13): the pocket shape holds on 2025** (Scoreboard; LEARNINGS). Re-scored 18:17 and the first ablation (IA1-noS) started 18:20. Fold A loaded the old `cdf_at`, so `run_s3a_rescore.sh` (PID 27157) re-scores it after `s3a_done.txt` (`s3a_rescore_done.txt`; end-of-run copy `IA1A-report.at-end.md`). The ablations start after the fix and use it.
+- **2026-11-08 (intraday v2 S3 done, recalibration, S5):**
+  - The ablation chain finished: IA1-noS (`20261107-181646-ft-B-noS`), IA1-enc120 (`20261107-201958-ft-B-enc120`)
+    and IA1-enc60 (`20261107-225358-ft-B-enc60`, exit 0 at 00:24, early stop at epoch 9). All are re-scored with
+    the current report. Nothing is running on the Mac.
+  - Result: noS 25/25, enc120 24/25, enc60 23/25 on the go rule (IA1 24/25). The 1 s tier and the whole-day encoder
+    aren't needed for the pocket shape; direction none everywhere (LEARNINGS "Intraday v2 IA1" §6; MODEL-STRATEGY Q41).
+  - `intraday-ft-report` now also writes `fold_<k>/recal.parquet` (rolling 20-session offsets,
+    `ml/intraday_ft/recal.py`), `clim.parquet` and `clim_rates.parquet`. All five runs were re-reported. Raw 18/25
+    calibrated, recalibrated 25/25 on both folds. Commit e433ec2.
+  - Dashboard: Intraday → **Pockets model** (`pockets_contract.py`, `pockets_calc.py`, `pockets_page.py`; five tabs;
+    `--pockets-runs` / `FORECAST_DASH_POCKETS_RUNS`, default `<daily runs>/intraday_ft`). Commit dca286b.

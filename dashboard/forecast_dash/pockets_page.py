@@ -91,12 +91,17 @@ def get_moves(path: str, fold: str, x: float, b: int, cum: bool = True) -> dict:
     bins = [get_move_bin(path, fold, x, k) for k in (range(1, b + 1) if cum else [b])]
     out = {}
     for side in P.SIDES:
-        last = bins[-1][side]
-        raw = P.move_prob_cum([m[side]["raw"] for m in bins]) if cum else last["raw"]
-        oc = P.move_outcome_cum([m[side]["outcome"] for m in bins], side) if cum else last["outcome"]
+        sb = [m[side] for m in bins]
+        raw = P.move_prob_cum([m["raw"] for m in sb]) if cum else sb[-1]["raw"]
+        oc = P.move_outcome_cum([m["outcome"] for m in sb], side) if cum else sb[-1]["outcome"]
         cal, warm = P.move_recal(raw, oc["reached"].to_numpy(), f["date"].to_numpy())
-        out[side] = {"raw": raw, "cal": cal, "warm": warm, "p50": last["p50"], "p90": last["p90"],
-                     "outcome": oc}
+        # each window has its own centre: show the one of the window the model gave the highest P
+        c = P.move_centre_cum([m["raw"] for m in sb], [m["p50"] for m in sb], [m["p90"] for m in sb],
+                              [m["outcome"]["centre_pct"].to_numpy() for m in sb])
+        if not cum:
+            c["win"] = np.full(len(raw), b)
+        out[side] = {"raw": raw, "cal": cal, "warm": warm, "win": c["win"], "p50": c["p50"], "p90": c["p90"],
+                     "win_centre_pct": c["centre_pct"], "outcome": oc}
     return out
 
 
@@ -477,6 +482,7 @@ def tab_moves(v: View):
         sig, p0 = g["sigma"].to_numpy(np.float64), g["real_p0"].to_numpy(np.float64)
         sign = 1.0 if s == "up" else -1.0
         p50, p90 = mv[s]["p50"][rows][m], mv[s]["p90"][rows][m]
+        win, wcp = mv[s]["win"][rows][m], mv[s]["win_centre_pct"][rows][m]
         oc = o[m]
         ooc = mv[oth]["outcome"].iloc[rows][m]
         parts.append(pd.DataFrame({
@@ -484,14 +490,17 @@ def tab_moves(v: View):
             "symbol": g["symbol"].to_numpy(), "sector": g["sector"].to_numpy(), "side": s,
             "p0": p0, "target": p0 * (1 + sign * x), "p": p[s][m], "p_raw": mv[s]["raw"][rows][m],
             "warm": mv[s]["warm"][rows][m],
+            "window": [f"b{k}: {C.BINS[k]}" for k in win],
             "centre_p50": p0 * np.exp(sign * sig * p50), "centre_p90": p0 * np.exp(sign * sig * p90),
-            "real_centre": p0 * (1 + oc["centre_pct"].to_numpy()),
+            "real_centre": p0 * (1 + wcp), "far_centre": p0 * (1 + oc["centre_pct"].to_numpy()),
             "reached": oc["reached"].to_numpy(), "formed": oc["formed"].to_numpy(),
-            "touched": oc["touched"].to_numpy(), "best": p0 * (1 + oc["best_pct"].to_numpy()),
+            "touched": oc["touched"].to_numpy(),
             "best_pct": oc["best_pct"].to_numpy(), "best_min": oc["best_min"].to_numpy(),
-            "worst": p0 * (1 + oc["worst_pct"].to_numpy()), "worst_pct": oc["worst_pct"].to_numpy(),
+            "worst_pct": oc["worst_pct"].to_numpy(),
+            **{c: oc[c].to_numpy() for c in P.AFTER},
+            "vwap_move": sign * oc["vwap_pct"].to_numpy(),
             "centre_pct": oc["centre_pct"].to_numpy(),
-            "captured": oc["centre_pct"].to_numpy() / np.expm1(sign * sig * p50),
+            "captured": wcp / np.expm1(sign * sig * p50),
             "other_p": p[oth][m], "other_reached": ooc["reached"].to_numpy(),
             "other_centre_pct": ooc["centre_pct"].to_numpy(),
             "p_up": p["up"][m], "p_dn": p["dn"][m],
@@ -503,7 +512,7 @@ def tab_moves(v: View):
         }))
     mt = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(
         columns=["date", "side", "symbol", "minute", "p", "reached", "touched", "formed", "centre_pct",
-                 "best_pct", "captured", "warm", "p_up", "p_dn", "reached_up", "reached_dn", "net_p50",
+                 "best_pct", "vwap_move", "captured", "warm", "p_up", "p_dn", "reached_up", "reached_dn", "net_p50",
                  "real_net"])
     days_in = sorted(f["date"].unique())
     cold = int((~pd.Series(mv["up"]["warm"][rows]).groupby(f["date"].to_numpy()).all()).sum()) if cal else 0
@@ -511,17 +520,21 @@ def tab_moves(v: View):
     lean = P.move_lean(mt)
     _in_short(P.move_insights(summ, lean, x, window, min_p, cal, int(both.sum()), cold, ext is not None))
     if ext is None:
-        st.warning("No extremes.parquet in this fold: touched, best high / low and their minute are blank. "
-                   "Run `intraday-ft-extremes` on the run.")
+        st.warning("No extremes.parquet in this fold: touched, the high / low, VWAP / TWAP after the entry "
+                   "are blank. Run `intraday-ft-extremes` on the run.")
+    elif "vw_b1" not in ext:
+        st.warning("This fold's extremes.parquet is from before the VWAP / TWAP columns: those are blank. "
+                   "Run `intraday-ft-extremes` on the run again.")
     pct = ["share_flagged", "said", "reached", "gap", "gap_lo", "gap_hi", "touched", "not_formed",
-           "median_centre_pct", "median_best_pct"]
+           "median_centre_pct", "median_best_pct", "median_vwap_move"]
     _table(summ, "pk_mv_summary", {**_pct_cols(summ, pct),
                                    "median_captured": st.column_config.NumberColumn("median_captured",
                                                                                     format="%.2f×")})
     sd = pd.DataFrame([(dd, s, int((f["date"] == dd).sum())) for dd in days_in for s in sides],
                       columns=["date", "side", "decisions"])
     by_day = P.move_by_day(mt, sd) if len(mt) else sd.assign(predictions=0, happened=0, did_not=0, stocks=0)
-    _table(by_day, "pk_mv_days", _pct_cols(by_day, ["said", "reached", "touched", "median_best_pct"]))
+    _table(by_day, "pk_mv_days", _pct_cols(by_day, ["said", "max_said", "reached", "touched", "median_best_pct",
+                                                    "median_vwap_move"]))
     tm = P.move_times(mt)
     if len(tm):
         _chart(charts.pk_mv_times(tm, f"When in the day: predictions per 15 min, {d0} → {d1}"), "pk_mv_times")
@@ -533,18 +546,21 @@ def tab_moves(v: View):
         day = st.selectbox("List: day", ["every day", *sorted(mt["date"].unique())[::-1]], key="pk_mv_day")
         lst = mt if day == "every day" else mt[mt["date"] == day]
         lst = lst.sort_values("p", ascending=False).head(500)
-        for c in ("best_pct", "worst_pct", "centre_pct", "other_centre_pct"):
-            lst = lst.assign(**{c: lst[c] * 100})
-        cols = ["date", "time", "symbol", "sector", "side", "p0", "target", "p", "p_raw", "centre_p50",
-                "centre_p90", "real_centre", "reached", "touched", "best", "best_pct", "best_min", "worst",
-                "worst_pct", "centre_pct", "captured", "other_p", "other_reached", "other_centre_pct"]
+        moves = ["high_pct", "low_pct", "vwap_pct", "twap_pct", "end_pct", "centre_pct", "other_centre_pct"]
+        lst = lst.assign(**{c: lst[c] * 100 for c in moves},
+                         **{c.removesuffix("_pct"): lst["p0"] * (1 + lst[c]) for c in moves[:5]})
+        cols = ["date", "time", "symbol", "sector", "side", "p0", "target", "p", "p_raw", "window", "centre_p50",
+                "centre_p90", "real_centre", "captured", "far_centre", "reached", "touched", "high", "high_pct",
+                "high_min", "low", "low_pct", "low_min", "vwap", "vwap_pct", "twap", "twap_pct", "end",
+                "end_pct", "other_p", "other_reached", "other_centre_pct"]
         lst = lst[cols]
-        _table(lst, "pk_mv_list", {**_usd(["p0", "target", "centre_p50", "centre_p90", "real_centre", "best",
-                                           "worst"]),
+        _table(lst, "pk_mv_list", {**_usd(["p0", "target", "centre_p50", "centre_p90", "real_centre", "far_centre",
+                                           "high", "low", "vwap", "twap", "end"]),
                                    **_pct_cols(lst, ["p", "p_raw", "other_p"]),
-                                   **_signed(["best_pct", "worst_pct", "centre_pct", "other_centre_pct"]),
+                                   **_signed(moves),
                                    "captured": st.column_config.NumberColumn("captured", format="%.2f×"),
-                                   "best_min": st.column_config.NumberColumn("best_min", format="+%d min")})
+                                   **{c: st.column_config.NumberColumn(c, format="+%d min")
+                                      for c in ("high_min", "low_min")}})
         st.caption(f"{len(lst):,} shown (highest P first, at most 500) of {len(mt):,}")
     # said vs happened over the range, every decision (not just the matches)
     probs, hits = {}, []

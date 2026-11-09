@@ -214,6 +214,9 @@ def write_pockets_run(root, name="20261107-000000-ft-B", fold="B", seed=0, sessi
                 cm = f[f"real_cm_{'up' if s_ > 0 else 'dn'}_b{k}"].to_numpy() * f.sigma.to_numpy()
                 ex[f"{side}_b{k}"] = (s_ * (cm + np.abs(rng.normal(0, 0.003, n)))).astype("float32")
                 ex[f"t_{side}_b{k}"] = rng.integers(1, 5 * k + 1, n).astype("int16")
+            net = f[f"real_net_b{k}"].to_numpy() * f.sigma.to_numpy()     # the bin's VWAP vs P0
+            for c in ("vw", "tw", "cl", "cvw", "ctw"):
+                ex[f"{c}_b{k}"] = (net + rng.normal(0, 0.001, n)).astype("float32")
         pd.DataFrame(ex).to_parquet(fd / "extremes.parquet", index=False)
     np.save(fd / "quantiles.npy", Q)
     (fd / "quantiles.json").write_text(json.dumps({"taus": list(PK_TAUS), "targets": PK_TARGETS,

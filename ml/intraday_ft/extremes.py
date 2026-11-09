@@ -1,15 +1,22 @@
-"""intraday-ft-extremes: the realised high and low after each decision of a scored run (no training).
+"""intraday-ft-extremes: the realised prices after each decision of a scored run (no training).
 
 For every run-file row (stock, day, minute i) and duration bin bK (targets.BINS: the bin's minutes after
-the entry, entry = minute i+1), from the cached frames' minute highs / lows:
+the entry, entry = minute i+1), from the cached frames' minutes:
 
     hi_bK = ln(max high / P0)     lo_bK = ln(min low / P0)       (P0 = real_p0, the entry price)
     t_hi_bK / t_lo_bK = the minute of that high / low, counted from the decision (the entry minute = 1)
+    vw_bK / tw_bK = ln(VWAP / P0), ln(TWAP / P0) over the bin's minutes (VWAP: the minute VWAPs
+                    weighted by volume; TWAP: the mean of the minute closes, a quiet minute holding
+                    the last price)
+    cvw_bK / ctw_bK = the same from the entry to the bin's end (cvw_b4 = the first 60 minutes)
+    cl_bK = ln(the last price at the bin's end / P0)
 
-The frames hold m_h / m_l = ln(x / prev) / sig in float16, clipped to +-10 sig from the previous close:
-a price is good to ~0.01%, and a minute at the clip (the stock more than 10 sig from yesterday's close,
-e.g. after a results gap) is not a price, so a bin holding one has NaN. A bin without a trade has NaN
-too; t = -1 for both. Writes fold_<k>/extremes.parquet (dec_row + the 20 columns); the dashboard's
+The frames hold the prices as ln(x / prev) / sig in float16, clipped to +-10 sig from the previous
+close: a price is good to ~0.01%, and a minute at the clip (the stock more than 10 sig from yesterday's
+close, e.g. after a results gap) is not a price, so a window holding one has NaN. The volume comes back
+from m_rvol x normal_rvol (a share of the normal day, so only its ratios count): the VWAPs match the
+run file's real_net_bK to ~0.01 bp (median), 3 bp at the 99th percentile. A window without a trade has
+NaN too; t = -1 for both. Writes fold_<k>/extremes.parquet (dec_row + the 45 columns); the dashboard's
 Intraday -> Pockets -> Moves tab reads it.
 
     intraday-ft-extremes runs/intraday_ft/<run> [--cache DIR]   (default: the run's config.json cache)
@@ -53,16 +60,50 @@ def excursions(H, L, r, i, lp0, bad=None):
     return out
 
 
+def averages(VW, Wt, C, r, i, lp0, bad=None):
+    """Per bin, and from the entry to each bin's end: the VWAP and TWAP after decision minutes i (log vs
+    the entry) and the last price at the bin's end. VW: (rows, 390) minute VWAPs, Wt: their volumes (any
+    scale; 0 = no trade), C: held minute closes (NaN before the first trade); bad as in excursions."""
+    r, i = np.asarray(r), np.asarray(i)
+    out = {}
+    for k, (lo, hi) in enumerate(Tg.BINS, 1):
+        for pre, a in (("", lo), ("c", 0)):
+            cols, valid, _ = Tg.bin_columns(i, a, hi)
+            unknown = (bad[r[:, None], cols] & valid).any(1) if bad is not None else np.zeros(len(r), bool)
+            x = np.where(valid, VW[r[:, None], cols], np.nan)
+            w = np.where(valid & np.isfinite(x), Wt[r[:, None], cols], 0.0)
+            c = np.where(valid, C[r[:, None], cols], np.nan)
+            with np.errstate(all="ignore"):
+                vw = np.log(np.nansum(w * x, 1) / w.sum(1)) - lp0
+                tw = np.log(np.nanmean(c, 1)) - lp0
+            out[f"{pre}vw_b{k}"] = np.where(unknown, np.nan, vw).astype(np.float32)
+            out[f"{pre}tw_b{k}"] = np.where(unknown, np.nan, tw).astype(np.float32)
+            if not pre:
+                last = np.where(valid.any(1), cols[np.arange(len(r)), valid.sum(1) - 1], 0)
+                with np.errstate(all="ignore"):
+                    cl = np.log(C[r, last]) - lp0
+                out[f"cl_b{k}"] = np.where(unknown | ~valid.any(1), np.nan, cl).astype(np.float32)
+    return out
+
+
 def month_prices(mo: W.Month, rows):
-    """Minute highs and lows in price units for frame rows `rows` of an open month, and the minutes
-    at the frames' clip (price unknown)."""
+    """Minute highs, lows, VWAPs and held closes in price units for frame rows `rows` of an open month,
+    the minute volumes (as a share of the normal day) and the minutes at the frames' clip (price
+    unknown)."""
     rr = mo.rows.iloc[rows]
     ref, sig = np.log(rr.prev.to_numpy(np.float64)), rr.sig.to_numpy(np.float64)
     seq = np.asarray(mo.seq[np.asarray(rows)], np.float32)
-    h = seq[..., mo.seq_cols.index("m_h")].astype(np.float64)
-    lw = seq[..., mo.seq_cols.index("m_l")].astype(np.float64)
+
+    def col(c):
+        return seq[..., mo.seq_cols.index(c)].astype(np.float64)
+
+    def price(c):
+        return np.exp(col(c) * sig[:, None] + ref[:, None])
+
+    h, lw = col("m_h"), col("m_l")
     bad = (np.abs(h) >= Fe.CLIP - 1e-3) | (np.abs(lw) >= Fe.CLIP - 1e-3)
-    return np.exp(h * sig[:, None] + ref[:, None]), np.exp(lw * sig[:, None] + ref[:, None]), bad
+    vol = np.nan_to_num(np.exp(col("m_rvol")) * col("normal_rvol"))
+    return {"H": price("m_h"), "L": price("m_l"), "VW": price("m_vw"), "C": price("m_c"), "V": vol, "bad": bad}
 
 
 def fold_extremes(f: pd.DataFrame, root) -> pd.DataFrame:
@@ -80,10 +121,12 @@ def fold_extremes(f: pd.DataFrame, root) -> pd.DataFrame:
         if (fr < 0).any():
             raise ValueError(f"{m}: {int((fr < 0).sum())} run-file rows not in the frames under {root}")
         uniq, r = np.unique(fr, return_inverse=True)
-        H, L, bad = month_prices(mo, uniq)
+        m_ = month_prices(mo, uniq)
         lp0 = np.log(f["real_p0"].to_numpy(np.float64)[g])
-        ex = excursions(H, L, r, f["minute"].to_numpy()[g], lp0, bad)
-        parts.append(pd.DataFrame({"dec_row": f["dec_row"].to_numpy()[g], **ex}))
+        i = f["minute"].to_numpy()[g]
+        ex = excursions(m_["H"], m_["L"], r, i, lp0, m_["bad"])
+        av = averages(m_["VW"], m_["V"], m_["C"], r, i, lp0, m_["bad"])
+        parts.append(pd.DataFrame({"dec_row": f["dec_row"].to_numpy()[g], **ex, **av}))
         print(f"  {m}: {len(g):,} decisions", flush=True)
     return pd.concat(parts, ignore_index=True).sort_values("dec_row", ignore_index=True)
 

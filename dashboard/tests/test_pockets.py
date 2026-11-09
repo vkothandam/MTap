@@ -177,8 +177,18 @@ def test_move_outcome_and_extremes_in_dollars():
     assert np.isclose(300 * (1 + o.centre_pct.iloc[0]), 300 * np.exp(0.02))       # the TSLA example
     assert list(o.touched.iloc[:2]) == [1.0, 0.0] and np.isclose(o.best_pct.iloc[0], 310 / 300 - 1)
     assert o.best_min.iloc[0] == 11 and np.isclose(o.worst_pct.iloc[0], 299.1 / 300 - 1)
+    assert o.vwap_pct.isna().all()                                   # an old extremes.parquet: no averages
+    e2 = ext.assign(vw_b2=np.log([303 / 300, 1, np.nan]), tw_b2=np.log([302 / 300, 1, np.nan]),
+                    cl_b2=np.log([305 / 300, 1, np.nan]), cvw_b2=np.log([302.5 / 300, 1, np.nan]),
+                    ctw_b2=np.log([301.5 / 300, 1, np.nan]))
+    o = P.move_outcome(f, "up", 2, 0.01, e2)
+    assert np.isclose(300 * (1 + o.vwap_pct.iloc[0]), 303) and np.isclose(300 * (1 + o.twap_pct.iloc[0]), 302)
+    assert np.isclose(300 * (1 + o.end_pct.iloc[0]), 305) and np.isclose(300 * (1 + o.cvwap_pct.iloc[0]), 302.5)
+    assert np.isclose(o.high_pct.iloc[0], 310 / 300 - 1) and o.low_min.iloc[0] == 2
     d = P.move_outcome(f, "dn", 2, 0.01, None)
     assert d.formed.iloc[1] == 0 and d.reached.iloc[1] == 0 and d.touched.isna().all()
+    d = P.move_outcome(f, "dn", 2, 0.01, ext)
+    assert np.isclose(d.best_pct.iloc[0], 299.1 / 300 - 1) and d.best_min.iloc[0] == 2 and d.touched.iloc[0] == 0
 
 
 def test_move_recal_uses_only_earlier_days():
@@ -216,7 +226,7 @@ def test_move_tables_add_up(tmp_path):
                        "minute": rng.integers(0, 390, k), "p": rng.uniform(0.6, 0.9, k),
                        "reached": rng.choice([0.0, 1.0, np.nan], k, p=[0.3, 0.6, 0.1]),
                        "touched": rng.choice([0.0, 1.0], k), "formed": 1.0, "centre_pct": 0.01,
-                       "best_pct": 0.02, "captured": 1.0, "warm": True, "p_up": rng.uniform(0, 1, k),
+                       "best_pct": 0.02, "vwap_move": 0.005, "captured": 1.0, "warm": True, "p_up": rng.uniform(0, 1, k),
                        "p_dn": rng.uniform(0, 1, k), "reached_up": 1.0, "reached_dn": 0.0,
                        "net_p50": 0.1, "real_net": rng.normal(0, 1, k)})
     s = P.move_summary(mt, {"up": 1000, "dn": 1000})
@@ -228,6 +238,10 @@ def test_move_tables_add_up(tmp_path):
     assert d.predictions.sum() == k and (d.happened + d.did_not <= d.predictions).all()
     assert d[d.date == "2026-01-08"].predictions.eq(0).all()        # a day without a match shows 0
     assert d.happened.sum() == int((mt.reached == 1).sum())
+    top = mt.groupby(["date", "side"]).p.max()
+    assert np.allclose(d.dropna(subset=["max_said"]).set_index(["date", "side"]).max_said, top.reindex(
+        d.dropna(subset=["max_said"]).set_index(["date", "side"]).index))      # the day's highest P
+    assert (d.max_said.dropna() >= d.said.dropna()).all()
     t = P.move_times(mt)
     assert t.predictions.sum() == k and (t.happened + t.did_not + t.unknown == t.predictions).all()
     lean = P.move_lean(mt)
@@ -247,19 +261,30 @@ def test_move_cum_combines_the_windows_from_the_entry():
     p = [np.array([0.1, 0.0, 0.5]), np.array([0.2, 0.0, 0.5])]
     assert np.allclose(P.move_prob_cum(p), [1 - 0.9 * 0.8, 0.0, 0.75])
     assert np.allclose(P.move_prob_cum(p[:1]), p[0])                # one window = itself
-    o1 = pd.DataFrame({"formed": [1.0, np.nan, 0.0], "reached": [0.0, np.nan, 0.0],
-                       "touched": [1.0, np.nan, 0.0], "centre_pct": [0.005, np.nan, np.nan],
-                       "best_pct": [0.012, np.nan, 0.002], "best_min": [4.0, np.nan, 2.0],
-                       "worst_pct": [-0.003, np.nan, -0.001]})
-    o2 = pd.DataFrame({"formed": [1.0, np.nan, 1.0], "reached": [1.0, np.nan, 0.0],
-                       "touched": [1.0, np.nan, 0.0], "centre_pct": [0.011, np.nan, 0.004],
-                       "best_pct": [0.010, np.nan, 0.006], "best_min": [9.0, np.nan, 12.0],
-                       "worst_pct": [-0.008, np.nan, 0.0]})
+    nan = np.nan
+    o1 = pd.DataFrame({"formed": [1.0, nan, 0.0], "reached": [0.0, nan, 0.0], "touched": [1.0, nan, 0.0],
+                       "centre_pct": [0.005, nan, nan], "high_pct": [0.012, nan, 0.002],
+                       "high_min": [4.0, nan, 2.0], "low_pct": [-0.003, nan, -0.02], "low_min": [3.0, nan, 1.0],
+                       "cvwap_pct": [0.004, nan, 0.0], "ctwap_pct": [0.003, nan, 0.0], "end_pct": [0.01, nan, 0.0]})
+    o2 = pd.DataFrame({"formed": [1.0, nan, 1.0], "reached": [1.0, nan, 0.0], "touched": [1.0, nan, 0.0],
+                       "centre_pct": [0.011, nan, 0.004], "high_pct": [0.010, nan, 0.006],
+                       "high_min": [9.0, nan, 12.0], "low_pct": [-0.008, nan, -0.001], "low_min": [8.0, nan, 7.0],
+                       "cvwap_pct": [0.007, nan, 0.002], "ctwap_pct": [0.006, nan, 0.001], "end_pct": [0.009, nan, 0.003]})
     up = P.move_outcome_cum([o1, o2], "up")
     assert list(up.reached.iloc[[0, 2]]) == [1.0, 0.0] and np.isnan(up.reached.iloc[1])   # no trade: unknown
     assert np.isclose(up.centre_pct.iloc[0], 0.011) and np.isclose(up.best_pct.iloc[0], 0.012)
     assert up.best_min.iloc[0] == 4 and up.best_min.iloc[2] == 12 and np.isnan(up.best_min.iloc[1])
     assert np.isclose(up.worst_pct.iloc[0], -0.008) and up.formed.iloc[2] == 1
-    dn = P.move_outcome_cum([o1.assign(best_pct=[-0.004, np.nan, -0.02]), o2.assign(best_pct=[-0.01, np.nan, -0.001])], "dn")
-    assert np.isclose(dn.best_pct.iloc[0], -0.01) and dn.best_min.iloc[0] == 9 and dn.best_min.iloc[2] == 2
+    # the VWAP / TWAP from the entry and the last price: the last window's from-the-entry numbers
+    assert np.isclose(up.vwap_pct.iloc[0], 0.007) and np.isclose(up.twap_pct.iloc[0], 0.006)
+    assert np.isclose(up.end_pct.iloc[0], 0.009)
+    dn = P.move_outcome_cum([o1, o2], "dn")
+    assert np.isclose(dn.best_pct.iloc[0], -0.008) and dn.best_min.iloc[0] == 8
+    assert np.isclose(dn.best_pct.iloc[2], -0.02) and dn.best_min.iloc[2] == 1
+    assert np.isclose(dn.worst_pct.iloc[0], 0.012) and np.isclose(dn.low_pct.iloc[0], up.low_pct.iloc[0])
+    # the predicted centre: the window with the highest P, and that window's real centre
+    c = P.move_centre_cum([np.array([0.3, 0.1]), np.array([0.2, 0.4])], [np.array([1.0, 1.1]), np.array([2.0, 2.1])],
+                          [np.array([3.0, 3.1]), np.array([4.0, 4.1])], [np.array([0.01, 0.02]), np.array([0.03, 0.04])])
+    assert list(c["win"]) == [1, 2] and list(c["p50"]) == [1.0, 2.1] and list(c["p90"]) == [3.0, 4.1]
+    assert list(c["centre_pct"]) == [0.01, 0.04]
     assert P.move_window(4, True) == "0-60 min" and P.move_window(4, False) == "30-60 min"

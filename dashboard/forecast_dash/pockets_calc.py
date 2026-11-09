@@ -442,12 +442,17 @@ def move_prob(q_cm: np.ndarray, q_mass: np.ndarray | None, sigma, x: float, side
     return {"p_forms": forms, "p_beyond": beyond, "p": forms * beyond}
 
 
+AFTER = ("high_pct", "high_min", "low_pct", "low_min", "vwap_pct", "twap_pct", "end_pct", "cvwap_pct",
+         "ctwap_pct")
+
+
 def move_outcome(f: pd.DataFrame, side: str, b: int, x: float, ext: pd.DataFrame | None) -> pd.DataFrame:
     """What happened in bin b after each decision of f (rows aligned with ext, the extremes):
     reached = the side's centre of mass at or beyond the target (NaN when the bin had no trade),
     formed, centre_pct (the centre's move from P0), and from the extremes touched, best_pct /
     best_min (the high up, the low down, and its minute after the decision), worst_pct (the
-    opposite extreme)."""
+    opposite extreme), and the prices after the entry (AFTER, % vs P0): the high / low and their
+    minute, the VWAP / TWAP and the last price of the bin, the VWAP / TWAP from the entry to its end."""
     sig = f["sigma"].to_numpy(np.float64)
     cm = f[f"real_cm_{side}_b{b}"].to_numpy(np.float64)
     other = f[f"real_cm_{'dn' if side == 'up' else 'up'}_b{b}"].to_numpy(np.float64)
@@ -458,16 +463,23 @@ def move_outcome(f: pd.DataFrame, side: str, b: int, x: float, ext: pd.DataFrame
     out = {"formed": np.where(known, np.isfinite(cm), np.nan),
            "reached": np.where(known, reach, np.nan),
            "centre_pct": np.expm1(sign * sig * cm)}
-    if ext is not None:
-        best = ext[f"{'hi' if side == 'up' else 'lo'}_b{b}"].to_numpy(np.float64)
-        worst = ext[f"{'lo' if side == 'up' else 'hi'}_b{b}"].to_numpy(np.float64)
-        t = ext[f"t_{'hi' if side == 'up' else 'lo'}_b{b}"].to_numpy(np.float64)
-        out["touched"] = np.where(np.isfinite(best), sign * best >= move_level(x, side), np.nan)
-        out["best_pct"], out["worst_pct"] = np.expm1(best), np.expm1(worst)
-        out["best_min"] = np.where(t >= 0, t, np.nan)
-    else:
-        for c in ("touched", "best_pct", "worst_pct", "best_min"):
-            out[c] = np.full(len(f), np.nan)
+    nan = np.full(len(f), np.nan)
+
+    def col(c):
+        return ext[c].to_numpy(np.float64) if ext is not None and c in ext else nan
+
+    for name, c in (("high", "hi"), ("low", "lo")):
+        out[f"{name}_pct"] = np.expm1(col(f"{c}_b{b}"))
+        t = col(f"t_{c}_b{b}")
+        out[f"{name}_min"] = np.where(t >= 0, t, np.nan)
+    for name, c in (("vwap_pct", "vw"), ("twap_pct", "tw"), ("end_pct", "cl"), ("cvwap_pct", "cvw"),
+                    ("ctwap_pct", "ctw")):
+        out[name] = np.expm1(col(f"{c}_b{b}"))
+    best, worst = ("high", "low") if side == "up" else ("low", "high")
+    out["touched"] = np.where(np.isfinite(out[f"{best}_pct"]),
+                              sign * np.log1p(out[f"{best}_pct"]) >= move_level(x, side) - 1e-12, np.nan)
+    out["best_pct"], out["worst_pct"] = out[f"{best}_pct"], out[f"{worst}_pct"]
+    out["best_min"] = out[f"{best}_min"]
     return pd.DataFrame(out, index=f.index)
 
 
@@ -487,20 +499,41 @@ def move_prob_cum(ps: list[np.ndarray]) -> np.ndarray:
 
 def move_outcome_cum(outs: list[pd.DataFrame], side: str) -> pd.DataFrame:
     """move_outcome over windows b1 .. bK together: happened / formed / touched in any of them (NaN
-    only when no window has an outcome); the furthest real centre and best high / low (with its
-    minute) and the worst opposite extreme over all of them."""
+    only when no window has an outcome); the furthest real centre, the high / low (with its minute)
+    over all of them, best / worst as the side reads them; the VWAP / TWAP from the entry to bK's end
+    and the last price at its end."""
     def stack(c):
         return np.column_stack([o[c].to_numpy(np.float64) for o in outs])
 
-    far, near = (np.fmax, np.fmin) if side == "up" else (np.fmin, np.fmax)
+    def pick(val, t, up):
+        v = stack(val)
+        j = np.nanargmax(np.nan_to_num(v if up else -v, nan=-np.inf), axis=1)
+        e = (np.fmax if up else np.fmin).reduce(v, axis=1)
+        return e, np.where(np.isfinite(e), stack(t)[np.arange(len(v)), j], np.nan)
+
     out = {c: np.fmax.reduce(stack(c), axis=1) for c in ("formed", "reached", "touched")}
-    out["centre_pct"] = far.reduce(stack("centre_pct"), axis=1)
-    best = stack("best_pct")
-    out["best_pct"] = far.reduce(best, axis=1)
-    j = np.nanargmax(np.nan_to_num(best if side == "up" else -best, nan=-np.inf), axis=1)
-    out["best_min"] = np.where(np.isfinite(out["best_pct"]), stack("best_min")[np.arange(len(best)), j], np.nan)
-    out["worst_pct"] = near.reduce(stack("worst_pct"), axis=1)
+    out["centre_pct"] = (np.fmax if side == "up" else np.fmin).reduce(stack("centre_pct"), axis=1)
+    out["high_pct"], out["high_min"] = pick("high_pct", "high_min", True)
+    out["low_pct"], out["low_min"] = pick("low_pct", "low_min", False)
+    last = outs[-1]
+    out["vwap_pct"], out["twap_pct"] = last["cvwap_pct"].to_numpy(), last["ctwap_pct"].to_numpy()
+    out["end_pct"] = last["end_pct"].to_numpy()
+    out["cvwap_pct"], out["ctwap_pct"] = out["vwap_pct"], out["twap_pct"]
+    best, worst = ("high", "low") if side == "up" else ("low", "high")
+    out["best_pct"], out["best_min"] = out[f"{best}_pct"], out[f"{best}_min"]
+    out["worst_pct"] = out[f"{worst}_pct"]
     return pd.DataFrame(out, index=outs[0].index)
+
+
+def move_centre_cum(ps: list[np.ndarray], p50s: list[np.ndarray], p90s: list[np.ndarray],
+                    centres: list[np.ndarray]) -> dict:
+    """Each window has its own centre: with the windows combined, the one the model gave the highest
+    P (its window number, the predicted P50 / P90 there, σ) and where that window's centre really was."""
+    P = np.nan_to_num(np.column_stack(ps), nan=-1.0)
+    j = np.argmax(P, axis=1)
+    r = np.arange(len(P))
+    return {"win": j + 1, "p50": np.column_stack(p50s)[r, j], "p90": np.column_stack(p90s)[r, j],
+            "centre_pct": np.column_stack(centres)[r, j]}
 
 
 def _pav(y: np.ndarray, w: np.ndarray) -> np.ndarray:
@@ -574,7 +607,8 @@ def _mv_agg(g: pd.DataFrame) -> dict:
     return {"predictions": len(g), "stocks": g["symbol"].nunique(), "said": g["p"].mean(),
             "reached": g["reached"].mean(), "touched": g["touched"].mean(),
             "not_formed": 1 - g["formed"].mean(), "median_centre_pct": g["centre_pct"].abs().median(),
-            "median_best_pct": g["best_pct"].abs().median(), "median_captured": g["captured"].median()}
+            "median_best_pct": g["best_pct"].abs().median(), "median_vwap_move": g["vwap_move"].median(),
+            "median_captured": g["captured"].median()}
 
 
 def _boot_gap(day, d, seed: int = 0) -> tuple[float, float]:
@@ -606,19 +640,21 @@ def move_summary(mt: pd.DataFrame, scored: dict[str, int]) -> pd.DataFrame:
         rows.append(r)
     cols = ["side", "predictions", "stocks", "days", "decisions", "share_flagged", "said", "reached",
             "gap", "gap_lo", "gap_hi", "touched", "not_formed", "median_centre_pct", "median_best_pct",
-            "median_captured"]
+            "median_vwap_move", "median_captured"]
     return pd.DataFrame(rows, columns=cols)
 
 
 def move_by_day(mt: pd.DataFrame, scored_days: pd.DataFrame) -> pd.DataFrame:
-    """One row per day and side: predictions, happened (centre reached), didn't, said, the rates.
+    """One row per day and side: predictions, happened (centre reached), didn't, said (the mean P) and
+    max_said, the rates, the median best high / low and VWAP move.
     scored_days: date, side, decisions (every scored decision, so days without a match show 0)."""
     g = mt.groupby(["date", "side"])
     t = pd.DataFrame({"predictions": g.size(), "happened": g["reached"].apply(lambda s: int((s == 1).sum())),
                       "did_not": g["reached"].apply(lambda s: int((s == 0).sum())),
-                      "stocks": g["symbol"].nunique(), "said": g["p"].mean(), "reached": g["reached"].mean(),
-                      "touched": g["touched"].mean(), "median_best_pct": g["best_pct"].apply(
-                          lambda s: s.abs().median()), "calibrated": g["warm"].all()})
+                      "stocks": g["symbol"].nunique(), "said": g["p"].mean(), "max_said": g["p"].max(),
+                      "reached": g["reached"].mean(), "touched": g["touched"].mean(),
+                      "median_best_pct": g["best_pct"].apply(lambda s: s.abs().median()),
+                      "median_vwap_move": g["vwap_move"].median(), "calibrated": g["warm"].all()})
     t = scored_days.set_index(["date", "side"]).join(t, how="left")
     for c in ("predictions", "happened", "did_not", "stocks"):
         t[c] = t[c].fillna(0).astype(int)

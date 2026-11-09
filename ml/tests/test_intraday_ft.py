@@ -771,3 +771,43 @@ def test_extremes_hand_example_and_no_trades():
     bad[0, 12] = True          # a minute at the frames' clip: its bins are unknown, not a wrong number
     E = Ex.excursions(H, L, np.array([0]), np.array([5]), np.log([300.0]), bad)
     assert np.isnan(E["hi_b2"][0]) and np.isnan(E["lo_b2"][0]) and E["t_lo_b2"][0] == -1
+
+
+def test_extremes_averages_match_the_targets_and_a_hand_example():
+    M = synth()
+    r = np.repeat(np.arange(len(M.sig)), 3)
+    i = np.tile([4, 30, 200], len(M.sig))
+    T = Tg.targets(M, r, i)
+    lp0 = np.log(T["p0"])
+    A = Ex.averages(M.VW, M.V, M.Cf, r, i, lp0)
+    for k, (lo, hi) in enumerate(Tg.BINS, 1):
+        # the bin's VWAP, and close to the pocket's net (the volume-weighted mean of the log prices)
+        assert np.allclose(A[f"vw_b{k}"], T[f"net_b{k}"] * M.sig[r], atol=2e-3, equal_nan=True)
+        for j in range(len(r)):
+            a, b = i[j] + 1 + lo, min(i[j] + 1 + hi, 390)
+            if a >= 390:
+                assert np.isnan(A[f"vw_b{k}"][j]) and np.isnan(A[f"cl_b{k}"][j])
+                continue
+            v, x = M.V[r[j], a:b], M.VW[r[j], a:b]
+            assert np.isclose(A[f"vw_b{k}"][j], np.log((v * x).sum() / v.sum()) - lp0[j], atol=1e-6)
+            assert np.isclose(A[f"tw_b{k}"][j], np.log(M.Cf[r[j], a:b].mean()) - lp0[j], atol=1e-6)
+            assert np.isclose(A[f"cl_b{k}"][j], np.log(M.Cf[r[j], b - 1]) - lp0[j], atol=1e-6)
+            c = slice(i[j] + 1, b)
+            assert np.isclose(A[f"cvw_b{k}"][j], np.log((M.V[r[j], c] * M.VW[r[j], c]).sum() / M.V[r[j], c].sum())
+                              - lp0[j], atol=1e-6)
+    assert np.allclose(A["cvw_b1"], A["vw_b1"], equal_nan=True)
+    V = np.zeros((1, 390))
+    VW, C = np.full((1, 390), np.nan), np.full((1, 390), 300.0)
+    V[0, 6:11], VW[0, 6:11], C[0, 6:11] = [100, 300, 0, 100, 0], [301, 303, np.nan, 299, np.nan], [301, 303, 303, 299, 299]
+    A = Ex.averages(VW, V, C, np.array([0]), np.array([5]), np.log([300.0]))
+    # decision at minute 5: b1 = minutes 6..10
+    assert np.isclose(np.exp(A["vw_b1"][0]) * 300, (301 * 100 + 303 * 300 + 299 * 100) / 500, atol=1e-6)
+    assert np.isclose(np.exp(A["tw_b1"][0]) * 300, (301 + 303 + 303 + 299 + 299) / 5, atol=1e-6)
+    assert np.isclose(np.exp(A["cl_b1"][0]) * 300, 299, atol=1e-6)
+    # 0-15 min: b1's minutes plus b2's (no trade there, the price held at 300 -> the TWAP drops)
+    assert np.isclose(np.exp(A["cvw_b2"][0]), np.exp(A["vw_b1"][0]), atol=1e-6) and np.isnan(A["vw_b2"][0])
+    assert np.isclose(np.exp(A["ctw_b2"][0]) * 300, (301 + 303 + 303 + 299 + 299 + 300 * 10) / 15, atol=1e-6)
+    bad = np.zeros((1, 390), bool)
+    bad[0, 8] = True
+    A = Ex.averages(VW, V, C, np.array([0]), np.array([5]), np.log([300.0]), bad)
+    assert np.isnan(A["vw_b1"][0]) and np.isnan(A["cvw_b5"][0]) and np.isfinite(A["tw_b2"][0])

@@ -491,7 +491,9 @@ def test_pockets_moves_filter(tmp_path, monkeypatch):
     assert days.predictions.sum() == summ.predictions.iloc[2]       # per day adds up to the period
     assert days.date.nunique() == 10                                 # the last 10 days by default
     lst = next(d.value for d in mv.dataframe if "real_centre" in d.value)
-    assert (lst.p >= 0.2).all() and lst.best.notna().all()
+    assert (lst.p >= 0.2).all() and lst.high.notna().all() and lst.vwap.notna().all()
+    assert lst.window.str.match(r"b[1-5]: ").all()                    # the window whose centre is shown
+    assert (days.max_said.dropna() >= days.said.dropna()).all()
     _assert_explained(at)
     # every control
     at.select_slider(key="pk_mv_dates").set_value(("2026-01-05", "2026-02-09"))
@@ -545,4 +547,4 @@ def test_pockets_moves_without_extremes(tmp_path, monkeypatch):
     mv = _moves(at)
     assert any("extremes.parquet" in w.value for w in mv.warning)
     lst = next(d.value for d in mv.dataframe if "real_centre" in d.value)
-    assert lst.best.isna().all() and lst.real_centre.notna().any()
+    assert lst.high.isna().all() and lst.vwap.isna().all() and lst.real_centre.notna().any()

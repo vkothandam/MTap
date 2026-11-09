@@ -1410,6 +1410,18 @@ b2 2%, b3 4%, b4 7%, b5 15%; later windows are longer and further from the entry
 the price traded at the target at least once (from the bars: `extremes.parquet`). Touching is easier
 and noisier; the centre is where the trading concentrated.
 
+**The centre** of a side = the volume-weighted average price of the trades on that side of P0 in a
+window (up: the trades above P0; down: below). Each window has its own centre. `centre_p50` /
+`centre_p90` are **prices, not probabilities**: the model's median and 90th-percentile guess of that
+centre (P90 = it's 90% sure the centre is no further than this). With the toggle on, the windows' P
+are combined but their centres aren't: the list shows the centre of the window the model gave the
+highest P (`window`), and where that window's centre really was (`real_centre`); `far_centre` is the
+furthest real centre of all the windows from the entry.
+
+**After the entry** (from the bars): the high and low and their minute, the VWAP (every trade's
+price weighted by its size), the TWAP (the plain average of the minute closes) and the last price at
+the window's end. With the toggle on, all of them run from the entry to the window's end.
+
 **Direction**: the model sizes moves, it doesn't call them. The stocks flagged for +X are mostly the
 ones flagged for −X too (big movers); the lean table shows that rather than hiding it.
 
@@ -1426,8 +1438,9 @@ never formed, the median centre / best move and the momentum captured.
 """),
     "pk_mv_days": ("Per day", """
 One row per day and side: predictions, how many happened (the centre reached the target), how many
-didn't, stocks, said vs happened, touched. Days without a match show 0. `calibrated` = the day had 20
-earlier sessions for the calibration.
+didn't, stocks, said (the mean P of the day's predictions) and max_said (the highest), happened,
+touched, the median best high / low and the median VWAP move after the entry. Days without a match
+show 0. `calibrated` = the day had 20 earlier sessions for the calibration.
 """),
     "pk_mv_times": ("When in the day", """
 Predictions per 15 minutes of the day over the range, stacked: happened (green), didn't (red),
@@ -1444,11 +1457,12 @@ side reached the target. Leaned ≈ other = no direction call.
 """),
     "pk_mv_list": ("The predictions", """
 One row per matching decision, highest P first (at most 500; pick a day above it). The entry P0 and
-the target; the P said (and raw); where the model put the centre of the volume on that side (P50 /
-P90) and where it really was; whether it reached and whether the price touched the target; the best
-high (up) or low (down) in the window and its minute after the decision; the worst move the other way;
-`captured` = the real centre's move ÷ the predicted P50 move (1.0× = as forecast); and the other
-side's P and outcome at the same decision.
+the target; the P said (and raw); the window whose centre is shown, where the model put the centre of
+the volume on that side there (P50 / P90, prices) and where it really was; `captured` = the real
+centre's move ÷ the predicted P50 move (1.0× = as forecast); the furthest real centre; whether it
+reached and whether the price touched the target; then the prices after the entry: the high and low
+(with their minute), VWAP, TWAP and the last price at the window's end, in $ and % vs P0; and the
+other side's P and outcome at the same decision.
 """),
     "pk_mv_reliab": ("Said vs happened", """
 Every decision in the range (not just the matches), at this X and window: x = P (10% buckets), y = how
@@ -1475,6 +1489,8 @@ _MV = {
     "not_formed": "share where that side held < 5% of the window's volume (no centre: didn't happen)",
     "median_centre_pct": "median distance of the real centre of mass from P0",
     "median_best_pct": "median best high (up) / low (down) in the window, distance from P0",
+    "median_vwap_move": "median VWAP after the entry vs P0, in the predicted direction (+ = the way of the move)",
+    "max_said": "the highest P of the day's predictions",
     "median_captured": "median of real centre move ÷ predicted P50 move (1.0× = as forecast)",
     "happened": "predictions whose centre reached the target",
     "did_not": "predictions whose centre didn't (or the side didn't form)",
@@ -1495,16 +1511,30 @@ _MV = {
     "target": "P0 × (1 ± X)",
     "p": "P said (calibrated or raw, as chosen)",
     "p_raw": "P as the model's quantiles say, before the calibration",
-    "centre_p50": "where the model put the centre of that side's volume in the chosen window, P50, $",
-    "centre_p90": "the same, P90, $",
-    "real_centre": "where that side's volume really centred, $ (blank: the side didn't form); with the toggle on, the furthest of the windows",
+    "window": "the window whose centre is shown: the chosen one, or with the toggle on the one the model gave the highest P",
+    "centre_p50": "a price, not a probability: the model's median guess of where that side's volume centres in `window`, $",
+    "centre_p90": "a price: the model's 90th-percentile guess (90% sure the centre is no further than this), $",
+    "real_centre": "where that side's volume really centred in `window`, $ (blank: the side didn't form there)",
+    "far_centre": "the furthest real centre of that side over the windows from the entry (toggle on), else = real_centre, $",
+    "high": "the highest price after the entry in the window (from the entry with the toggle on), $",
+    "high_pct": "the high vs P0, %",
+    "high_min": "minute of the high after the decision",
+    "low": "the lowest price after the entry in the window (from the entry with the toggle on), $",
+    "low_pct": "the low vs P0, %",
+    "low_min": "minute of the low after the decision",
+    "vwap": "VWAP after the entry: every trade's price weighted by its size, over the window (from the entry with the toggle on), $",
+    "vwap_pct": "the VWAP vs P0, %",
+    "twap": "TWAP after the entry: the plain average of the minute closes (a quiet minute holds the last price), $",
+    "twap_pct": "the TWAP vs P0, %",
+    "end": "the last price at the window's end, $",
+    "end_pct": "the last price vs P0, %",
     "best": "best high (up) or low (down) in the window (from the entry with the toggle on), $",
     "best_pct": "best high / low vs P0, %",
     "best_min": "minute of the best high / low after the decision",
     "worst": "the opposite extreme in the window (low for up, high for down), $",
     "worst_pct": "the opposite extreme vs P0, %",
     "centre_pct": "the real centre of mass vs P0, % in the predicted direction",
-    "captured": "real centre move ÷ predicted P50 move (1.0× = as forecast)",
+    "captured": "real centre move ÷ predicted P50 move in `window` (1.0× = as forecast)",
     "other_p": "P of the opposite move at the same decision",
     "other_reached": "whether the opposite side's centre reached its target",
     "other_centre_pct": "the opposite side's real centre vs P0, %",

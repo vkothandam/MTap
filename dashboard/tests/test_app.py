@@ -508,6 +508,13 @@ def test_pockets_moves_filter(tmp_path, monkeypatch):
         at.selectbox(key="pk_mv_bin").set_value(b)
         at.run()
         assert not at.exception, (b, [e.value for e in at.exception])
+    assert at.toggle(key="pk_mv_cum").value                          # by the window's end: on by default
+    n_cum = _moves(at).dataframe[0].value.predictions.iloc[-1]
+    at.toggle(key="pk_mv_cum").set_value(False)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert _moves(at).dataframe[0].value.predictions.iloc[-1] <= n_cum   # one window alone: fewer
+    at.toggle(key="pk_mv_cum").set_value(True)
     at.radio(key="pk_mv_mode").set_value("raw")
     at.slider(key="pk_mv_min_p").set_value(0.3)
     at.run()

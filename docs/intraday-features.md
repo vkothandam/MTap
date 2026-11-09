@@ -502,3 +502,4 @@ label used for Chunk 0).
 | 2026-11-08 | **Ablations (fold B):** no 1 s tier = same or better shape skill (25/25 pass); a 120-min encoder = same or better (`rvol` +2 pts); 60 min worse (early stop at epoch 9). The S-tier inputs and the whole-day encoder aren't needed for the pocket shape (LEARNINGS "Intraday v2 IA1" §6). |
 | 2026-11-08 | Dashboard Intraday → **Pockets model** reads the run files (§7 + the three side files); sector codes are TRBC economic sectors (57 = Technology). |
 | 2026-11-08 | **Moves tab + `extremes.parquet`** (§7): the dashboard reads P(centre at or beyond ±X%) off the stored `mass_up` / `cm_*` quantiles, calibrated by a rolling 20-session isotonic map; no model change. Extremes written for IA1 and IA1A. |
+| 2026-11-08 | Moves: the bins are exclusive (b4 = 30–60 min only). A toggle (default on) gives P by the window's end: 1 − Π(1 − P_k) over b1..bK, calibrated on the OR of their outcomes; better calibrated than one bin. |

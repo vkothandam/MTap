@@ -1398,10 +1398,13 @@ overstates by 5–15 points (when a side barely trades it has no centre), so by 
 **calibrated**: each day's P mapped through what happened at each P over the 20 sessions before it.
 Only past outcomes: the same works live.
 
-**The windows don't overlap.** b4 is only the minutes 30–60 after the entry, not 0–60, and each
-window has its own P. Later windows give higher P (on IA1, ±1%: b1 0.3%, b2 2%, b3 4%, b4 7%,
-b5 15%) because they are longer and further from the entry, not because they include the earlier
-ones. A centre beyond +1% in b2 says nothing on its own about b4.
+**By the window's end (the toggle, on by default).** The model's windows don't overlap: b4 alone is
+the minutes 30–60 after the entry. With the toggle on, P is the chance it happens in **any** window
+from the entry to the chosen one's end (b4 → 0–60 min): the windows' P combined as "at least one"
+(1 − (1 − P1)(1 − P2)…), then calibrated on what happened over those windows together. The outcomes
+follow: happened / touched in any of them, the furthest centre, the best high / low and its minute
+over all of them. Off, it is the chosen window alone. On IA1 at ±1% the windows alone give b1 0.3%,
+b2 2%, b3 4%, b4 7%, b5 15%; later windows are longer and further from the entry.
 
 **Happened** = the volume's centre of mass reached the target (what the model forecasts). **Touched** =
 the price traded at the target at least once (from the bars: `extremes.parquet`). Touching is easier
@@ -1468,7 +1471,7 @@ _MV = {
     "gap": "reached − said: above 0 = P too cautious, below 0 = too bold",
     "gap_lo": "low end of the gap's 95% CI (whole days resampled)",
     "gap_hi": "high end of the gap's 95% CI",
-    "touched": "share where the price traded at the target at least once in the window (bars)",
+    "touched": "share where the price traded at the target at least once in the window (bars; from the entry with the toggle on)",
     "not_formed": "share where that side held < 5% of the window's volume (no centre: didn't happen)",
     "median_centre_pct": "median distance of the real centre of mass from P0",
     "median_best_pct": "median best high (up) / low (down) in the window, distance from P0",
@@ -1492,10 +1495,10 @@ _MV = {
     "target": "P0 × (1 ± X)",
     "p": "P said (calibrated or raw, as chosen)",
     "p_raw": "P as the model's quantiles say, before the calibration",
-    "centre_p50": "where the model put the centre of that side's volume, P50, $",
+    "centre_p50": "where the model put the centre of that side's volume in the chosen window, P50, $",
     "centre_p90": "the same, P90, $",
-    "real_centre": "where that side's volume really centred, $ (blank: the side didn't form)",
-    "best": "best high (up) or low (down) in the window, $",
+    "real_centre": "where that side's volume really centred, $ (blank: the side didn't form); with the toggle on, the furthest of the windows",
+    "best": "best high (up) or low (down) in the window (from the entry with the toggle on), $",
     "best_pct": "best high / low vs P0, %",
     "best_min": "minute of the best high / low after the decision",
     "worst": "the opposite extreme in the window (low for up, high for down), $",

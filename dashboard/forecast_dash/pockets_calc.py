@@ -471,6 +471,38 @@ def move_outcome(f: pd.DataFrame, side: str, b: int, x: float, ext: pd.DataFrame
     return pd.DataFrame(out, index=f.index)
 
 
+CUM_BINS = {1: "0-5 min", 2: "0-15 min", 3: "0-30 min", 4: "0-60 min", 5: "the entry to the close"}
+
+
+def move_window(b: int, cum: bool) -> str:
+    """The window's label: bin b alone, or every bin from the entry to b's end."""
+    return CUM_BINS[b] if cum else BINS[b]
+
+
+def move_prob_cum(ps: list[np.ndarray]) -> np.ndarray:
+    """P that it happens in at least one of the windows, from each window's P (as if independent;
+    the rolling calibration then corrects what that gets wrong)."""
+    return 1 - np.prod(1 - np.column_stack(ps), axis=1)
+
+
+def move_outcome_cum(outs: list[pd.DataFrame], side: str) -> pd.DataFrame:
+    """move_outcome over windows b1 .. bK together: happened / formed / touched in any of them (NaN
+    only when no window has an outcome); the furthest real centre and best high / low (with its
+    minute) and the worst opposite extreme over all of them."""
+    def stack(c):
+        return np.column_stack([o[c].to_numpy(np.float64) for o in outs])
+
+    far, near = (np.fmax, np.fmin) if side == "up" else (np.fmin, np.fmax)
+    out = {c: np.fmax.reduce(stack(c), axis=1) for c in ("formed", "reached", "touched")}
+    out["centre_pct"] = far.reduce(stack("centre_pct"), axis=1)
+    best = stack("best_pct")
+    out["best_pct"] = far.reduce(best, axis=1)
+    j = np.nanargmax(np.nan_to_num(best if side == "up" else -best, nan=-np.inf), axis=1)
+    out["best_min"] = np.where(np.isfinite(out["best_pct"]), stack("best_min")[np.arange(len(best)), j], np.nan)
+    out["worst_pct"] = near.reduce(stack("worst_pct"), axis=1)
+    return pd.DataFrame(out, index=outs[0].index)
+
+
 def _pav(y: np.ndarray, w: np.ndarray) -> np.ndarray:
     """Weighted isotonic (non-decreasing) fit by pool-adjacent-violators."""
     vals, wts, cnt = [], [], []
@@ -633,17 +665,17 @@ def move_lean(mt: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def move_insights(s: pd.DataFrame, lean: pd.DataFrame, x: float, b: int, min_p: float, calibrated: bool,
+def move_insights(s: pd.DataFrame, lean: pd.DataFrame, x: float, window: str, min_p: float, calibrated: bool,
                   both: int, cold_days: int, has_ext: bool) -> list[Insight]:
     if s.empty or not s["predictions"].sum():
-        return [Insight(INFO, f"No decision with P ≥ {min_p:.0%} for ±{x:.1%} in {BINS[b]} under these "
+        return [Insight(INFO, f"No decision with P ≥ {min_p:.0%} for ±{x:.1%} in {window} under these "
                               "filters: lower the minimum P or X.")]
     out = []
     for _, r in s[s.side != "both"].iterrows():
         if not r.predictions:
             continue
         sign = "+" if r.side == "up" else "−"
-        txt = (f"{sign}{x:.1%} in {BINS[b]}, P ≥ {min_p:.0%} ({'calibrated' if calibrated else 'raw'}): "
+        txt = (f"{sign}{x:.1%} in {window}, P ≥ {min_p:.0%} ({'calibrated' if calibrated else 'raw'}): "
                f"{r.predictions:,} predictions on {r.stocks:,} stocks over {r.days} days "
                f"({r.share_flagged:.1%} of {r.decisions:,} decisions); said {r.said:.0%}, the volume "
                f"centred at {sign}{x:.1%} or beyond in {r.reached:.0%}")

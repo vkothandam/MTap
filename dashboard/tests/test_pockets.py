@@ -241,3 +241,25 @@ def test_load_extremes(tmp_path):
     e = C.load_extremes(run, "B")
     assert e.index.name == "dec_row" and {"hi_b2", "t_lo_b5"} <= set(e.columns)
     assert C.load_extremes(write_pockets_run(tmp_path, "x", extremes=False), "B") is None
+
+
+def test_move_cum_combines_the_windows_from_the_entry():
+    p = [np.array([0.1, 0.0, 0.5]), np.array([0.2, 0.0, 0.5])]
+    assert np.allclose(P.move_prob_cum(p), [1 - 0.9 * 0.8, 0.0, 0.75])
+    assert np.allclose(P.move_prob_cum(p[:1]), p[0])                # one window = itself
+    o1 = pd.DataFrame({"formed": [1.0, np.nan, 0.0], "reached": [0.0, np.nan, 0.0],
+                       "touched": [1.0, np.nan, 0.0], "centre_pct": [0.005, np.nan, np.nan],
+                       "best_pct": [0.012, np.nan, 0.002], "best_min": [4.0, np.nan, 2.0],
+                       "worst_pct": [-0.003, np.nan, -0.001]})
+    o2 = pd.DataFrame({"formed": [1.0, np.nan, 1.0], "reached": [1.0, np.nan, 0.0],
+                       "touched": [1.0, np.nan, 0.0], "centre_pct": [0.011, np.nan, 0.004],
+                       "best_pct": [0.010, np.nan, 0.006], "best_min": [9.0, np.nan, 12.0],
+                       "worst_pct": [-0.008, np.nan, 0.0]})
+    up = P.move_outcome_cum([o1, o2], "up")
+    assert list(up.reached.iloc[[0, 2]]) == [1.0, 0.0] and np.isnan(up.reached.iloc[1])   # no trade: unknown
+    assert np.isclose(up.centre_pct.iloc[0], 0.011) and np.isclose(up.best_pct.iloc[0], 0.012)
+    assert up.best_min.iloc[0] == 4 and up.best_min.iloc[2] == 12 and np.isnan(up.best_min.iloc[1])
+    assert np.isclose(up.worst_pct.iloc[0], -0.008) and up.formed.iloc[2] == 1
+    dn = P.move_outcome_cum([o1.assign(best_pct=[-0.004, np.nan, -0.02]), o2.assign(best_pct=[-0.01, np.nan, -0.001])], "dn")
+    assert np.isclose(dn.best_pct.iloc[0], -0.01) and dn.best_min.iloc[0] == 9 and dn.best_min.iloc[2] == 2
+    assert P.move_window(4, True) == "0-60 min" and P.move_window(4, False) == "30-60 min"

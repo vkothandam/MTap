@@ -2164,6 +2164,22 @@ No model change: the predictions are the same numbers, read a new way.
   4.1 / 4.7%, b4 6.9 / 7.8%, b5 15.5 / 16.9%. Later windows are longer and further from the entry, so their volume
   centres further out. Realised centre reached: 0.3, 1.6, 3.6, 6.3, 14.6% (up). Touched within the window vs
   touched by the window's end (cumulative): b4 13.7% vs 15.8%, b5 30.9% vs 33.5%.
+- **"By the window's end" (dashboard toggle, on by default, 2026-11-08).** P(it happens in any window from the entry
+  to bK's end) = 1 − Π(1 − P_k), then the same rolling isotonic calibration on the OR of the windows' outcomes.
+  Tried max, sum and this "at least one": same ranking (AUC equal to 0.001), and "at least one" calibrates best (sum
+  is bold at the top). Calibrated, all days, ±1% (said → centre happened, touched):
+
+  | | 0–15 min, P ≥ 0.4 | 0–60 min, P ≥ 0.4 | 0–60 min, P ≥ 0.5 | 0–60 min, P ≥ 0.6 |
+  | --- | --- | --- | --- | --- |
+  | B up | 0.43 → 0.43, 66% (n 1,116) | 0.47 → 0.46, 68% (n 21,318) | 0.56 → 0.55, 75% | 0.63 → 0.58, 77% (n 897) |
+  | B down | 0.47 → 0.46, 70% | 0.49 → 0.47, 70% | 0.58 → 0.56, 77% | 0.67 → 0.64, 81% (n 2,078) |
+  | A up | 0.45 → 0.45, 67% | 0.48 → 0.46, 68% | 0.57 → 0.55, 74% | 0.64 → 0.61, 79% (n 1,882) |
+  | A down | 0.46 → 0.43, 68% | 0.51 → 0.50, 71% | 0.58 → 0.56, 77% | 0.66 → 0.64, 82% (n 5,226) |
+
+  **Better calibrated than one window alone** (fold A up at ≥ 0.5: 0.57 → 0.55 vs 30–60 min alone 0.53 → 0.41), and
+  P ≥ 0.6 now exists in numbers. Thin tails still miss: 0–15 min ≥ 0.5 on B up (n 16, 0.51 → 0.12) and A down
+  (0.52 → 0.42). Last 10 days, 0–60 min, ±1%, P ≥ 0.4: fold B up 534 predictions on 130 stocks, said 45%, happened
+  50%, touched 74%, median best high +1.94%; down 403, said 49%, happened 42%; both CIs cover 0.
 - **The run file is a 25% sample** (about 250 of 1,000 stocks a day, every 15 min). A re-score of the trained models
   over every stock-day (no training, ~5 h both folds) would give full counts; not run.
 

@@ -611,3 +611,4 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
   - Dashboard: Intraday → Pockets model → **Moves** tab (±X% filter, per-day report, period summary, lean, list in
     $, said vs happened; default minimum P 0.4). `intraday-ft-extremes RUN` writes `fold_<k>/extremes.parquet`
     (the high / low after each decision); written for IA1 and IA1A. Commit c2825c0. No model change (MODEL-STRATEGY Q42).
+  - Moves: toggle **by the window's end** (default on): P that it happens any time from the entry to the window's end, calibrated; better than one window (MODEL-STRATEGY Q42 follow-up).

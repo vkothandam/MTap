@@ -65,11 +65,9 @@ def get_extremes(path: str, fold: str) -> pd.DataFrame | None:
     return None if e is None else e.reindex(get_frame(path, fold)["dec_row"].to_numpy()).reset_index(drop=True)
 
 
-@st.cache_resource(show_spinner="Calibrating the move probabilities...", max_entries=16)
-def get_moves(path: str, fold: str, x: float, b: int) -> dict:
-    """Per run-file row, both sides at ±x in bin b: raw P, P recalibrated on the previous 20
-    sessions (and whether the day had them), and the outcome. Every row, so a day's calibration
-    always sees its 20 earlier sessions whatever the filters."""
+@st.cache_resource(show_spinner="Reading the move probabilities...", max_entries=16)
+def get_move_bin(path: str, fold: str, x: float, b: int) -> dict:
+    """Per run-file row, both sides at ±x in bin b alone: raw P, the centre's P50 / P90 and the outcome."""
     f = get_frame(path, fold)
     ext = get_extremes(path, fold)
     targets = C.targets_of(Path(path), fold)
@@ -78,10 +76,26 @@ def get_moves(path: str, fold: str, x: float, b: int) -> dict:
         q_cm = np.asarray(get_q(path, fold, f"cm_{side}_b{b}"), np.float64)
         mass = f"mass_up_b{b}"
         q_m = np.asarray(get_q(path, fold, mass), np.float64) if mass in targets else None
-        pr = P.move_prob(q_cm, q_m, f["sigma"].to_numpy(), x, side)
-        oc = P.move_outcome(f, side, b, x, ext)
-        cal, warm = P.move_recal(pr["p"], oc["reached"].to_numpy(), f["date"].to_numpy())
-        out[side] = {"raw": pr["p"], "cal": cal, "warm": warm, "p50": q_cm[:, 2], "p90": q_cm[:, 4],
+        out[side] = {"raw": P.move_prob(q_cm, q_m, f["sigma"].to_numpy(), x, side)["p"],
+                     "p50": q_cm[:, 2], "p90": q_cm[:, 4], "outcome": P.move_outcome(f, side, b, x, ext)}
+    return out
+
+
+@st.cache_resource(show_spinner="Calibrating the move probabilities...", max_entries=16)
+def get_moves(path: str, fold: str, x: float, b: int, cum: bool = True) -> dict:
+    """Per run-file row, both sides at ±x: raw P, P recalibrated on the previous 20 sessions (and
+    whether the day had them), and the outcome. cum: in any window from the entry to b's end (the
+    windows' P combined, the outcomes OR-ed); else in bin b alone. Every row, so a day's
+    calibration always sees its 20 earlier sessions whatever the filters."""
+    f = get_frame(path, fold)
+    bins = [get_move_bin(path, fold, x, k) for k in (range(1, b + 1) if cum else [b])]
+    out = {}
+    for side in P.SIDES:
+        last = bins[-1][side]
+        raw = P.move_prob_cum([m[side]["raw"] for m in bins]) if cum else last["raw"]
+        oc = P.move_outcome_cum([m[side]["outcome"] for m in bins], side) if cum else last["outcome"]
+        cal, warm = P.move_recal(raw, oc["reached"].to_numpy(), f["date"].to_numpy())
+        out[side] = {"raw": raw, "cal": cal, "warm": warm, "p50": last["p50"], "p90": last["p90"],
                      "outcome": oc}
     return out
 
@@ -412,7 +426,9 @@ def _moves_controls(v: View):
     side = c.selectbox("Side", list(MV_SIDES), key="pk_mv_side", format_func=MV_SIDES.get)
     a, b, c = st.columns(3)
     bin_ = a.selectbox("Window", list(C.BINS), index=1, key="pk_mv_bin",
-                       format_func=lambda k: f"b{k}: {C.BINS[k]} after the entry")
+                       format_func=lambda k: f"b{k}: {C.BINS[k]} (by its end: {P.CUM_BINS[k]})",
+                       help="with the toggle on, everything from the entry to the window's end; off, the "
+                            "window alone")
     min_p = b.slider("Minimum P", 0.05, 0.95, 0.4, 0.05, key="pk_mv_min_p",
                      help="show the decisions whose probability is at least this. The centre "
                           "reaches ±1% in 30-60 min only ~6% of the time, so a calibrated P "
@@ -421,9 +437,14 @@ def _moves_controls(v: View):
                   format_func={"cal": "calibrated", "raw": "raw"}.get,
                   help="calibrated: each day's P mapped through what happened at each P over the 20 "
                        "sessions before it (only past outcomes, as live). raw: as the model's quantiles say")
-    first = st.checkbox("One row per stock run (the first decision of consecutive matches)", key="pk_mv_first",
-                        help="a stock often matches at several decisions in a row; this keeps the first of each")
-    return d, x, side, bin_, min_p, cal == "cal", first
+    a, b = st.columns(2)
+    cum = a.toggle("By the window's end (any time from the entry)", value=True, key="pk_mv_cum",
+                   help="on: P that it happens in any window from the entry to the chosen one's end (b4 = "
+                        "0-60 min), outcomes over all of them. off: the chosen window alone (b4 = 30-60 "
+                        "min only)")
+    first = b.checkbox("One row per stock run (the first decision of consecutive matches)", key="pk_mv_first",
+                       help="a stock often matches at several decisions in a row; this keeps the first of each")
+    return d, x, side, bin_, min_p, cal == "cal", first, cum
 
 
 def tab_moves(v: View):
@@ -431,8 +452,9 @@ def tab_moves(v: View):
     if v.f.empty:
         st.info("No rows under these filters.")
         return
-    (d0, d1), x, side, b, min_p, cal, first = _moves_controls(v)
-    mv = get_moves(v.path, v.fold, x, b)
+    (d0, d1), x, side, b, min_p, cal, first, cum = _moves_controls(v)
+    mv = get_moves(v.path, v.fold, x, b, cum)
+    window = P.move_window(b, cum)
     ext = get_extremes(v.path, v.fold)
     keep = (v.f["date"] >= d0).to_numpy() & (v.f["date"] <= d1).to_numpy()
     rows = v.idx[keep]
@@ -487,7 +509,7 @@ def tab_moves(v: View):
     cold = int((~pd.Series(mv["up"]["warm"][rows]).groupby(f["date"].to_numpy()).all()).sum()) if cal else 0
     summ = P.move_summary(mt, scored)
     lean = P.move_lean(mt)
-    _in_short(P.move_insights(summ, lean, x, b, min_p, cal, int(both.sum()), cold, ext is not None))
+    _in_short(P.move_insights(summ, lean, x, window, min_p, cal, int(both.sum()), cold, ext is not None))
     if ext is None:
         st.warning("No extremes.parquet in this fold: touched, best high / low and their minute are blank. "
                    "Run `intraday-ft-extremes` on the run.")
@@ -531,7 +553,7 @@ def tab_moves(v: View):
         hits.append(mv[s]["outcome"]["reached"].to_numpy()[rows])
     g = pd.concat([P.event_grid({k: pr}, h) for (k, pr), h in zip(probs.items(), hits)], ignore_index=True)
     if len(g):
-        _chart(charts.reliability(g, f"±{X_CHOICES.get(x, x)} in {C.BINS[b]}: said vs happened "
+        _chart(charts.reliability(g, f"±{X_CHOICES.get(x, x)} in {window}: said vs happened "
                                      f"({'calibrated' if cal else 'raw'}, every decision in the range)",
                                   min_n=20, group="overlay"), "pk_mv_reliab")
         _table(g, "pk_mv_cal", _pct_cols(g, ["mean_prob", "hit_rate", "deviation", "ci_lo", "ci_hi"]))

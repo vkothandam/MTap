@@ -2159,6 +2159,11 @@ No model change: the predictions are the same numbers, read a new way.
   APTVw) shares its company's stock_id, so the match is on (stock_id, symbol, day). 5 spot checks (KKR, SNOW, CTAS,
   CW, SOFI, 2026-09) equal `bars_1m` exactly. The centre lies beyond the high in only 0.04–0.2% of rows (VWAP
   inside the bar range, as it must).
+- **The windows are separate, not cumulative** (b4 = minutes 30–60 after the entry only). P still rises with the
+  window in 99.9% of rows (IA1, ±1%, decisions before 15:00, mean P up / down): b1 0.3% / 0.4%, b2 1.9 / 2.2%, b3
+  4.1 / 4.7%, b4 6.9 / 7.8%, b5 15.5 / 16.9%. Later windows are longer and further from the entry, so their volume
+  centres further out. Realised centre reached: 0.3, 1.6, 3.6, 6.3, 14.6% (up). Touched within the window vs
+  touched by the window's end (cumulative): b4 13.7% vs 15.8%, b5 30.9% vs 33.5%.
 - **The run file is a 25% sample** (about 250 of 1,000 stocks a day, every 15 min). A re-score of the trained models
   over every stock-day (no training, ~5 h both folds) would give full counts; not run.
 

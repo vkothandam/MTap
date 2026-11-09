@@ -1398,6 +1398,11 @@ overstates by 5–15 points (when a side barely trades it has no centre), so by 
 **calibrated**: each day's P mapped through what happened at each P over the 20 sessions before it.
 Only past outcomes: the same works live.
 
+**The windows don't overlap.** b4 is only the minutes 30–60 after the entry, not 0–60, and each
+window has its own P. Later windows give higher P (on IA1, ±1%: b1 0.3%, b2 2%, b3 4%, b4 7%,
+b5 15%) because they are longer and further from the entry, not because they include the earlier
+ones. A centre beyond +1% in b2 says nothing on its own about b4.
+
 **Happened** = the volume's centre of mass reached the target (what the model forecasts). **Touched** =
 the price traded at the target at least once (from the bars: `extremes.parquet`). Touching is easier
 and noisier; the centre is where the trading concentrated.

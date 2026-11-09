@@ -612,3 +612,8 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
     $, said vs happened; default minimum P 0.4). `intraday-ft-extremes RUN` writes `fold_<k>/extremes.parquet`
     (the high / low after each decision); written for IA1 and IA1A. Commit c2825c0. No model change (MODEL-STRATEGY Q42).
   - Moves: toggle **by the window's end** (default on): P that it happens any time from the entry to the window's end, calibrated; better than one window (MODEL-STRATEGY Q42 follow-up).
+  - Moves: `extremes.parquet` adds the VWAP / TWAP / last price after the entry (per window and from the entry);
+    re-written for all seven intraday runs (before, only IA1 / IA1A had the file, so the newest run, the
+    default in the picker, showed blank touched / best). The list shows the high, low, VWAP, TWAP and last price
+    in $ and %, and with the toggle on the predicted centre of the window with the highest P; the days table adds
+    `max_said` (MODEL-STRATEGY Q42 follow-up 2).

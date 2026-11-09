@@ -1627,3 +1627,18 @@ such filters on predictions, is that feasible?"
   combined outcomes. **It calibrates better than one window:** 0–60 min, ±1%, P ≥ 0.5: said 56–58%, happened
   55–56% on both folds and sides (one window, fold A up: 53% → 41%); P ≥ 0.6: said 63–67%, happened 58–64%, and
   the price touched the target 77–82% of the time. Thin 0–15 min tails (P ≥ 0.5) still miss.
+- **Follow-up 2 (user, 2026-11-08): are `centre_p50` / `centre_p90` percentiles or probabilities, what is the
+  centre, does it get combined with the windows, why are touched / best blank, and was 2026-10-13's top P 58%?**
+  - They are **prices** (percentiles), not probabilities: the model's median and 90th-percentile guess of the
+    centre. The centre of a side = the volume-weighted average price of the trades on that side of P0 in a window.
+  - Each window has its own centre and the toggle combined only the P. The list showed the chosen window's
+    predicted centre against the furthest real centre of all the windows: not like for like. **Fixed:** the list
+    shows the window (`window`) the model gave the highest P, its predicted P50 / P90 and its real centre;
+    `far_centre` keeps the furthest.
+  - Blank touched / best: `extremes.parquet` existed only for IA1 and IA1A, and the picker opens on the newest
+    run (IA1-enc60). Now written for all seven runs.
+  - Added the prices after the entry: high / low with their minute, VWAP, TWAP and the last price, per window
+    or from the entry (toggle on), in $ and %; the days table adds `max_said` (`said` is the day's mean P).
+  - 2026-10-13, IA1, defaults (0–60 min, ±1%, calibrated, P ≥ 0.4): 15 down / 5 up predictions, mean P 44% / 43%,
+    **top 52% / 47%**. 58% is the top at "the entry to the close" (b5) up (58.5%); none of the 0–60 min settings
+    reach it.

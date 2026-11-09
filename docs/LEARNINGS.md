@@ -2182,6 +2182,16 @@ No model change: the predictions are the same numbers, read a new way.
   50%, touched 74%, median best high +1.94%; down 403, said 49%, happened 42%; both CIs cover 0.
 - **The run file is a 25% sample** (about 250 of 1,000 stocks a day, every 15 min). A re-score of the trained models
   over every stock-day (no training, ~5 h both folds) would give full counts; not run.
+- **Prices after the entry (2026-11-08).** The frames hold no raw volume, but `m_rvol` × `normal_rvol` gives each
+  minute's volume as a share of the normal day, enough for a VWAP: the bin VWAP from the frames matches the run
+  file's `real_net_bK` × σ to 0.01 bp (median), 0.05 bp at p90 and 1.5–6 bp at p99 (float16 prices; 20,000 IA1
+  rows, 2026-03). Example, IA1 2026-10-13, 0–60 min, −1%: ASTS at 09:36, P0 $47.60, P 52% (raw 83%); predicted
+  centre of the 30–60 min sellers P50 $46.98 / P90 $45.13, real $46.59 (reached, captured 1.6×); low $46.23 at +53
+  min (−2.9%), high $48.62 at +5 min (+2.1%); VWAP $47.01 (−1.2%), TWAP $46.99, last $46.55. The same decision had
+  P 47% for +1% and that happened too: a big mover both ways.
+- **Each window has its own centre**, so combining the windows' P doesn't combine their centres. With the toggle on
+  the list shows the centre of the window the model gave the highest P (on IA1, 0–60 min, P ≥ 0.4 that is 30–60
+  min for nearly every row) and, separately, the furthest real centre over the windows.
 
 ### 2026-11 Intraday P1 bounce check: the d = 0 direction edge was bid–ask bounce (run 2026-11-01, 56 min)
 Tags: `tag-ml-intraday`. Plan: [live-recommendations-plan.md](live-recommendations-plan.md) P1. Script:

@@ -474,8 +474,13 @@ P10 / P90.
   `intraday-ft-report`.
 - `extremes.parquet` (optional, `intraday-ft-extremes RUN`, no training, ~2 min a fold): per `dec_row` and bin k,
   `hi_bk` / `lo_bk` = ln(max high / P0), ln(min low / P0) over the bin's minutes after the entry, and
-  `t_hi_bk` / `t_lo_bk` = their minute counted from the decision (−1 = none). Read from the cached frames'
-  `m_h` / `m_l`; a bin holding a minute at the frames' ±10σ clip (a big gap from yesterday's close) is NaN, as is a
+  `t_hi_bk` / `t_lo_bk` = their minute counted from the decision (−1 = none). Since 2026-11-08 also `vw_bk` /
+  `tw_bk` = ln(VWAP / P0), ln(TWAP / P0) over the bin's minutes (VWAP = the minute VWAPs weighted by volume, TWAP =
+  the mean of the held minute closes), `cvw_bk` / `ctw_bk` = the same from the entry to the bin's end (`cvw_b4` =
+  the first 60 minutes) and `cl_bk` = ln(the last price at the bin's end / P0). The volume comes back from `m_rvol`
+  × `normal_rvol` (a share of the normal day: only its ratios count); the bin VWAP matches the run file's
+  `real_net_bk` × σ to 0.01 bp (median), 3 bp at the 99th percentile. Read from the cached frames'
+  `m_h` / `m_l` / `m_vw` / `m_c`; a bin holding a minute at the frames' ±10σ clip (a big gap from yesterday's close) is NaN, as is a
   bin without a trade (b2 0.06%, b4 7.8% of IA1 rows). Matched on (stock_id, symbol, day): a when-issued line
   (APTVw) shares its company's stock_id. Checked against `bars_1m` on 5 stocks (exact).
 
@@ -502,4 +507,5 @@ label used for Chunk 0).
 | 2026-11-08 | **Ablations (fold B):** no 1 s tier = same or better shape skill (25/25 pass); a 120-min encoder = same or better (`rvol` +2 pts); 60 min worse (early stop at epoch 9). The S-tier inputs and the whole-day encoder aren't needed for the pocket shape (LEARNINGS "Intraday v2 IA1" §6). |
 | 2026-11-08 | Dashboard Intraday → **Pockets model** reads the run files (§7 + the three side files); sector codes are TRBC economic sectors (57 = Technology). |
 | 2026-11-08 | **Moves tab + `extremes.parquet`** (§7): the dashboard reads P(centre at or beyond ±X%) off the stored `mass_up` / `cm_*` quantiles, calibrated by a rolling 20-session isotonic map; no model change. Extremes written for IA1 and IA1A. |
+| 2026-11-08 | `extremes.parquet` adds the prices after the entry: `vw_bk` / `tw_bk` (bin VWAP / TWAP), `cvw_bk` / `ctw_bk` (from the entry to the bin's end), `cl_bk` (last price). Written for all seven runs. Moves list: high / low / VWAP / TWAP / last price in $ and %, the predicted centre of the window with the highest P (toggle on), `max_said` per day. |
 | 2026-11-08 | Moves: the bins are exclusive (b4 = 30–60 min only). A toggle (default on) gives P by the window's end: 1 − Π(1 − P_k) over b1..bK, calibrated on the OR of their outcomes; better calibrated than one bin. |

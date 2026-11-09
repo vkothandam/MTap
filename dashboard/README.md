@@ -272,7 +272,11 @@ happened. Runs are found under `--pockets-runs DIR` or `FORECAST_DASH_POCKETS_RU
 <run>/fold_<k>/clim_rates.parquet         optional; climatology event rates per (cell, event)
 <run>/fold_<k>/extremes.parquet           optional; per dec_row and bin: hi_b<k> / lo_b<k> = ln(high
                                           / P0), ln(low / P0), t_hi_b<k> / t_lo_b<k> = their minute
-                                          after the decision; `intraday-ft-extremes RUN` writes it
+                                          after the decision; vw_b<k> / tw_b<k> = ln(VWAP / P0), ln(TWAP
+                                          / P0) in the bin, cvw_b<k> / ctw_b<k> = the same from the entry
+                                          to the bin's end, cl_b<k> = ln(last price / P0) at its end
+                                          (older files lack these five: blank, with a note);
+                                          `intraday-ft-extremes RUN` writes it
 ```
 
 Without the three optional fold files (runs scored before 2026-11-07 23:00) the page says so:

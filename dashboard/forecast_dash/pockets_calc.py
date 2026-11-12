@@ -604,11 +604,12 @@ _MV_STATS = {"said": "p", "reached": "reached", "touched": "touched", "not_forme
 
 
 def _mv_agg(g: pd.DataFrame) -> dict:
+    bx = g["best_x"][g["touched"] == 1]
     return {"predictions": len(g), "stocks": g["symbol"].nunique(), "said": g["p"].mean(),
             "reached": g["reached"].mean(), "touched": g["touched"].mean(),
             "not_formed": 1 - g["formed"].mean(), "median_centre_pct": g["centre_pct"].abs().median(),
             "median_best_pct": g["best_pct"].abs().median(), "median_vwap_move": g["vwap_move"].median(),
-            "median_captured": g["captured"].median()}
+            "median_captured": g["captured"].median(), "mean_best_x": bx.mean(), "median_best_x": bx.median()}
 
 
 def _boot_gap(day, d, seed: int = 0) -> tuple[float, float]:
@@ -640,42 +641,101 @@ def move_summary(mt: pd.DataFrame, scored: dict[str, int]) -> pd.DataFrame:
         rows.append(r)
     cols = ["side", "predictions", "stocks", "days", "decisions", "share_flagged", "said", "reached",
             "gap", "gap_lo", "gap_hi", "touched", "not_formed", "median_centre_pct", "median_best_pct",
-            "median_vwap_move", "median_captured"]
+            "median_vwap_move", "median_captured", "mean_best_x", "median_best_x"]
     return pd.DataFrame(rows, columns=cols)
 
 
 def move_by_day(mt: pd.DataFrame, scored_days: pd.DataFrame) -> pd.DataFrame:
-    """One row per day and side: predictions, happened (centre reached), didn't, said (the mean P) and
-    max_said, the rates, the median best high / low and VWAP move.
+    """One row per day and side, the list's three states (disjoint): happened (the centre reached),
+    touched_only (the price got to the target, the centre didn't: the list's blue rows), did_not
+    (neither); said (the mean P) and max_said, the rates, the median best high / low and VWAP move.
     scored_days: date, side, decisions (every scored decision, so days without a match show 0)."""
-    g = mt.groupby(["date", "side"])
-    t = pd.DataFrame({"predictions": g.size(), "happened": g["reached"].apply(lambda s: int((s == 1).sum())),
-                      "did_not": g["reached"].apply(lambda s: int((s == 0).sum())),
+    r, tc = mt["reached"], mt["touched"]
+    g = mt.assign(best_x=mt["best_x"].where(tc == 1), hit=(r == 1).astype(int),
+                  touched_only=((r != 1) & (tc == 1)).astype(int),
+                  miss=((r == 0) & (tc != 1)).astype(int)).groupby(["date", "side"])
+    t = pd.DataFrame({"predictions": g.size(), "happened": g["hit"].sum(),
+                      "touched_only": g["touched_only"].sum(), "did_not": g["miss"].sum(),
                       "stocks": g["symbol"].nunique(), "said": g["p"].mean(), "max_said": g["p"].max(),
                       "reached": g["reached"].mean(), "touched": g["touched"].mean(),
                       "median_best_pct": g["best_pct"].apply(lambda s: s.abs().median()),
-                      "median_vwap_move": g["vwap_move"].median(), "calibrated": g["warm"].all()})
+                      "median_vwap_move": g["vwap_move"].median(),
+                      "mean_best_x": g["best_x"].mean(),
+                      "calibrated": g["warm"].all()})
     t = scored_days.set_index(["date", "side"]).join(t, how="left")
-    for c in ("predictions", "happened", "did_not", "stocks"):
+    for c in ("predictions", "happened", "did_not", "touched_only", "stocks"):
         t[c] = t[c].fillna(0).astype(int)
     t["calibrated"] = t["calibrated"].astype("boolean")
     return t.reset_index().sort_values(["date", "side"], ascending=[False, True], ignore_index=True)
 
 
+HIT_BG = "background-color: rgba(44, 160, 44, 0.08)"     # the centre reached the target: a mild green
+TOUCH_BG = "background-color: rgba(31, 119, 180, 0.08)"  # only the price got there: a mild blue
+MISS_FG = "color: rgba(128, 128, 128, 0.7)"               # neither: dimmed text
+
+
+def move_list_css(lst: pd.DataFrame) -> pd.DataFrame:
+    """CSS per cell of the predictions list, three states: the centre reached the target (reached = 1,
+    the prediction came true) a mild green; only the price touched it (the centre fell short) a mild
+    blue; neither dimmed; unknown ones as they are. And on the side's best price (the high for up, the
+    low for down: $, % and best_x) a green that deepens with best_x, how many times the target the
+    price went (1× = just touched, 5× and over the deepest)."""
+    css = pd.DataFrame("", index=lst.index, columns=lst.columns)
+    r, t = lst["reached"], lst["touched"]
+    css.loc[r == 1, :] = HIT_BG
+    css.loc[(r != 1) & (t == 1), :] = TOUCH_BG
+    css.loc[(r == 0) & (t != 1), :] = MISS_FG
+    bx = lst["best_x"].to_numpy(np.float64)
+    over = np.isfinite(bx) & (bx >= 1)
+    alpha = 0.15 + 0.4 * np.clip((np.nan_to_num(bx) - 1) / 4, 0, 1)
+    for side, cols in (("up", ["high", "high_pct"]), ("dn", ["low", "low_pct"])):
+        m = over & (lst["side"] == side).to_numpy()
+        for c in [*cols, "best_x"]:
+            if c in css:
+                css.loc[m, c] = [f"{base}; background-color: rgba(44, 160, 44, {a:.2f})"
+                                 for base, a in zip(css.loc[m, c], alpha[m])]
+    return css
+
+
+def move_day_css(d: pd.DataFrame) -> pd.DataFrame:
+    """CSS per cell of the per-day table, the list's colours by column (a row is a whole day, so its
+    cells are coloured, not the row): happened / reached green, touched_only / touched blue, did_not
+    dimmed; mean_best_x the list's green, deeper with the overshoot; a day without a prediction dimmed."""
+    css = pd.DataFrame("", index=d.index, columns=d.columns)
+    css.loc[d["predictions"] == 0, :] = MISS_FG
+    for cols, style in ((["happened", "reached"], HIT_BG), (["touched_only", "touched"], TOUCH_BG),
+                        (["did_not"], MISS_FG)):
+        for c in cols:
+            if c in css:
+                css.loc[d["predictions"] > 0, c] = style
+    if "mean_best_x" in d:
+        bx = d["mean_best_x"].to_numpy(np.float64)
+        m = np.isfinite(bx) & (bx >= 1)
+        css.loc[m, "mean_best_x"] = [f"background-color: rgba(44, 160, 44, {0.15 + 0.4 * min((x - 1) / 4, 1):.2f})"
+                                     for x in bx[m]]
+    return css
+
+
 def move_times(mt: pd.DataFrame, width: int = 15) -> pd.DataFrame:
-    """Predictions per `width`-minute bucket of the day and side: happened, didn't, unknown, said."""
+    """Predictions per `width`-minute bucket of the day and side, the list's three states (disjoint):
+    happened (the centre reached), touched_only (the price got there, the centre didn't), did_not
+    (neither), unknown (no trade); said, the rates, and how far the price went: median_best_x over
+    every prediction with a price (1× = the target), mean_best_x over the touched ones (the overshoot)."""
+    cols = ["time", "side", "predictions", "happened", "touched_only", "did_not", "unknown", "said",
+            "reached", "touched", "median_best_x", "mean_best_x"]
     if mt.empty:
-        return pd.DataFrame(columns=["time", "side", "predictions", "happened", "did_not", "unknown",
-                                     "said", "reached"])
-    b = (mt["minute"] // width) * width
-    g = mt.assign(bucket=b).groupby(["bucket", "side"])
-    t = pd.DataFrame({"predictions": g.size(), "happened": g["reached"].apply(lambda s: int((s == 1).sum())),
-                      "did_not": g["reached"].apply(lambda s: int((s == 0).sum())),
-                      "said": g["p"].mean(), "reached": g["reached"].mean()}).reset_index()
-    t["unknown"] = t["predictions"] - t["happened"] - t["did_not"]
+        return pd.DataFrame(columns=cols)
+    r, tc = mt["reached"], mt["touched"]
+    g = mt.assign(bucket=(mt["minute"] // width) * width, hit=(r == 1).astype(int),
+                  touch=((r != 1) & (tc == 1)).astype(int), miss=((r == 0) & (tc != 1)).astype(int),
+                  over=mt["best_x"].where(tc == 1)).groupby(["bucket", "side"])
+    t = pd.DataFrame({"predictions": g.size(), "happened": g["hit"].sum(), "touched_only": g["touch"].sum(),
+                      "did_not": g["miss"].sum(), "said": g["p"].mean(), "reached": g["reached"].mean(),
+                      "touched": g["touched"].mean(), "median_best_x": g["best_x"].median(),
+                      "mean_best_x": g["over"].mean()}).reset_index()
+    t["unknown"] = t["predictions"] - t["happened"] - t["touched_only"] - t["did_not"]
     t.insert(0, "time", [f"{hhmm(m)}-{hhmm(m + width)}" for m in t["bucket"]])
-    return t.drop(columns="bucket")[["time", "side", "predictions", "happened", "did_not", "unknown",
-                                      "said", "reached"]]
+    return t[cols]
 
 
 def move_lean(mt: pd.DataFrame) -> pd.DataFrame:
@@ -718,6 +778,9 @@ def move_insights(s: pd.DataFrame, lean: pd.DataFrame, x: float, window: str, mi
         if has_ext and np.isfinite(r.touched):
             txt += (f"; the price touched {sign}{x:.1%} in {r.touched:.0%}, median best "
                     f"{'high' if r.side == 'up' else 'low'} {sign}{r.median_best_pct:.2%}")
+            if np.isfinite(r.median_best_x):
+                txt += (f"; where it touched, the best {'high' if r.side == 'up' else 'low'} went "
+                        f"{r.median_best_x:.1f}× the target (median; mean {r.mean_best_x:.1f}×)")
         ok = np.isfinite(r.gap_lo) and r.gap_lo <= 0 <= r.gap_hi
         out.append(Insight(GOOD if ok else WARN, txt))
         if np.isfinite(r.gap_lo):

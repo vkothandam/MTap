@@ -1438,16 +1438,29 @@ never formed, the median centre / best move and the momentum captured.
 """),
     "pk_mv_days": ("Per day", """
 One row per day and side: predictions, how many happened (the centre reached the target), how many
-didn't, stocks, said (the mean P of the day's predictions) and max_said (the highest), happened,
-touched, the median best high / low and the median VWAP move after the entry. Days without a match
-show 0. `calibrated` = the day had 20 earlier sessions for the calibration.
+didn't, how many only touched (`touched_only`: the price got to the target, the centre fell short),
+stocks, said (the mean P of the day's predictions) and max_said (the highest), happened, touched, the
+median best high / low and the median VWAP move after the entry. Days without a match show 0.
+`calibrated` = the day had 20 earlier sessions for the calibration.
+
+**Colours**, the same as the list's, by column, since a row is a whole day: green = happened (`happened`,
+`reached`), blue = the price only touched (`touched_only`, `touched`), dimmed = `did_not` and the days
+without a prediction; `mean_best_x` shades green deeper the further past the target the price went.
+`happened` + `touched_only` + `did_not` = the predictions with an outcome; `happened` +
+`touched_only` = the ones whose price got to the target.
 """),
     "pk_mv_times": ("When in the day", """
-Predictions per 15 minutes of the day over the range, stacked: happened (green), didn't (red),
-unknown (grey: no trade in the window). Hover for the mean P said and the hit rate.
+Predictions per 15 minutes of the day over the range, stacked in the list's three states: happened
+(green: the centre reached the target), price touched only (blue: the price got there, the centre
+didn't), didn't (light red: neither), unknown (grey: no trade in the window).
+
+The black line (right axis) is how far the price went: the median `best_x`, the best high (up) / low
+(down) ÷ the target's move; 1× (dotted) = just at the target, 2× = twice as far, under 1× = short of
+it. Hover for the mean P said, the rates and the mean overshoot of the touched ones.
 """),
     "pk_mv_times_table": ("When in the day (table)", """
-The chart's numbers per 15-minute bucket and side.
+The chart's numbers per 15-minute bucket and side. `happened` + `touched_only` + `did_not` +
+`unknown` = `predictions`.
 """),
     "pk_mv_lean": ("Bulge or sag", """
 Of the predictions, the ones where the model gave the up side the higher P (lean up) and the rest
@@ -1463,13 +1476,36 @@ centre's move ÷ the predicted P50 move (1.0× = as forecast); the furthest real
 reached and whether the price touched the target; then the prices after the entry: the high and low
 (with their minute), VWAP, TWAP and the last price at the window's end, in $ and % vs P0; and the
 other side's P and outcome at the same decision.
+
+**Colours.** Three states per row:
+- green: it happened, the centre of that side's volume reached the target (what P predicts);
+- blue: the price got to the target at least once (`touched`), but the volume's centre fell short of
+  it: the price went there briefly, most of the trading stayed nearer P0;
+- dimmed: neither; plain: no outcome (no trade in the window).
+
+The side's best price (the high for up, the low for down) and `best_x` shade green when the price got
+to the target, deeper the further past it went: 1× = just touched, 5× and over the deepest. So a −1%
+prediction whose low went −5% shows a deep green low on a green or blue row.
+
+The rates in the tables follow the same two outcomes: `reached` (happened, graded against P) and
+`touched`. The price touches more often than the centre reaches (about 70% against 50% at ±1% by the
+close), since the centre is an average of the volume and lies inside the high / low.
+
+**Blank centres.** `real_centre`, `captured` and `far_centre` are blank when that side never formed in
+the window: less than 5% of its volume traded on that side of P0 (for up, nearly every trade was
+below P0; for down, above). There is no centre to show, so the row counts as not happened. About a
+quarter to a third of all decisions have no centre on a given side; it is not a data gap.
 """),
     "pk_mv_reliab": ("Said vs happened", """
 Every decision in the range (not just the matches), at this X and window: x = P (10% buckets), y = how
 often the centre reached the target, Wilson 95% bars, size ~ √n. On the diagonal = trust P as said.
+
+The dotted lines ("price touched") are the looser outcome at the same P: how often the price traded
+at the target at least once. They sit above the solid ones; the gap between them is the list's blue
+rows (the price got there, the volume's centre didn't). P is graded on the solid line only.
 """),
     "pk_mv_cal": ("Said vs happened (table)", """
-The chart's numbers per P bucket and side.
+The chart's numbers per P bucket and side, the "price touched" rows too.
 """),
 })
 
@@ -1492,8 +1528,14 @@ _MV = {
     "median_vwap_move": "median VWAP after the entry vs P0, in the predicted direction (+ = the way of the move)",
     "max_said": "the highest P of the day's predictions",
     "median_captured": "median of real centre move ÷ predicted P50 move (1.0× = as forecast)",
+    "best_x": "how many times the target the best price went: best high (up) / low (down) move ÷ X (1× = "
+              "just touched, 5× = five times as far; below 1 = never got there)",
+    "mean_best_x": "of the predictions whose price touched the target, the mean best_x: how far past the "
+                   "target the high (up) / low (down) went, in multiples of X",
+    "median_best_x": "of the predictions whose price touched the target, the median best_x",
     "happened": "predictions whose centre reached the target",
-    "did_not": "predictions whose centre didn't (or the side didn't form)",
+    "did_not": "neither: the centre didn't reach (or the side didn't form) and the price didn't touch",
+    "touched_only": "predictions whose price got to the target while the centre didn't (the list's blue rows)",
     "calibrated": "the day had 20 earlier sessions for the calibration (else raw P)",
     "date": "test day",
     "time": "decision time (ET); the entry is the next minute's open",
@@ -1514,8 +1556,10 @@ _MV = {
     "window": "the window whose centre is shown: the chosen one, or with the toggle on the one the model gave the highest P",
     "centre_p50": "a price, not a probability: the model's median guess of where that side's volume centres in `window`, $",
     "centre_p90": "a price: the model's 90th-percentile guess (90% sure the centre is no further than this), $",
-    "real_centre": "where that side's volume really centred in `window`, $ (blank: the side didn't form there)",
-    "far_centre": "the furthest real centre of that side over the windows from the entry (toggle on), else = real_centre, $",
+    "real_centre": "where that side's volume really centred in `window`, $ (blank: under 5% of the volume "
+                   "traded on that side of P0 there, so no centre)",
+    "far_centre": "the furthest real centre of that side over the windows from the entry (toggle on), else = "
+                  "real_centre, $ (blank: the side formed in none of them)",
     "high": "the highest price after the entry in the window (from the entry with the toggle on), $",
     "high_pct": "the high vs P0, %",
     "high_min": "minute of the high after the decision",
@@ -1534,7 +1578,7 @@ _MV = {
     "worst": "the opposite extreme in the window (low for up, high for down), $",
     "worst_pct": "the opposite extreme vs P0, %",
     "centre_pct": "the real centre of mass vs P0, % in the predicted direction",
-    "captured": "real centre move ÷ predicted P50 move in `window` (1.0× = as forecast)",
+    "captured": "real centre move ÷ predicted P50 move in `window` (1.0× = as forecast; blank with real_centre)",
     "other_p": "P of the opposite move at the same decision",
     "other_reached": "whether the opposite side's centre reached its target",
     "other_centre_pct": "the opposite side's real centre vs P0, %",
@@ -1546,4 +1590,6 @@ COLUMNS.update({"pk_mv_lean:other_reached": "share where the other side's centre
                 "pk_mv_list:reached": "✓ = the side's centre of mass reached the target (happened)",
                 "pk_mv_list:touched": "✓ = the price traded at the target at least once in the window",
                 "pk_mv_times_table:reached": "share happened (of those with an outcome)",
+                "pk_mv_times_table:median_best_x": "how far the best price went ÷ the target, median of "
+                                                   "every prediction with a price (1× = at the target)",
                 "pk_mv_cal:overlay": "the side"})

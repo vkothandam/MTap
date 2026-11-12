@@ -56,12 +56,14 @@ def _chart(fig, panel: str, **kw):
     return st.plotly_chart(fig, width="stretch", **kw)
 
 
-def _table(df: pd.DataFrame, panel: str, column_config: dict | None = None, **kw):
+def _table(df, panel: str, column_config: dict | None = None, **kw):
     """st.dataframe with the ⓘ above it and every known column's meaning as a header tooltip.
-    Returns what st.dataframe returns (the selection state when `on_select` is set)."""
-    _about(panel, df.columns)
+    df: a DataFrame or its pandas Styler (cell colours). Returns what st.dataframe returns (the
+    selection state when `on_select` is set)."""
+    columns = getattr(df, "data", df).columns
+    _about(panel, columns)
     cfg = dict(column_config or {})
-    for c in df.columns:
+    for c in columns:
         if h := column_help(c, panel):
             cfg[c] = {**(cfg.get(c) or st.column_config.Column()), "help": h}
     kw.setdefault("hide_index", True)

@@ -493,7 +493,9 @@ def test_pockets_moves_filter(tmp_path, monkeypatch):
     lst = next(d.value for d in mv.dataframe if "real_centre" in d.value)
     assert (lst.p >= 0.2).all() and lst.high.notna().all() and lst.vwap.notna().all()
     assert lst.window.str.match(r"b[1-5]: ").all()                    # the window whose centre is shown
+    assert lst.best_x.notna().all() and {"mean_best_x", "median_best_x"} <= set(summ.columns)
     assert (days.max_said.dropna() >= days.said.dropna()).all()
+    assert days.touched_only.sum() == int(((lst.reached != 1) & (lst.touched == 1)).sum()) or len(lst) == 500
     _assert_explained(at)
     # every control
     at.select_slider(key="pk_mv_dates").set_value(("2026-01-05", "2026-02-09"))

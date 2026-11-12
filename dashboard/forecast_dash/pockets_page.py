@@ -496,6 +496,7 @@ def tab_moves(v: View):
             "reached": oc["reached"].to_numpy(), "formed": oc["formed"].to_numpy(),
             "touched": oc["touched"].to_numpy(),
             "best_pct": oc["best_pct"].to_numpy(), "best_min": oc["best_min"].to_numpy(),
+            "best_x": sign * oc["best_pct"].to_numpy() / x,
             "worst_pct": oc["worst_pct"].to_numpy(),
             **{c: oc[c].to_numpy() for c in P.AFTER},
             "vwap_move": sign * oc["vwap_pct"].to_numpy(),
@@ -512,7 +513,7 @@ def tab_moves(v: View):
         }))
     mt = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(
         columns=["date", "side", "symbol", "minute", "p", "reached", "touched", "formed", "centre_pct",
-                 "best_pct", "vwap_move", "captured", "warm", "p_up", "p_dn", "reached_up", "reached_dn", "net_p50",
+                 "best_pct", "best_x", "vwap_move", "captured", "warm", "p_up", "p_dn", "reached_up", "reached_dn", "net_p50",
                  "real_net"])
     days_in = sorted(f["date"].unique())
     cold = int((~pd.Series(mv["up"]["warm"][rows]).groupby(f["date"].to_numpy()).all()).sum()) if cal else 0
@@ -528,17 +529,21 @@ def tab_moves(v: View):
     pct = ["share_flagged", "said", "reached", "gap", "gap_lo", "gap_hi", "touched", "not_formed",
            "median_centre_pct", "median_best_pct", "median_vwap_move"]
     _table(summ, "pk_mv_summary", {**_pct_cols(summ, pct),
-                                   "median_captured": st.column_config.NumberColumn("median_captured",
-                                                                                    format="%.2f×")})
+                                   **{c: st.column_config.NumberColumn(c, format="%.2f×")
+                                      for c in ("median_captured", "mean_best_x", "median_best_x")}})
     sd = pd.DataFrame([(dd, s, int((f["date"] == dd).sum())) for dd in days_in for s in sides],
                       columns=["date", "side", "decisions"])
-    by_day = P.move_by_day(mt, sd) if len(mt) else sd.assign(predictions=0, happened=0, did_not=0, stocks=0)
-    _table(by_day, "pk_mv_days", _pct_cols(by_day, ["said", "max_said", "reached", "touched", "median_best_pct",
-                                                    "median_vwap_move"]))
+    by_day = (P.move_by_day(mt, sd) if len(mt)
+              else sd.assign(predictions=0, happened=0, did_not=0, touched_only=0, stocks=0))
+    _table(by_day.style.apply(P.move_day_css, axis=None), "pk_mv_days", {**_pct_cols(by_day, ["said", "max_said", "reached", "touched", "median_best_pct",
+                                                       "median_vwap_move"]),
+                                  "mean_best_x": st.column_config.NumberColumn("mean_best_x", format="%.2f×")})
     tm = P.move_times(mt)
     if len(tm):
         _chart(charts.pk_mv_times(tm, f"When in the day: predictions per 15 min, {d0} → {d1}"), "pk_mv_times")
-        _table(tm, "pk_mv_times_table", _pct_cols(tm, ["said", "reached"]))
+        _table(tm, "pk_mv_times_table", {**_pct_cols(tm, ["said", "reached", "touched"]),
+                                         **{c: st.column_config.NumberColumn(c, format="%.2f×")
+                                            for c in ("median_best_x", "mean_best_x")}})
     if len(lean):
         _table(lean, "pk_mv_lean", _pct_cols(lean, ["share", "mean_p_up", "mean_p_dn", "went_up",
                                                     "lean_reached", "other_reached"]))
@@ -550,28 +555,35 @@ def tab_moves(v: View):
         lst = lst.assign(**{c: lst[c] * 100 for c in moves},
                          **{c.removesuffix("_pct"): lst["p0"] * (1 + lst[c]) for c in moves[:5]})
         cols = ["date", "time", "symbol", "sector", "side", "p0", "target", "p", "p_raw", "window", "centre_p50",
-                "centre_p90", "real_centre", "captured", "far_centre", "reached", "touched", "high", "high_pct",
-                "high_min", "low", "low_pct", "low_min", "vwap", "vwap_pct", "twap", "twap_pct", "end",
+                "centre_p90", "real_centre", "captured", "far_centre", "reached", "touched", "best_x", "high",
+                "high_pct", "high_min", "low", "low_pct", "low_min", "vwap", "vwap_pct", "twap", "twap_pct", "end",
                 "end_pct", "other_p", "other_reached", "other_centre_pct"]
-        lst = lst[cols]
-        _table(lst, "pk_mv_list", {**_usd(["p0", "target", "centre_p50", "centre_p90", "real_centre", "far_centre",
-                                           "high", "low", "vwap", "twap", "end"]),
-                                   **_pct_cols(lst, ["p", "p_raw", "other_p"]),
-                                   **_signed(moves),
-                                   "captured": st.column_config.NumberColumn("captured", format="%.2f×"),
-                                   **{c: st.column_config.NumberColumn(c, format="+%d min")
-                                      for c in ("high_min", "low_min")}})
-        st.caption(f"{len(lst):,} shown (highest P first, at most 500) of {len(mt):,}")
+        lst = lst[cols].reset_index(drop=True)
+        _table(lst.style.apply(P.move_list_css, axis=None), "pk_mv_list", {
+            **_usd(["p0", "target", "centre_p50", "centre_p90", "real_centre", "far_centre",
+                    "high", "low", "vwap", "twap", "end"]),
+            **_pct_cols(lst, ["p", "p_raw", "other_p"]),
+            **_signed(moves),
+            **{c: st.column_config.NumberColumn(c, format="%.2f×") for c in ("captured", "best_x")},
+            **{c: st.column_config.NumberColumn(c, format="+%d min") for c in ("high_min", "low_min")}})
+        st.caption(f"{len(lst):,} shown (highest P first, at most 500) of {len(mt):,}. Green row: it happened "
+                   "(the volume's centre reached the target); blue: the price got to the target but the centre "
+                   "fell short; dimmed: neither; plain: no trade, no outcome. The high (up) / low (down) and "
+                   "best_x shade deeper the further past the target the price went (1× = just touched, 5× and "
+                   "over the deepest).")
     # said vs happened over the range, every decision (not just the matches)
-    probs, hits = {}, []
+    # (+ dotted: how often the price touched the target at the same P, the looser outcome for context)
+    grids, touch = [], []
     for s in sides:
-        probs[P.SIDES[s]] = p[s]
-        hits.append(mv[s]["outcome"]["reached"].to_numpy()[rows])
-    g = pd.concat([P.event_grid({k: pr}, h) for (k, pr), h in zip(probs.items(), hits)], ignore_index=True)
+        o = mv[s]["outcome"].iloc[rows]
+        grids.append(P.event_grid({P.SIDES[s]: p[s]}, o["reached"].to_numpy()))
+        touch.append(f"{P.SIDES[s]}: price touched")
+        grids.append(P.event_grid({touch[-1]: p[s]}, o["touched"].to_numpy(np.float64)))
+    g = pd.concat(grids, ignore_index=True)
     if len(g):
         _chart(charts.reliability(g, f"±{X_CHOICES.get(x, x)} in {window}: said vs happened "
                                      f"({'calibrated' if cal else 'raw'}, every decision in the range)",
-                                  min_n=20, group="overlay"), "pk_mv_reliab")
+                                  min_n=20, group="overlay", dotted=tuple(touch)), "pk_mv_reliab")
         _table(g, "pk_mv_cal", _pct_cols(g, ["mean_prob", "hit_rate", "deviation", "ci_lo", "ci_hi"]))
 
 

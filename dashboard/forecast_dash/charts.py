@@ -28,9 +28,10 @@ def _sizes(n: pd.Series, lo: float = 6, hi: float = 28) -> np.ndarray:
 
 
 def reliability(g: pd.DataFrame, title: str = "Said vs came true", min_n: int = 1,
-                group: str = "event") -> go.Figure:
+                group: str = "event", dotted: tuple = ()) -> go.Figure:
     """One line per `group` (event or run): x = mean forecast prob per bucket, y = hit rate,
-    Wilson 95% error bars, marker size ~ sqrt(n). Below the diagonal = overconfident."""
+    Wilson 95% error bars, marker size ~ sqrt(n). Below the diagonal = overconfident.
+    dotted: the groups drawn dotted (a looser outcome shown for context)."""
     fig = go.Figure(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", line=IDEAL, name="ideal",
                                hoverinfo="skip"))
     g = g[g["n"] >= min_n]
@@ -38,7 +39,7 @@ def reliability(g: pd.DataFrame, title: str = "Said vs came true", min_n: int = 
     for name, d in g.groupby(group, sort=False):
         fig.add_trace(go.Scatter(
             x=d["mean_prob"], y=d["hit_rate"], mode="lines+markers", name=str(name),
-            marker={"size": sizes[d.index]},
+            marker={"size": sizes[d.index]}, line={"dash": "dot"} if name in dotted else None,
             error_y={"type": "data", "symmetric": False, "array": d["ci_hi"] - d["hit_rate"],
                      "arrayminus": d["hit_rate"] - d["ci_lo"], "thickness": 1},
             customdata=np.stack([d["bucket"], d["n"], d["deviation"]], axis=1),
@@ -755,21 +756,36 @@ def pk_fan(t: pd.DataFrame, p0: float, title: str) -> go.Figure:
 
 
 def pk_mv_times(t: pd.DataFrame, title: str) -> go.Figure:
-    """Predictions per time-of-day bucket and side, stacked: the volume centred at or beyond the target
-    (happened), didn't, unknown (no trade in the window); hover = mean P said and the hit rate."""
-    fig = go.Figure()
+    """Predictions per time-of-day bucket and side, stacked in the list's three states: the volume
+    centred at or beyond the target (happened, green), only the price got there (blue), neither
+    (dimmed red), unknown (no trade in the window); on a 2nd axis how far the price went, the median
+    best_x (1× = the target, dotted); hover = said, the rates and the overshoot of the touched ones."""
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
     sides = list(dict.fromkeys(t["side"]))
     for s in sides:
         d = t[t["side"] == s]
         x = [d["time"], [s] * len(d)] if len(sides) > 1 else d["time"]
-        for col, name, color in (("happened", "happened", COLORS[2]), ("did_not", "didn't", COLORS[1]),
+        cd = np.stack([d["said"], d["reached"], d["touched"], d["predictions"], d["mean_best_x"]], axis=1)
+        for col, name, color in (("happened", "happened", COLORS[2]),
+                                 ("touched_only", "price touched only", COLORS[0]),
+                                 ("did_not", "didn't", "rgba(214, 39, 40, 0.45)"),
                                  ("unknown", "unknown", "lightgrey")):
-            fig.add_bar(x=x, y=d[col], name=name, marker_color=color, legendgroup=col,
-                        showlegend=s == sides[0], customdata=np.stack([d["said"], d["reached"],
-                                                                       d["predictions"]], axis=1),
-                        hovertemplate=f"%{{x}} {s}: {name} %{{y:,}} of %{{customdata[2]:,}}<br>said "
-                                      "%{customdata[0]:.0%}, happened %{customdata[1]:.0%}<extra></extra>")
+            fig.add_trace(go.Bar(
+                x=x, y=d[col], name=name, marker_color=color, legendgroup=col, showlegend=s == sides[0],
+                customdata=cd, hovertemplate=f"%{{x}} {s}: {name} %{{y:,}} of %{{customdata[3]:,}}<br>said "
+                "%{customdata[0]:.0%}, happened %{customdata[1]:.0%}, touched %{customdata[2]:.0%}"
+                "<br>touched ones went %{customdata[4]:.1f}× the target (mean)<extra></extra>"),
+                secondary_y=False)
+        fig.add_trace(go.Scatter(
+            x=x, y=d["median_best_x"], mode="lines+markers", name="how far it went (median best_x)",
+            line={"color": "black", "width": 1.5}, marker={"size": 4}, legendgroup="bx",
+            showlegend=s == sides[0], customdata=d["mean_best_x"],
+            hovertemplate=f"%{{x}} {s}: the best price went %{{y:.2f}}× the target (median)<br>touched ones "
+                          "%{customdata:.1f}× (mean)<extra></extra>"), secondary_y=True)
+    fig.add_hline(y=1, line={"color": "black", "dash": "dot", "width": 1}, secondary_y=True,
+                  annotation_text="1× = the target", annotation_position="top left")
     fig.update_layout(barmode="stack")
     fig.update_xaxes(title="decision time (ET)")
-    fig.update_yaxes(title="predictions")
-    return _layout(fig, title, height=440)
+    fig.update_yaxes(title="predictions", secondary_y=False)
+    fig.update_yaxes(title="best price ÷ target (×)", secondary_y=True, showgrid=False, rangemode="tozero")
+    return _layout(fig, title, height=460)

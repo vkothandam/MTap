@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from conftest import PK_TARGETS, write_pockets_run
 
+from forecast_dash import charts
 from forecast_dash import pockets_calc as P
 from forecast_dash import pockets_contract as C
 
@@ -226,7 +227,7 @@ def test_move_tables_add_up(tmp_path):
                        "minute": rng.integers(0, 390, k), "p": rng.uniform(0.6, 0.9, k),
                        "reached": rng.choice([0.0, 1.0, np.nan], k, p=[0.3, 0.6, 0.1]),
                        "touched": rng.choice([0.0, 1.0], k), "formed": 1.0, "centre_pct": 0.01,
-                       "best_pct": 0.02, "vwap_move": 0.005, "captured": 1.0, "warm": True, "p_up": rng.uniform(0, 1, k),
+                       "best_pct": 0.02, "best_x": rng.uniform(0, 6, k), "vwap_move": 0.005, "captured": 1.0, "warm": True, "p_up": rng.uniform(0, 1, k),
                        "p_dn": rng.uniform(0, 1, k), "reached_up": 1.0, "reached_dn": 0.0,
                        "net_p50": 0.1, "real_net": rng.normal(0, 1, k)})
     s = P.move_summary(mt, {"up": 1000, "dn": 1000})
@@ -235,19 +236,53 @@ def test_move_tables_add_up(tmp_path):
     sd = pd.DataFrame([(d, x, 333) for d in ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"]
                        for x in ("up", "dn")], columns=["date", "side", "decisions"])
     d = P.move_by_day(mt, sd)
-    assert d.predictions.sum() == k and (d.happened + d.did_not <= d.predictions).all()
+    assert d.predictions.sum() == k and (d.happened + d.touched_only + d.did_not <= d.predictions).all()
+    assert d.did_not.sum() == int(((mt.reached == 0) & (mt.touched != 1)).sum())   # neither
     assert d[d.date == "2026-01-08"].predictions.eq(0).all()        # a day without a match shows 0
     assert d.happened.sum() == int((mt.reached == 1).sum())
+    assert d.touched_only.sum() == int(((mt.reached != 1) & (mt.touched == 1)).sum())
+    css = P.move_day_css(d)
+    live = d.predictions > 0
+    assert (css.loc[live, "happened"] == P.HIT_BG).all() and (css.loc[live, "touched_only"] == P.TOUCH_BG).all()
+    assert (css.loc[~live, "happened"] == P.MISS_FG).all() and (css.loc[live, "did_not"] == P.MISS_FG).all()
+    assert css.loc[live & (d.mean_best_x >= 1), "mean_best_x"].str.contains("44, 160, 44").all()
     top = mt.groupby(["date", "side"]).p.max()
     assert np.allclose(d.dropna(subset=["max_said"]).set_index(["date", "side"]).max_said, top.reindex(
         d.dropna(subset=["max_said"]).set_index(["date", "side"]).index))      # the day's highest P
     assert (d.max_said.dropna() >= d.said.dropna()).all()
     t = P.move_times(mt)
-    assert t.predictions.sum() == k and (t.happened + t.did_not + t.unknown == t.predictions).all()
+    assert t.predictions.sum() == k and (t.happened + t.touched_only + t.did_not + t.unknown == t.predictions).all()
+    assert t.touched_only.sum() == d.touched_only.sum() and t.happened.sum() == d.happened.sum()
+    assert np.isclose(t.mean_best_x.max(), mt.assign(b=mt.minute // 15).query("touched == 1")
+                      .groupby(["b", "side"]).best_x.mean().max())       # the overshoot: touched ones only
+    fig = charts.pk_mv_times(t, "t")
+    assert {tr.name for tr in fig.data} >= {"happened", "price touched only", "didn't",
+                                            "how far it went (median best_x)"}
     lean = P.move_lean(mt)
     assert lean.predictions.sum() == k and np.isclose(lean.share.sum(), 1)
     assert P.move_insights(s, lean, 0.01, 2, 0.6, True, 5, 1, True)
     assert "No decision" in P.move_insights(s.iloc[:0], lean, 0.01, 2, 0.6, True, 0, 0, True)[0].text
+    # best_x: only the predictions whose price touched the target count
+    up = mt[mt.side == "up"]
+    assert np.isclose(s.mean_best_x.iloc[0], up.best_x[up.touched == 1].mean())
+    assert np.isclose(s.median_best_x.iloc[2], mt.best_x[mt.touched == 1].median())
+    one = mt[(mt.date == "2026-01-05") & (mt.side == "dn")]
+    assert np.isclose(d.set_index(["date", "side"]).mean_best_x.loc[("2026-01-05", "dn")],
+                      one.best_x[one.touched == 1].mean())
+
+
+def test_move_list_css_marks_hits_misses_and_the_overshoot():
+    lst = pd.DataFrame({"side": ["up", "dn", "up", "dn", "up"], "reached": [1.0, 0.0, np.nan, 0.0, 0.0],
+                        "touched": [1.0, 1.0, 0.0, 1.0, 0.0], "best_x": [5.0, 3.0, 0.5, 1.0, 0.4],
+                        "high": 1.0, "high_pct": 1.0, "low": 1.0, "low_pct": 1.0, "p": 0.5})
+    css = P.move_list_css(lst)
+    assert css.loc[0, "p"] == P.HIT_BG and css.loc[2, "p"] == ""                  # centre reached; no outcome
+    assert css.loc[1, "p"] == css.loc[3, "p"] == P.TOUCH_BG                       # the price only: blue
+    assert css.loc[4, "p"] == P.MISS_FG and css.loc[4, "high"] == P.MISS_FG       # neither: dimmed, no shade
+    assert "0.55)" in css.loc[0, "high"] and css.loc[0, "low"] == P.HIT_BG        # 5×: the deepest, up side only
+    assert "0.35)" in css.loc[1, "low"] and css.loc[1, "high"] == P.TOUCH_BG      # 3× low on a blue row
+    assert css.loc[2, "high"] == "" and css.loc[2, "best_x"] == ""                # never touched: no shade
+    assert "0.15)" in css.loc[3, "best_x"]                                        # 1×: the lightest
 
 
 def test_load_extremes(tmp_path):

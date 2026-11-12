@@ -617,3 +617,8 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
     default in the picker, showed blank touched / best). The list shows the high, low, VWAP, TWAP and last price
     in $ and %, and with the toggle on the predicted centre of the window with the highest P; the days table adds
     `max_said` (MODEL-STRATEGY Q42 follow-up 2).
+- 2026-11-12: **MBin integration status refreshed** ([live-recommendations-plan.md](live-recommendations-plan.md) §0,
+  for a review session): every pending item by owner. MBin hasn't moved since 2026-11-07 (items 15–18, M13's move
+  to `schemas/`, the item 15 schema edits, M6). The user's calls: the P2 NAS Redis deploy, the Moves ladder option
+  (P15), and what `score` means for intraday v2. MTap to build: P3–P7, P13–P14 after MBin, and the new P16 (intraday v2
+  live scorer). No real recommendation has reached MBin yet.

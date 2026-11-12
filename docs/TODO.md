@@ -2,7 +2,7 @@
 
 Running list of follow-ups that were decided but deferred. Newest first; tick and date an item when done. What runs today, and where: [STATUS.md](STATUS.md).
 
-- [ ] **Live recommendations to MBin, to production mode.** Added 2026-11-01: [live-recommendations-plan.md](live-recommendations-plan.md) items P1–P12 (bounce check first, then live price, reference data, limits, `pick` stopgap, grading, launchd, live scorer).
+- [ ] **Live recommendations to MBin, to production mode.** Added 2026-11-01: [live-recommendations-plan.md](live-recommendations-plan.md) items P1–P17; the pending list by owner is its §0 (status 2026-11-12).
 - [ ] **Intraday redesign: analog engine and Space page.** Added 2026-10-30 ([intraday-redesign.md](intraday-redesign.md) §7, ml/MODEL-STRATEGY.md Q37). Not started.
   1. Moment library v0 from `bars_1m`: 2 years, the point-in-time top 1,000, 15-minute moments, starter state + daily quantiles from R5-cal20s, the future grid and scalar readings.
   2. Engine v0: filters + the kernel dial, readings with effective N and day-bootstrap CIs, a CLI query, a walk-forward backtest against the volatility-scaled climatology.

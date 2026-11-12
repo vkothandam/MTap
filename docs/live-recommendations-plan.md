@@ -1,6 +1,7 @@
 # Live recommendations to MBin: plan to production mode
 
-Status: plan, 2026-11-01. Nothing below is built unless marked done. The contract is
+Status: plan, created 2026-11-01, **status refreshed 2026-11-12** (§0 = every pending item, for review). Nothing
+below is built unless marked done. The contract is
 `MBin/docs/contracts/` (protocol v1.0-draft, phase 1); the model design is
 [intraday-design.md](intraday-design.md); the probe result is in LEARNINGS `tag-ml-intraday`
 ("Step 0 probe: results"). Where things run today: [STATUS.md](STATUS.md).
@@ -9,7 +10,53 @@ Status: plan, 2026-11-01. Nothing below is built unless marked done. The contrac
 price, real reference data, and a `score` that is a calibrated P(+target before −stop) from a model
 with measured skill. Then the same with a scheduled start, grading, and limits, so it can run unattended.
 
-## 1. Where it stands (2026-11-01)
+## 0. Pending for the MBin integration (status 2026-11-12, for review)
+
+Checked against the code, git and MBin's docs on 2026-11-12. MBin's last commit is 2026-11-07 (c2036c0), so
+nothing on MBin's side has moved since the 2026-11-07 hand-off (REVIEW.md, "Next, MBin").
+
+**What works today:** the contract link (Mac contract Redis `127.0.0.1:6380`, REVIEW item 14) and the
+recommender's phase 1 protocol: schema-checked RECOMMENDATION / CONTRACT_STATUS / RESYNC_REQUEST, the outcome
+consumer, the audit, and sending in every `trading_state`. It is all started by hand, and candidates are
+hand-submitted (`recommender submit`). On MBin's side, M3, M4 (Signals intake, TRADING_PARAMETERS, outcomes)
+and M5 (the trading slice, paper and sandbox) are done; M6 (switch to real MTap) is not. **No real
+recommendation has gone to MBin yet:** there is no scorer, no live price and no reference data.
+
+**A. Waiting on MBin** (in REVIEW.md; MTap has nothing to do until MBin acts)
+| what | MBin's step | then MTap |
+| --- | --- | --- |
+| REVIEW items 15–18 (answered by MTap 2026-11-07) | accept or counter; set each to `agreed` | nothing, unless MBin counters |
+| M13, RECOMMENDATION v2 (answered + confirmed 2026-11-07) | move `proposed/` into `schemas/` and `fixtures/`, plus the registry, `consumes` and fixture-test change; set M13 `agreed` | P13 |
+| Item 15's schema edits (`canceled` outcome, non-final `price_moved` / `entry_refused`, `paused` in TRADING_PARAMETERS) | edit `recommendation_outcome.v1` and `trading_parameters.v1` with fixtures, then tell MTap the new hashes | P14 (until then an unknown outcome is `validation_failed` and is not stored) |
+| M6, switch to real MTap | stop the replayer, rerun the M4 / M5 checks on real recommendations | needs P5 (or P16) running, so that real recommendations exist |
+
+**B. Waiting on the user's decision**
+| what | choice | notes |
+| --- | --- | --- |
+| P2 deploy: open the NAS Redis read-only to the Mac | OK to deploy the 2026-11-01 draft (§3, ~45 min, outside market hours, plus a DSM firewall rule only the user can add) | decided A on 2026-11-01; drafted (commit 5a37885), not deployed |
+| P15: how MBin filters on the Moves (±X%) predictions | option 1, a calibrated ladder P(centre ≥ X) as `events`, recommended; or option 2, raw quantiles plus a calibration table | MODEL-STRATEGY Q42; then a proposal in `MBin/docs/contracts/proposed/` |
+| What `score` means for the intraday v2 model | the pocket model sizes moves but doesn't call direction (Q41, Q42). Its `score` would be a base rate (`baseline.climatology`, tier 3), with the forecast block carrying the size predictions | decides whether P16 sends BUYs at all, or only forecasts |
+| Item 13 (phase 2: an active exit's `ttl_ms` ≥ 60 000 in the schema) | MTap's call; not needed for the MVP | open since 2026-11-01 |
+
+**C. MTap to build** (no outside dependency except as noted)
+| # | item | state on 2026-11-12 |
+| --- | --- | --- |
+| P3 | reference data on every rec (`name`, `market_cap`, `cap_band`, `sector` / `industry`) | **not built.** The recommender only derives `cap_band` when a candidate brings `market_cap` |
+| P4 | selection limits | **partly built.** TTL clamped to `ttl.max_ms` and the close; a repeat `rec_id` is dropped. **Not built:** one live rec per symbol per day; ≤ 20 per minute; `hints.min_probability`; no send before the first TRADING_PARAMETERS |
+| P5 | stopgap `recommender pick SYMBOL` (base-rate score) | **not built** (the CLI has `run`, `submit`, `status`, `check-schemas`). Needs P2 (or option B's 15-min price), P3 and P4 |
+| P6 | grading from market data, plus slippage logged separately | **not built.** Needs P2 |
+| P7 | launchd start on the Mac, trading days ~06:00–13:30 PT | **not built.** MBin starts the contract Redis with its own tool |
+| P13 | the v2 builder: vendor v2 and pin its hash; `forecast` from the daily run files, then from the intraday run file; `score_readout` / `probability_readout`; `max_entry_pct` (¼ of the target); `skill` only at ≥ 60 days and ≥ 1,000 events | waits for M13 (A) |
+| P14 | re-pin the outcome / parameters schemas after MBin's item 15 edits | waits for MBin (A) |
+| P16 | **live scorer for intraday v2** (new; replaces P8 / P9): write the IA1 quantile columns per minute for the live set, then the extremes as each window closes, so the Moves filter and grading run live | **not designed.** Needs P2 (fresh E*TRADE prices) and the user's call on the model (Phase 2 GBM, fold A noS + enc120) |
+| P17 | after M6: raise the protocol from `1.0-draft` to `1.0` with MBin in REVIEW | after M6 |
+
+**D. Later (phase 2):** P12 (EXIT_RECOMMENDATION, POSITIONS_SNAPSHOT, item 13).
+
+**Done since 2026-11-01:** P1 (bounce check); P11 (the env-auth bus change and the docs are on main, 5a37885 /
+ef8acef); the recommender sends in every `trading_state` (90fdf38); MBin's M4 and M5.
+
+## 1. Where it stands (2026-11-01; superseded by §0 for status)
 
 **Done:**
 - `sourcing-py recommender` publishes on MBin's contract Redis on the Mac (`127.0.0.1:6380`, user `mtap`,
@@ -44,10 +91,13 @@ with measured skill. Then the same with a scheduled start, grading, and limits, 
 | P7 | **Scheduled start on the Mac**: launchd job for the recommender on trading days ~06:00–13:30 PT, restart on failure, logs, `caffeinate`; the contract Redis started by MBin's tool | today both start by hand | MTap (recommender), MBin (contract Redis) | ~1 h each | — |
 | P8 | **Not going ahead (P1: no direction edge).** **Live scorer v0** (if P1 holds): d = 0 model on the live-polled stocks, features stitched from Massive (to t − 15) + E*TRADE polls (last 15 min, §3F), writes `mtap:int:REC_CANDIDATE`; trained with the training-time seam emulated (1 s bars on a 2 s grid) | the real `score`; replaces P5's base rate under `strategy_id: intraday.pressure` | MTap ml | ~1–2 weeks | P1, P2, P6 |
 | P9 | **Shadow period**: P8 publishes for ≥ 10 sessions with grading before the operator acts on it; promote only if graded calibration and up-first skill hold live | live data differs from the backtest (feed gaps, the seam) | MTap + operator | 2 weeks elapsed | P8 |
-| P10 | **MBin side**: TRADING_PARAMETERS on the contract Redis, Signals intake (M4), sandbox order path (M5), switch to real MTap (M6) | without parameters MTap can't clamp TTLs; without intake nothing reaches the Console | MBin | MBin's MVP plan | — |
-| P11 | **Commit and push** the env-auth bus change and these docs | before the live tests | user says when | minutes | — |
+| P10 | **MBin: M3–M5 done (2026-11-01 / 11-07); M6 (switch to real MTap) pending.** **MBin side**: TRADING_PARAMETERS on the contract Redis, Signals intake (M4), sandbox order path (M5), switch to real MTap (M6) | without parameters MTap can't clamp TTLs; without intake nothing reaches the Console | MBin | MBin's MVP plan | — |
+| P11 | **Done (on main: 5a37885, ef8acef).** **Commit and push** the env-auth bus change and these docs | before the live tests | user says when | minutes | — |
 | P13 | **The full forecast on every rec (contract M13, proposed 2026-11-07)**: RECOMMENDATION v2 adds a typed `forecast` block (daily VWAP band P5–P95, intraday pocket quantiles per duration bin, event probabilities with their base rates, out-of-sample skill with CIs, live track record, model label, overlay variants) and `observed`; `score` / `probability` unchanged. Draft in `MBin/docs/contracts/proposed/`, protocol §8.1.1. MBin agreed and MTap confirmed (2026-11-07). The builder must set `score_readout` / `probability_readout` (the events `score` / `probability` come from), `max_entry_pct` (default ¼ of `target_pct`), and send a `skill` entry only when its test has ≥ 60 days and ≥ 1 000 events (REVIEW items 16–18). Readout ids are fixed per event definition across model labels. | the prediction must reach the operator undiluted, not as one number | MTap (schema), MBin (consume + Console) | ~½ day MTap after MBin moves v2 into `schemas/` | MBin moving v2 |
 | P14 | **Contract items 15–18 follow-ups**: re-pin `recommendation_outcome.v1` (new `canceled`, a non-final `price_moved` outcome) and `trading_parameters.v1` (`paused`) when MBin changes them. Until the re-pin, an unknown outcome is `validation_failed` and not stored. | MTap's tooling must never drop MBin's feedback | MTap | ~½ h each | MBin's schema edits |
+| P15 | **Moves (±X%) filters for MBin (MODEL-STRATEGY Q42, added 2026-11-12)**: option 1, a calibrated ladder P(centre ≥ X) for X = 0.5 / 1 / 1.5 / 2 / 3% per window and side as `forecast.events` entries (e.g. kind `centre`, with `level` and `base_rate`), recommended; or option 2, the raw `cm_up` / `cm_dn` / `mass_up` quantiles plus a daily calibration table, so MBin computes any X | the user wants to set ±X% / min-P filters in MBin on live predictions | MTap (proposal + builder), MBin (consume + filters) | proposal ~2 h; builder part of P13 | **user picks 1 or 2**; M13 agreed |
+| P16 | **Live scorer for intraday v2 (added 2026-11-12, replaces P8 / P9)**: the IA1-style pocket quantiles per minute for the live set, the extremes once each window closes, written in the run-file columns so the dashboard Moves tab, P15 and grading (P6) work unchanged; shadow ≥ 10 sessions before the operator acts | the model now exists (intraday v2 Phase 1); nothing scores it live | MTap ml | ~1–2 weeks, not designed | P2, the user's model call (Phase 2 GBM / fold A check) |
+| P17 | **Protocol `1.0-draft` → `1.0`** with MBin in REVIEW | MBin's M6 check | MTap + MBin | minutes | M6 |
 | P12 | **Phase 2**: EXIT_RECOMMENDATION, POSITIONS_SNAPSHOT (held symbols on the fast list), REVIEW item 13 | not needed for the MVP | MTap + MBin | later | P8 |
 
 ## 3. Decision: the live price on the Mac (P2)
@@ -102,4 +152,5 @@ make tomorrow's live tests real except for the edge.
 | 2026-11-01 | Created after the Step 0 probe and REVIEW item 14. |
 | 2026-11-07 | P13 added: contract item M13 (RECOMMENDATION v2 forecast block) proposed to MBin; v1 unchanged. |
 | 2026-11-07 | M13 confirmed; REVIEW items 15–18 answered. MTap's views: rank in tiers (skilled / skill unknown / no edge), then by lift. Supersede only by the same or a better tier. Stop and target anchored to `price_ref`. Entry cap `max_entry_pct`. Grading from market data only. P6 and P13 updated, P14 added. Fix: the recommender withheld candidates outside `NORMAL`, against item 12; it now sends them in every state. |
+| 2026-11-12 | §0 added: every pending item by owner (waiting on MBin / the user / MTap to build / phase 2), checked against the code and both repos. MBin unchanged since 2026-11-07. P10: M3–M5 done, M6 pending. P11 done. P4 partly built (TTL clamp, repeat drop). P15 (Moves ladder, Q42), P16 (intraday v2 live scorer) and P17 (protocol 1.0) added. |
 | 2026-11-01 | P2 decided: A (NAS Redis, read only, from the Mac). P1 built and started: `--parts p1` in `ml/scripts_intraday_probe.py`; five arms on the same rows (d0 / d1 inputs × entry at the last close / minute i's open / minute i's VWAP with outcomes from i + 1). Resumable: rerun `/tmp/mtap/intraday_probe/run_p1.sh`; finished months (`rows_p1/`) and (fold, arm) files (`p1/`) are skipped, files are written via a temp name. |

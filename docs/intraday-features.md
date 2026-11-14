@@ -798,9 +798,9 @@ Details and CIs are in LEARNINGS (`tag-ml-intraday`); the Scoreboard row in MODE
   | down (242 known) | 80% | 86% | 66% | −0.05% | 50% |
 
   420 decisions are in both lists: the model names stocks that will move a lot, then rates both sides.
-- **A higher P:** up improves (P 0.70–0.80: centre reached 90%, n 21); down gets worse (P 0.70–0.80: said 74%,
-  reached 42%, touched +1% 95%, n 19). The high-P down rows are a few days (08-06, 09-02, 08-12) and a few stocks
-  (NBIS, SNDK, AAOI, BSP, WDC). Small samples; no CI yet.
+- **A higher P (the first read):** up improves (P 0.70–0.80: centre reached 90%, n 21); down gets worse (P
+  0.70–0.80: said 74%, reached 42%, touched +1% 95%, n 19). The high-P down rows are a few days (08-06, 09-02,
+  08-12) and a few stocks (NBIS, SNDK, AAOI, BSP, WDC). The checks below show this was noise.
 - **Not the inputs or the calibration.** The raw P is 0.81–0.98 on both sides of the same rows and correlates 0.83
   with the calibrated P. The isotonic map only rescales P; it can't swap up for down. The targets (where the volume
   centres, on each side) are size targets by design (Q41), and the model learnt them.
@@ -809,6 +809,31 @@ Details and CIs are in LEARNINGS (`tag-ml-intraday`); the Scoreboard row in MODE
   high.
 - The earlier raw b5 read (~19.7k rows, P > 0.5) gave the same shape: touched +1% 69%, −1% 69%, median end
   −0.16%.
+
+**Checks 1–4** (2026-11-14, read only; `dashboard/scripts/moves_checks.py`, outputs in `temp/analysis/moves_checks/`;
+full tables in LEARNINGS "Intraday v2 Moves export check"):
+- **How it was run:**
+  - the script rebuilds the Moves tab from the run files and reproduces the export exactly: 613 / 602 rows, with
+    the sidebar cap filter on large + mega;
+  - only "warm" days count (a full 20-session calibration window);
+  - CIs are 95% day-bootstrap.
+- **1. P buckets (IA1-noS, the whole 2026 test): calibrated.**
+  - Up: said 0.58 → reached 59% [55, 62], said 0.67 → 65%, said 0.72 → 70% [58, 82]. Down: said 0.73 → 66% [56, 78].
+  - The export's down P 0.70–0.80 bucket is 23 rows: 52%, CI [30, 86].
+  - Dropping 08-06, 09-02 and 08-12 changes nothing.
+  - In every bucket, the other side is touched as often as the predicted one, and about half end on the
+    predicted side.
+- **2. Arms on the same settings: IA1 ≈ IA1-noS ≈ IA1A.** Reached 57–60%, touched 76–78% on either side, ended on
+  the side 46–51%.
+- **3. The lean P(up) − P(down), on all warm rows: no direction.**
+  - AUC for "ended up" 0.488–0.504; for "which side was touched" (rows touching only one) 0.469–0.515.
+  - Daily rank IC vs the close −0.011 … +0.006, and every CI covers 0. This holds for calibrated and raw P on
+    every arm.
+- **4. The race, +1% before a −0.7% stop, at window resolution:**
+  - the picks win 36–46% (the bounds come from windows where both levels cross); a random walk wins 41%;
+  - gross per trade −0.08 … +0.08% before costs.
+- **So the Moves P is a calibrated "it will move ±X% today"; it is not a side.** It ranks movers well. A trade
+  with a stop on it alone is a coin flip. A side needs a direction target (§19).
 
 ## 16. Live prediction (planned, not built)
 
@@ -882,21 +907,22 @@ Each is stated in the code or a test unless marked "not checked".
 | 2026-11-12 | centre only | touched and centre shown apart (three states) | price touches 15–20 points more often | 7e7ad38, §14 |
 | 2026-11-12 | score not chosen | the calibrated b5 touched +X%, IA1 for live | the user's choice | §16 |
 | 2026-11-14 | | export check: high P is size, not direction | the user's 1,215-row report | §15, Q43 |
+| 2026-11-14 | | checks 1–4: calibrated per bucket, no lean, race ≈ random walk | day-clustered CIs, three arms | §15, Q43 |
 
 ## 19. Open items and limits
 
-- **Direction:** none found in any arm or fold. A direction target ("+X% before a −stop", first touch) would suit
-  Phase 2's GBM; not started.
-- **The first touch isn't measured:** `extremes.parquet` has the best extremes' minutes, not the first crossing.
+- **Direction:** none found in any arm or fold. Check 3 (2026-11-14) confirms it: the lean P(up) − P(down) has
+  AUC ≈ 0.5 and IC ≈ 0. A direction target ("+X% before a −stop", first touch) would suit Phase 2's GBM; not
+  started.
+- **The first touch is measured only at window resolution:** `extremes.parquet` has the best extremes per window
+  (0–5, 5–15, 15–30, 30–60 min, 60 min–close). Check 4 gives bounds; 5–7% of the picks are ambiguous. An exact
+  minute race needs the frames rebuilt or `bars_1m` from the NAS.
 - **The 25% sample:** a re-score of every stock-day (~5 h both folds, no training) would give full counts. It needs
   the frames rebuilt first (≈ 2½ h), since the cache is gone.
 - **Fold A for noS + enc120 together** (the proposed cheaper model): not run.
 - **The minute-bar fallback for the S tier:** designed, not built.
-- **Read-only checks awaiting the user's OK:**
-  1. per-P-bucket CIs clustered by day, with and without 08-06, 09-02 and 08-12;
-  2. IA1 vs noS vs fold A on the same settings;
-  3. whether P(up) − P(down) predicts the direction;
-  4. the first-touch race, +1% before a −0.7% stop.
+- **The Moves read-only checks 1–4 are done** (2026-11-14, §15). Every check used the 25% sample and ignored
+  costs.
 - **Live:** §16, not built; `mtap-morning` not deployed; 1 s polling untried.
 
 ## 20. Document map
@@ -937,3 +963,4 @@ Each is stated in the code or a test unless marked "not checked".
 | 2026-11-08 | Moves: the bins are exclusive (b4 = 30–60 min only). A toggle (default on) gives P by the window's end: 1 − Π(1 − P_k) over b1..bK, calibrated on the OR of their outcomes; better calibrated than one bin. |
 | 2026-11-14 | **The file now covers the whole pipeline** (§8–§20): sources and commands, reference values, the build, the transformations, training, testing, Moves, results, live (planned), assumptions, decision pivots, open items, a document map. Corrected against the code: training uses Massive 1 s as is (step 1), `poll_tier` is 1 / 0, the volume unit has +1, `live_set` is True on every run-file row, the minute-bar S fallback isn't built, the go rule's recalibration is the rolling one. The frame cache in `/tmp` is gone. Export check: high P is size, not direction (§15). |
 | 2026-11-14 | **Cache moved into the repo:** the `data.CACHE` default is now `<repo>/temp/intraday_ft/` (git-ignored, survives a restart; the env override stays), and the probe's goes to `temp/intraday_probe/`; a test guards it. `intraday-ft-extremes` falls back to it when a run's `/tmp` cache is gone. The frames need a rebuild there (≈ 2½ h) before any retrain or re-score. |
+| 2026-11-14 | **Moves checks 1–4** (§15, §19; `dashboard/scripts/moves_checks.py`): the P buckets are calibrated on the whole test (up 0.58 → 59%, 0.72 → 70%); IA1 ≈ noS ≈ IA1A; the lean P(up) − P(down) has no direction; +1% before a −0.7% stop wins 36–46% against a random walk's 41%. The export's "down gets worse at a higher P" was 23 rows of noise. |

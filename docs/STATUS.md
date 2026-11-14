@@ -643,3 +643,11 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
   - `check_feed_quality.py` → `temp/feed_quality/`; `check_extended_hours.py` → `temp/extended_hours_check.csv`.
   - The frames still need a rebuild (≈ 2½ h, ≈ 86 GB; 196 GiB free). The frame code is unchanged since the runs,
     so the rebuild is identical.
+- 2026-11-14: **Moves export checks 1–4 run** (read only, no run or code change besides the new script
+  `dashboard/scripts/moves_checks.py`, outputs in `temp/analysis/moves_checks/`):
+  - Calibrated per P bucket on the whole test.
+  - IA1 ≈ IA1-noS ≈ IA1A.
+  - The lean P(up) − P(down) has no direction.
+  - +1% before a −0.7% stop wins 36–46%, against a random walk's 41%.
+  - The Moves P is a size forecast. Results are in LEARNINGS "Intraday v2 Moves export check", MODEL-STRATEGY Q43
+    plus the Scoreboard, and intraday-features §15 / §19.

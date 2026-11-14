@@ -2245,9 +2245,91 @@ other settings (raw P, all rows), so 78% vs 69% isn't a contradiction.
 ±1% crossing, so "touched 78%" is not "would have won 78%" with a stop. A first-touch race needs a new extremes
 column.
 
-**Checks proposed (read only, not run; the user's OK):** CIs per P bucket clustered by day (with and without
-08-06, 09-02, 08-12); IA1 vs noS vs fold A on the same settings; whether P(up) − P(down) predicts the direction;
-the first-touch race (+1% before −0.7%). A direction target fits Phase 2's GBM.
+**Checks 1–4 (run 2026-11-14, read only, the user's OK).**
+
+*Method:*
+- Script: `dashboard/scripts/moves_checks.py`, with outputs in `temp/analysis/moves_checks/`. It rebuilds the
+  Moves tab's numbers from the stored run files: +1%, b1..b5 combined, calibrated on `reached`, and only days
+  with a full 20-session calibration window ("warm").
+- It reproduces the export exactly: 613 / 602 rows, and the list's P values match to 0. The export had the
+  sidebar's cap filter on **large + mega**, so the tables below use that filter. With all caps the results are
+  the same within a few points.
+- CIs are 95% day-bootstrap.
+
+*1. P buckets: calibrated, and the other side moves as often.* IA1-noS, the whole 2026 test (178 days):
+
+| side | P | n | said | centre reached | touched same side | touched other side | ended on the side |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| up | 0.55–0.60 | 3,317 | 0.58 | 59% [55, 62] | 77% | 75% | 51% [48, 55] |
+| up | 0.60–0.65 | 1,982 | 0.62 | 60% [56, 64] | 80% | 80% | 50% [45, 55] |
+| up | 0.65–0.70 | 695 | 0.67 | 65% [59, 70] | 82% | 81% | 51% [44, 57] |
+| up | 0.70–0.80 | 141 | 0.72 | 70% [58, 82] | 82% | 84% | 49% [33, 67] |
+| down | 0.55–0.60 | 3,730 | 0.57 | 55% [52, 59] | 75% | 77% | 49% [44, 53] |
+| down | 0.60–0.65 | 1,687 | 0.62 | 58% [54, 62] | 78% | 83% | 45% [40, 51] |
+| down | 0.65–0.70 | 663 | 0.67 | 65% [59, 71] | 82% | 82% | 46% [39, 54] |
+| down | 0.70–0.80 | 185 | 0.73 | 66% [56, 78] | 83% | 85% | 53% [43, 63] |
+
+- **The export's "a higher P is worse on the down side" was noise.** In the export window, down at P 0.70–0.80
+  is n = 23 and reached 52% [30, 86]. Over the whole test the same bucket said 0.73 and 66% happened.
+- **Dropping 08-06, 09-02 and 08-12** barely changes the export window: up 497 rows, reached 55% [46, 63], ended
+  up 44% [35, 54]; down 480 rows, 57% [49, 64], ended down 50% [38, 64].
+- Every bucket touches the other side about as often as its own, and ends on the predicted side about half the
+  time.
+
+*2. The arms on the same settings: alike* (P ≥ 0.55, all buckets):
+
+| arm, test | up: n | reached | touched +1% / −1% | ended up | down: n | reached | touched −1% / +1% | ended down |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| IA1, 2026 | 7,347 | 59% | 78% / 77% | 51% | 7,782 | 57% | 77% / 78% | 48% |
+| IA1-noS, 2026 | 6,135 | 60% | 78% / 78% | 51% | 6,290 | 58% | 77% / 79% | 48% |
+| IA1A, 2025 | 5,189 | 57% | 76% / 78% | 49% | 7,161 | 57% | 76% / 78% | 46% |
+
+- The S tier adds nothing to Moves (IA1 ≈ noS, as in the ablations), and 2025 says the same.
+- The export window was a weaker stretch than the average for the up picks: ended up 44–45%, median end −0.41 …
+  −0.45%.
+  Over the whole test the median end is about 0 (−0.06 … +0.36%).
+
+*3. P(up) − P(down) has no direction.* All warm rows (2026 B ≈ 0.88M rows, 2025 A ≈ 1.02M; the last price is known
+for 85%):
+
+| arm | lean from | AUC: lean → ended up | AUC: lean → which side (rows touching only one) | daily rank IC: lean vs the close |
+| --- | --- | --- | --- | --- |
+| IA1 | calibrated / raw | 0.488 / 0.494 | 0.487 / 0.486 | −0.006 [−0.022, +0.011] / −0.011 [−0.029, +0.008] |
+| IA1-noS | calibrated / raw | 0.488 / 0.504 | 0.487 / 0.505 | −0.008 [−0.024, +0.009] / +0.003 [−0.009, +0.015] |
+| IA1A | calibrated / raw | 0.489 / 0.499 | 0.469 / 0.515 | +0.000 [−0.016, +0.017] / +0.006 [−0.015, +0.027] |
+
+- Calibrated lean, ended up: top decile 46–48%, bottom decile 51–55%, against a base rate of 49–50%. If
+  anything, that is slightly backwards.
+- Raw lean, ended up: top decile 48–51%, bottom decile 48–49%.
+- The P1 bounce check and IA1's net60 (rank IC +0.000) said the same.
+
+*4. The first-touch race: +1% before a −0.7% stop (down: the mirror).*
+- Method: from the per-window highs and lows (0–5, 5–15, 15–30, 30–60 min, 60 min–close). A window where both
+  levels cross is ambiguous, so the results are bounds.
+- Benchmark: a driftless random walk wins ln(1/0.993) / (ln 1.01 + ln(1/0.993)) = **41%**, with an expected value
+  of 0.
+
+| picks (P ≥ 0.55) | n | +1% first | stop first | both in the window that crossed | win share | gross per trade, before costs |
+| --- | --- | --- | --- | --- | --- | --- |
+| IA1-noS up, export window | 613 | 39% | 53% | 6% | 40–46% | −0.03 … +0.07% |
+| IA1-noS down, export window | 602 | 39% | 53% | 6% | 40–46% | −0.03 … +0.08% |
+| IA1 up / down, 2026 | 7,347 / 7,782 | 39% / 40% | 55% / 54% | 5% / 5% | 39–44% / 40–45% | −0.03 … +0.05% / −0.01 … +0.07% |
+| IA1-noS up / down, 2026 | 6,135 / 6,290 | 38% / 40% | 55% / 54% | 6% / 5% | 39–44% / 40–46% | ≈ 0 |
+| IA1A up / down, 2025 | 5,189 / 7,161 | 35% / 39% | 56% / 53% | 7% / 6% | 36–43% / 40–46% | −0.08 … +0.03% / −0.02 … +0.08% |
+
+- The picks almost always hit one of the two levels by the close (0–1% hit neither; across all rows, 30–38% hit
+  neither).
+- Their win share brackets the random walk's 41%, or sits a few points from it, in every P bucket. The top
+  bucket, P 0.70–0.80, spans 27–56%.
+- So **a stop-based entry on this score has no gross edge**.
+- "Touched 78%" is the size of the move, not the odds of a trade.
+
+*Consequence:*
+- IA1's Moves P is a **calibrated "this stock will move ±1% today"**: P 0.58 → 59%, P 0.72 → 70%, on every arm and
+  both years. It is not a side.
+- The score as chosen ranks movers. A directional trade needs a direction target: the race itself as the label,
+  Phase 2 GBM. That needs minute-level first-touch labels, so it needs the frames rebuilt (or `bars_1m` from the
+  NAS).
 
 ### 2026-11 Intraday P1 bounce check: the d = 0 direction edge was bid–ask bounce (run 2026-11-01, 56 min)
 Tags: `tag-ml-intraday`. Plan: [live-recommendations-plan.md](live-recommendations-plan.md) P1. Script:

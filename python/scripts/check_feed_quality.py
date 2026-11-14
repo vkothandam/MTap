@@ -21,7 +21,7 @@ Checks, per tier (by market cap) and watchlist, over the regular session:
     F  Massive VWAP semantics: is `a` (vwap_session) the running day VWAP and `vw` (vwap_i) the
        second's? dollar identity, vw inside [l, h], last bar vs daily vw, volume outside bars
 
-Read-only; writes CSVs to /tmp/feed_quality/ and prints a summary.
+Read-only; writes CSVs to <repo>/temp/feed_quality/ (git-ignored) and prints a summary.
 
     MTAP_DATA_ROOT=/Volumes/Backups/MTap-Data uv run python scripts/check_feed_quality.py \
         [--dates 2026-10-15 2026-10-16] [--top 300] [--small-max-mm 2000]
@@ -47,7 +47,7 @@ from sourcing_py.intraday import export
 from sourcing_py.utils.trading_calendar import sessions
 
 ET = ZoneInfo("America/New_York")
-OUT = Path("/tmp/feed_quality")
+OUT = Path(__file__).resolve().parents[2] / "temp" / "feed_quality"   # repo-local, git-ignored
 DENSE_LAGS_MS = list(range(-2000, 4001, 250))
 LAGS_MS = [-900_000, -60_000, *DENSE_LAGS_MS, 60_000]
 MATCH_REL = 0.5e-4  # a price "matches" when equal to 4 dp or within 0.5 bp

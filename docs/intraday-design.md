@@ -175,7 +175,7 @@ Open: the top-20 realised-move margin that counts as useful (the screener beat A
 ## 8. Step 0 probe (implemented): `ml/scripts_intraday_probe.py`
 
 Run: `uv run python scripts_intraday_probe.py [--parts features,ladder,scan,recs,retime] [--quick]`;
-status in `/tmp/mtap/intraday_probe/status.txt`, results in `report.txt` and `results.json` there.
+status in `<repo>/temp/intraday_probe/status.txt` (was `/tmp/mtap/…` before 2026-11-14), results in `report.txt` and `results.json` there.
 Tests: `ml/tests/test_intraday_probe.py` (features and model inputs never move when bars from t − d on
 change; targets match a brute-force loop and ignore bars before t; the firing rule; list hysteresis;
 cap bands; near-extreme masks are PIT).

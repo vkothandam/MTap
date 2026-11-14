@@ -19,7 +19,8 @@ run file's real_net_bK to ~0.01 bp (median), 3 bp at the 99th percentile. A wind
 NaN too; t = -1 for both. Writes fold_<k>/extremes.parquet (dec_row + the 45 columns); the dashboard's
 Intraday -> Pockets -> Moves tab reads it.
 
-    intraday-ft-extremes runs/intraday_ft/<run> [--cache DIR]   (default: the run's config.json cache)
+    intraday-ft-extremes runs/intraday_ft/<run> [--cache DIR]   (default: the run's config.json cache,
+                                                                 else data.CACHE when that one is gone)
 """
 from __future__ import annotations
 
@@ -138,6 +139,11 @@ def main(argv=None):
     a = ap.parse_args(argv)
     cfg = Path(a.run_dir) / "config.json"
     root = a.cache or (json.loads(cfg.read_text()).get("cache") if cfg.is_file() else None) or D.CACHE
+    if not a.cache and not (Path(root) / "frames").is_dir():
+        # the runs before 2026-11-14 name /tmp/mtap/intraday_ft_w8, which macOS has since cleared; the
+        # frames are deterministic (same code, same settings), so a rebuild under D.CACHE serves them
+        print(f"{root}/frames is gone; using {D.CACHE}", flush=True)
+        root = D.CACHE
     for p in sorted(Path(a.run_dir).glob(f"fold_*/{PRED}")):
         print(f"{p.parent.name}", flush=True)
         f = pd.read_parquet(p, columns=["date", "minute", "stock_id", "symbol", "dec_row", "real_p0"])

@@ -1,6 +1,7 @@
 """Read-only loaders for the intraday model (docs/intraday-features.md §2).
 
-The NAS is only read; caches go under CACHE (/tmp/mtap/intraday_ft). Lifted from
+The NAS is only read; caches go under CACHE (<repo>/temp/intraday_ft, git-ignored; never /tmp, which
+macOS clears on a restart: the 86 GB frame cache was lost that way on 2026-11-14). Lifted from
 scripts_intraday_probe.py (et_minutes, read_month, summarise, load_month, day_stats, market_caps,
 cap_band, forecasts, results_days, Status) with these changes:
 - a stock is its stock id (composite_figi, else CIK), so sigma and the normals carry across a
@@ -36,7 +37,8 @@ RUNS = HERE / "runs"
 FORECAST = {"0930": RUNS / "20261029-211059Z-gbm-4438sym~px-cal20s",  # R5~px-cal20s, prices only
             "0945": RUNS / "20261029-211059Z-gbm-4438sym-cal20s"}     # R5-cal20s, full pre-market
 PANEL = HERE.parent / "out" / "tft" / "exp5y-r1" / "panel.parquet"
-CACHE = Path(os.environ.get("MTAP_INTRADAY_FT_CACHE", "/tmp/mtap/intraday_ft"))
+TRANSIENT = HERE.parent / "temp"   # repo-local, git-ignored: expensive rebuildable data lives here
+CACHE = Path(os.environ.get("MTAP_INTRADAY_FT_CACHE", str(TRANSIENT / "intraday_ft")))
 EPOCH = pd.Timestamp("1970-01-01")
 MINS = np.arange(390)
 TAU = np.arange(1, 20) * 0.05

@@ -79,9 +79,11 @@ and a report slice, not a filter.
 ~1,000 live symbols. `live_set` = in that top 1,000. The frames keep only those rows, so `live_set` is True on
 every row of a run file: it isn't a usable slice there.
 
-**Cache** (`/tmp/mtap/intraday_ft/`, env `MTAP_INTRADAY_FT_CACHE`; the NAS is read only). The seven runs used
-`/tmp/mtap/intraday_ft_w8/` (each run's `config.json` `cache`). macOS clears `/tmp` on a restart, and **that cache
-was gone on 2026-11-14**. The run files are kept (§8):
+**Cache** (`<repo>/temp/intraday_ft/`, git-ignored, env `MTAP_INTRADAY_FT_CACHE`; the NAS is read only). The seven
+runs used `/tmp/mtap/intraday_ft_w8/` (each run's `config.json` `cache`). macOS clears `/tmp` on a restart, and
+**that cache was gone on 2026-11-14**. Since then the default is the repo's `temp/`, which survives a restart
+(rule: expensive rebuildable data never goes in `/tmp`). `intraday-ft-extremes` falls back to the new default when
+a run's `config.json` cache is gone. The run files are kept (§8):
 - the layout is `frames/month=YYYY-MM/` with:
   - `rows.parquet`: stock-days, keys and statics;
   - `dec.parquet`: decisions with every target and `pers_*`;
@@ -549,7 +551,10 @@ is copied and kept in step by hand.
 | IA1-enc60 | `20261107-225358-ft-B-enc60` | fold B, last 60 minutes | 9 (0.921) |
 
 Every run's `config.json` says `cache: /tmp/mtap/intraday_ft_w8`. **That cache is gone** (§2), so retraining,
-re-scoring or a new `extremes.parquet` needs the frames rebuilt first (≈ 2½ h). The dashboard doesn't need them.
+re-scoring or a new `extremes.parquet` needs the frames rebuilt first: ≈ 2½ h, ≈ 86 GB, into
+`<repo>/temp/intraday_ft/`. The build code hasn't changed since the runs (`git diff 0f98a5e HEAD` on the frame
+modules is empty; FRAME_VERSION 1), so a rebuild gives the same frames. The trained models, run files, reports,
+recalibration and extremes are all kept, so nothing trained is lost. The dashboard doesn't need the frames.
 
 ## 9. Reference values and identity (prior sessions only)
 
@@ -931,3 +936,4 @@ Each is stated in the code or a test unless marked "not checked".
 | 2026-11-08 | `extremes.parquet` adds the prices after the entry: `vw_bk` / `tw_bk` (bin VWAP / TWAP), `cvw_bk` / `ctw_bk` (from the entry to the bin's end), `cl_bk` (last price). Written for all seven runs. Moves list: high / low / VWAP / TWAP / last price in $ and %, the predicted centre of the window with the highest P (toggle on), `max_said` per day. |
 | 2026-11-08 | Moves: the bins are exclusive (b4 = 30–60 min only). A toggle (default on) gives P by the window's end: 1 − Π(1 − P_k) over b1..bK, calibrated on the OR of their outcomes; better calibrated than one bin. |
 | 2026-11-14 | **The file now covers the whole pipeline** (§8–§20): sources and commands, reference values, the build, the transformations, training, testing, Moves, results, live (planned), assumptions, decision pivots, open items, a document map. Corrected against the code: training uses Massive 1 s as is (step 1), `poll_tier` is 1 / 0, the volume unit has +1, `live_set` is True on every run-file row, the minute-bar S fallback isn't built, the go rule's recalibration is the rolling one. The frame cache in `/tmp` is gone. Export check: high P is size, not direction (§15). |
+| 2026-11-14 | **Cache moved into the repo:** the `data.CACHE` default is now `<repo>/temp/intraday_ft/` (git-ignored, survives a restart; the env override stays), and the probe's goes to `temp/intraday_probe/`; a test guards it. `intraday-ft-extremes` falls back to it when a run's `/tmp` cache is gone. The frames need a rebuild there (≈ 2½ h) before any retrain or re-score. |

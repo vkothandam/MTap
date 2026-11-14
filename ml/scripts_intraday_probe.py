@@ -2,7 +2,7 @@
 and the recommendation count, from docs/intraday-design.md.
 
 Read-only on the NAS (bars_1m, share snapshots, agg_1s); caches and results go to
-/tmp/mtap/intraday_probe/ (status.txt, run.log, report.txt, results.json).
+<repo>/temp/intraday_probe/ (git-ignored; status.txt, run.log, report.txt, results.json).
 
   features  per month: point-in-time inputs at delay d = 0 and 15 min, window targets, slices
   ladder    HGB per input group (yearly walk-forward), Brier skill, rank IC, top-20 lists
@@ -36,7 +36,7 @@ BARS = f"{NAS}/bars_1m"
 HERE = Path(__file__).resolve().parent
 FORECAST = HERE / "runs/20261029-211059Z-gbm-4438sym-cal20s"  # R5-cal20s walk-forward folds
 PANEL = HERE.parent / "out/tft/exp5y-r1/panel.parquet"
-OUT = Path("/tmp/mtap/intraday_probe")
+OUT = HERE.parent / "temp" / "intraday_probe"   # repo-local, git-ignored (never /tmp: macOS clears it)
 EPOCH = pd.Timestamp("1970-01-01")
 MINS = np.arange(390)
 WIN = (5, 15, 60)
@@ -1297,14 +1297,14 @@ def write_report(R):
 
 
 def main():
+    global OUT
     ap = argparse.ArgumentParser()
     ap.add_argument("--parts", default="features,ladder,scan,recs,retime")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--train-n", type=int, default=2_000_000)
     ap.add_argument("--quick", action="store_true", help="a small end-to-end run (2023-09 .. 2024-02)")
-    ap.add_argument("--cache", default="/tmp/mtap/intraday_probe")
+    ap.add_argument("--cache", default=str(OUT))
     a = ap.parse_args()
-    global OUT
     OUT = Path(a.cache)
     if a.quick:
         a.first, a.last, a.test_years, a.cal_months = "2023-09", "2024-02", [2024], 1

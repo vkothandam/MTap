@@ -65,6 +65,18 @@ def same(a, b):
     return np.array_equal(np.isnan(a), np.isnan(b)) and np.allclose(np.nan_to_num(a), np.nan_to_num(b))
 
 
+def test_default_cache_is_repo_local_and_ignored(monkeypatch):
+    """The frames take ~2.5 h and ~86 GB to build: never under /tmp (macOS clears it; lost 2026-11-14)."""
+    import importlib
+    import subprocess
+    monkeypatch.delenv("MTAP_INTRADAY_FT_CACHE", raising=False)
+    d = importlib.reload(D)
+    repo = Path(__file__).resolve().parents[2]
+    assert d.CACHE == repo / "temp" / "intraday_ft"
+    r = subprocess.run(["git", "check-ignore", "-q", str(d.CACHE / "frames" / "x.npy")], cwd=repo, check=False)
+    assert r.returncode == 0, "the cache directory must be git-ignored"
+
+
 # ---------------------------------------------------------------- the feature table
 
 def test_every_feature_is_in_the_doc():

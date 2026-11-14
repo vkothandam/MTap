@@ -559,8 +559,9 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
   - `intraday-ft-report`.
 
   Paths:
-  - the cache goes to `/tmp/mtap/intraday_ft/frames/month=YYYY-MM/` on the Mac (env `MTAP_INTRADAY_FT_CACHE`), with
-    `status.txt` beside it. The full build is ≈ 74 GB; the NAS is only read;
+  - the cache goes to `<repo>/temp/intraday_ft/frames/month=YYYY-MM/` on the Mac (git-ignored; env
+    `MTAP_INTRADAY_FT_CACHE`), with `status.txt` beside it. It was `/tmp/mtap/…` until 2026-11-14, when macOS
+    cleared it. The full build is ≈ 86 GB; the NAS is only read;
   - runs go to `ml/runs/intraday_ft/<stamp>-ft-B…`.
 
   Next: S2, on the user's OK. First a one-month `--check` build, then the full 2023-01 → 2026-10 build, detached.
@@ -634,3 +635,11 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
     files and the dashboard are unaffected. Any retrain, re-score or new `extremes.parquet` needs a rebuild first
     (`intraday-ft-build`, ≈ 2½ h, ≈ 86 GB).
   - Fixed this file's docs index: the intraday-features row had been merged into the `space/` row.
+- 2026-11-14: **Expensive caches moved out of `/tmp` into the repo's git-ignored `temp/`** (rule: rebuildable but
+  expensive data never goes in `/tmp`, which macOS clears on a restart):
+  - `ml/intraday_ft` `data.CACHE` → `temp/intraday_ft/` (env override kept). A test checks that it is repo-local
+    and git-ignored. `intraday-ft-extremes` falls back to it when a run's `config.json` cache (`/tmp/…_w8`) is gone.
+  - The probe (`scripts_intraday_probe.py`) → `temp/intraday_probe/`.
+  - `check_feed_quality.py` → `temp/feed_quality/`; `check_extended_hours.py` → `temp/extended_hours_check.csv`.
+  - The frames still need a rebuild (≈ 2½ h, ≈ 86 GB; 196 GiB free). The frame code is unchanged since the runs,
+    so the rebuild is identical.

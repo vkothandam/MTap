@@ -12,7 +12,7 @@ Questions it answers:
     - how much extended-hours volume sits within 30 min of the session (09:00–09:30, 16:00–16:30)?
     - do 30-min bars sum to the same session volumes as 1-min bars?
 
-Read-only; writes /tmp/extended_hours_check.csv and prints a summary.
+Read-only; writes <repo>/temp/extended_hours_check.csv (git-ignored) and prints a summary.
 
     uv run python scripts/check_extended_hours.py --dates 2026-10-12 2026-10-13 2026-10-14
 """
@@ -24,6 +24,7 @@ import csv
 import re
 import statistics as st
 from datetime import datetime, time
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -33,7 +34,7 @@ from sourcing_py.common import config, http
 ET = ZoneInfo("America/New_York")
 LIQUID = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "JPM", "XOM"]
 MID = ["ROKU", "ETSY", "CROX", "DKS", "FIVE", "BILL"]
-OUT = "/tmp/extended_hours_check.csv"
+OUT = Path(__file__).resolve().parents[2] / "temp" / "extended_hours_check.csv"   # repo-local, git-ignored
 
 
 def _mask(s: str) -> str:
@@ -130,6 +131,7 @@ def main() -> None:
                     **{f"m1_{k}": v for k, v in s1.items()},
                     **{f"m30_{k}": s30[k] for k in ("bars", "v_pre", "v_reg", "v_post", "v_all", "bar1600_v")},
                 })
+    OUT.parent.mkdir(parents=True, exist_ok=True)
     with open(OUT, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader()

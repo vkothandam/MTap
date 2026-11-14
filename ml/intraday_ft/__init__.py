@@ -5,7 +5,7 @@
     profile   the second tier: time at price, value area, resistance, extremes, grid minute bars
     features  the FEATURES table and one function per chunk
     targets   pocket targets per bin, t50, t_peak, vol_to, the race, the past-15-min pocket
-    build     the month cache /tmp/mtap/intraday_ft/frames/month=YYYY-MM/ (intraday-ft-build)
+    build     the month cache <repo>/temp/intraday_ft/frames/month=YYYY-MM/ (intraday-ft-build; git-ignored)
     windows   folds, standardisation, the windows dataset
     tft       the thin TFT, training and the run file (intraday-ft)
     report    scores against the realised targets, with baselines (intraday-ft-report)

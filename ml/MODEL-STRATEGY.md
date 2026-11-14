@@ -5,7 +5,7 @@ A hand-maintained reference for the modelling choices behind `ml/`.
 - **Q&A log** keeps every question and its answer, newest last. Numbers and facts are as of each entry's date.
 - **Glossary** explains the terms the answers use.
 
-## Scoreboard: model choices and results now (2026-10-29, 18:45 PT)
+## Scoreboard: model choices and results now (2026-10-29, 18:45 PT; intraday row 2026-11-14)
 
 The one place for "which model, and how good". Updated whenever a run finishes or a choice
 changes; details and CIs are in [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-ml-daily`, terms in
@@ -19,7 +19,7 @@ changes; details and CIs are in [docs/LEARNINGS.md](../docs/LEARNINGS.md) `tag-m
 | research base (TFT) | **R1c** `20261028-233305Z-return-4438sym` | R0 + session shape + after-hours | skill 27.0%, P5–P95 88.4%; 0.58% better than R0 (CI clear), most on earnings days; R7 (HGB) now beats it at night |
 | intraday handoff | R0 `20261028-030847Z-return-4438sym/handoff.parquet` | | to rebuild from R1c |
 | intraday (Step 0 probe, 2026-11-01) | `ml/scripts_intraday_probe.py`, HGB, no saved model | all input groups, d = 0 vs d = 15 | 2026: touch ±0.5σ/60m skill +6.3% (size: real); direction ≈ 0: at d = 15, and at d = 0 once bid–ask bounce is removed (P1, 11-01: rank IC +0.034 → +0.007, top-20 +0.41σ → +0.05σ). No intraday direction model; live recs use base rates (`baseline.climatology`); Q38 |
-| intraday v2 IA1 (fold B, run 2026-11-07) | `ml/runs/intraday_ft/20261107-141854-ft-B`: thin TFT over the whole day's 1-min + 1 s series, `ml/intraday_ft/` | schema v2, [docs/intraday-features.md](../docs/intraday-features.md) | **Pocket shape (the go rule since Q41, 2026-11-07): passes on 2026** for the centres of mass and activity: `cm_up` / `cm_dn` rank IC +0.27 … +0.30 (climatology +0.12 … +0.17), pinball skill +1.4 … +5.0%, calibrated (coverage 81–87%); `rvol` rank IC +0.54 … +0.61 (clim +0.07 … +0.13), skill +18.5 … +23.0%. `bulge` / `sag` +1.8 … +2.1% in b2–b5 after the zero-readout fix (b1 sag −0.9%); rare-event readouts fixed (P(bulge60 > 0.5σ) Brier +2.5%, AUC 0.86). Direction (record only): none, net60 rank IC +0.000 [−0.005, +0.005], AUC 0.496. **Fold A (2025) holds:** `cm` rank IC +0.29 … +0.31 (clim +0.14 … +0.18), `rvol` +0.57 … +0.63 (+0.09 … +0.14), `bulge` / `sag` skill +0.9 … +3.3%; P50 calibration drifts between years (`rvol` P50 hits 0.40–0.46 in 2026, 0.52–0.56 in 2025); direction none again (rank IC +0.002). **Rolling 20-session recalibration (2026-11-08): 25 of 25 shape targets calibrated on both folds** (18 raw). **Ablations:** no 1 s tier 25/25 and as good or better; 120-min encoder as good (`rvol` +20.8 … +25.5%); 60 min worse (23/25). Dashboard Intraday → Pockets model. **Moves (2026-11-08, Q42):** P(centre at or beyond ±X%) read off the stored quantiles, rolling 20-session isotonic calibration: good to a few points up to P ≈ 0.4–0.5 (B ≥ 0.4: said 43%, happened 41%), bold above on fold A up-side (53% → 41%); base rate ~6% at ±1% / 30–60 min. Toggle "by the window's end" (default): 0–60 min P ≥ 0.5 said 56–58%, happened 55–56%, both folds. LEARNINGS "Intraday v2 IA1", "Intraday v2 Moves"; Q40, Q41, Q42 |
+| intraday v2 IA1 (fold B, run 2026-11-07) | `ml/runs/intraday_ft/20261107-141854-ft-B`: thin TFT over the whole day's 1-min + 1 s series, `ml/intraday_ft/` | schema v2, [docs/intraday-features.md](../docs/intraday-features.md) | **Pocket shape (the go rule since Q41, 2026-11-07): passes on 2026** for the centres of mass and activity: `cm_up` / `cm_dn` rank IC +0.27 … +0.30 (climatology +0.12 … +0.17), pinball skill +1.4 … +5.0%, calibrated (coverage 81–87%); `rvol` rank IC +0.54 … +0.61 (clim +0.07 … +0.13), skill +18.5 … +23.0%. `bulge` / `sag` +1.8 … +2.1% in b2–b5 after the zero-readout fix (b1 sag −0.9%); rare-event readouts fixed (P(bulge60 > 0.5σ) Brier +2.5%, AUC 0.86). Direction (record only): none, net60 rank IC +0.000 [−0.005, +0.005], AUC 0.496. **Fold A (2025) holds:** `cm` rank IC +0.29 … +0.31 (clim +0.14 … +0.18), `rvol` +0.57 … +0.63 (+0.09 … +0.14), `bulge` / `sag` skill +0.9 … +3.3%; P50 calibration drifts between years (`rvol` P50 hits 0.40–0.46 in 2026, 0.52–0.56 in 2025); direction none again (rank IC +0.002). **Rolling 20-session recalibration (2026-11-08): 25 of 25 shape targets calibrated on both folds** (18 raw). **Ablations:** no 1 s tier 25/25 and as good or better; 120-min encoder as good (`rvol` +20.8 … +25.5%); 60 min worse (23/25). Dashboard Intraday → Pockets model. **Moves (2026-11-08, Q42):** P(centre at or beyond ±X%) read off the stored quantiles, rolling 20-session isotonic calibration: good to a few points up to P ≈ 0.4–0.5 (B ≥ 0.4: said 43%, happened 41%), bold above on fold A up-side (53% → 41%); base rate ~6% at ±1% / 30–60 min. Toggle "by the window's end" (default): 0–60 min P ≥ 0.5 said 56–58%, happened 55–56%, both folds. **Live choice (user, 2026-11-12): IA1, score = the calibrated b5 "touched +X%"** (live scorer not built). **Export check (2026-11-14, Q43):** IA1-noS, +1%, P ≥ 0.55, the entry to the close: said 0.60, touched 78% / 77% (up / down), but the up picks touch −1% as often (82% vs 80%, median end −0.44%): size, not direction. LEARNINGS "Intraday v2 IA1", "Intraday v2 Moves", "Moves export check"; Q40–Q43 |
 
 **Goal (user, 10-29, Q35):** one model for every forecast at and after 09:30, with full
 pre-market; **the night forecast is dropped**. Ranked first by how well the quantiles hit their
@@ -1642,3 +1642,36 @@ such filters on predictions, is that feasible?"
   - 2026-10-13, IA1, defaults (0–60 min, ±1%, calibrated, P ≥ 0.4): 15 down / 5 up predictions, mean P 44% / 43%,
     **top 52% / 47%**. 58% is the top at "the entry to the close" (b5) up (58.5%); none of the 0–60 min settings
     reach it.
+
+### Q43 (2026-11-14): The Moves report for +1% at P ≥ 0.55 looks really good. Is it consistent with the earlier b5 notes, does a higher P matter, and if the model is wrong on direction, is it the inputs or the calibration?
+
+**The question (user, 2026-11-13).** A dashboard export (IA1-noS, +1%, calibrated P ≥ 0.55, the entry to the close):
+"the predictions seem to be really good for P = 0.55. Is the report consistent with the observation above?" Then:
+does a higher P matter; "if the model is consistently wrong in the opposite direction, is it the inputs or the
+calibration?"; and which documents cover the intraday model.
+
+**Answer: consistent, and good as a size forecast. It doesn't pick the direction.**
+- **Consistent.** Up: 613 predictions, said 0.60, the centre reached +1% in 58%, the price touched +1% in 78%.
+  Down: 602, said 0.60, 54%, 77%. The earlier 69% was a different read (raw P, all b5 rows), not a contradiction.
+- **But the other side is touched about as often.** In the top-500 list, the up picks touched +1% in 82% and −1% in
+  80% (both in 62%), and the median end of day was −0.44%. 420 decisions are in both the up and the down list. The
+  model says "this stock will move a lot", not "up".
+- **Higher P:** the up side improves (P 0.70–0.80: centre reached 90%, n 21); the down side doesn't (said 74%,
+  reached 42%, n 19, mostly 3 days and 5 stocks). Too few rows to trust either way.
+- **Neither the inputs nor the calibration.** The raw P is 0.81–0.98 on both sides of the same rows, and the
+  calibration only rescales it (correlation 0.83). It can't swap the sides. The targets are size targets by design
+  (Q41): where the volume centres above and below the entry. The model learnt them well, and no target asks which
+  side comes first. Every arm and fold found direction ≈ 0 (Q41, the ablations).
+- **"Touched 78%" isn't "wins 78%".** The extremes record the best high / low and their minute, not the first ±1%
+  crossing. With a stop the trade may be closed before the target is touched.
+- **The score stays as chosen (user, 2026-11-12):** the calibrated b5 "touched +X%", with IA1 for live. It ranks
+  how far a stock will go, and the skill entry vs climatology gates the tier.
+- **To get direction:** a new target, "+X% before −stop" (a first-touch race), fits Phase 2's GBM. Not started.
+- **Checks proposed (read only, the user's OK):**
+  1. CIs per P bucket clustered by day;
+  2. IA1 vs noS vs fold A;
+  3. whether P(up) − P(down) predicts the side;
+  4. the first-touch race.
+- **Documents:** [docs/intraday-features.md](../docs/intraday-features.md) now holds the whole pipeline (§8–§20:
+  data, preprocessing, the build, training, testing, Moves, results, live plan, assumptions, decision pivots, the
+  document map). LEARNINGS "Intraday v2 Moves export check".

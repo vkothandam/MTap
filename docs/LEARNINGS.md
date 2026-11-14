@@ -2193,6 +2193,62 @@ No model change: the predictions are the same numbers, read a new way.
   the list shows the centre of the window the model gave the highest P (on IA1, 0–60 min, P ≥ 0.4 that is 30–60
   min for nearly every row) and, separately, the furthest real centre over the windows.
 
+### 2026-11 Intraday v2 Moves export check: high P is size, not direction (2026-11-13/14, read only)
+Tags: `tag-ml-intraday`. The user's dashboard export, IA1-noS (`20261107-181646-ft-B-noS`), Moves: +1% / −1%,
+calibrated, P ≥ 0.55, "by the window's end" = the entry to the close (b5). Two files: the by-time summary (1,215
+predictions) and the list (the 500 with the highest P, 250 a side; 37 days, 2026-08-05 → 10-20). MODEL-STRATEGY
+Q43; [intraday-features.md](intraday-features.md) §15.
+
+**1. The summary is consistent with the earlier b5 notes, as a size forecast.**
+
+| side | predictions | said | centre reached | touched ±1% | happened / touched only / did not |
+| --- | --- | --- | --- | --- | --- |
+| up | 613 | 0.60 | 58% | 78% | 355 / 127 / 131 |
+| down | 602 | 0.60 | 54% | 77% | 328 / 135 / 139 |
+
+The median best move is ~2.3× the target. The earlier raw read (~19.7k b5 rows, P > 0.5: touched 69% / 69%) used
+other settings (raw P, all rows), so 78% vs 69% isn't a contradiction.
+
+**2. Direction: the up picks touch −1% about as often as +1%.**
+
+| predicted (list, outcome known) | touched +1% | touched −1% | both | median end of day | ended on the predicted side |
+| --- | --- | --- | --- | --- | --- |
+| up (245) | 82% | 80% | 62% | −0.44% | 46% |
+| down (242) | 80% | 86% | 66% | −0.05% | 50% |
+
+- 420 decisions are in both lists. The model picks stocks that will move a lot, then gives both sides a high P.
+- Examples: SNDK 2026-08-06 09:34, predicted down: dipped −1.14%, then ran to +10.3%. FN 08-18 09:35, predicted up:
+  reached +0.49%, low −9.1%.
+
+**3. Does a higher P help? Up yes, down no (small samples, no CI).**
+
+| P | up: rows | reached | touched +1% | touched −1% | ended up | median best | down: rows | reached | touched −1% | touched +1% | ended down |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.55–0.60 | 27 | 52% | 70% | 85% | 41% | 1.9% | 28 | 71% | 75% | 82% | 56% |
+| 0.60–0.65 | 123 | 56% | 80% | 81% | 46% | 2.3% | 164 | 62% | 83% | 85% | 53% |
+| 0.65–0.70 | 74 | 68% | 86% | 78% | 42% | 3.3% | 30 | 57% | 73% | 87% | 40% |
+| 0.70–0.80 | 21 | 90% | 95% | 71% | 67% | 5.4% | 19 | 42% | 74% | 95% | 37% |
+
+- The top down bucket said 74% and 42% happened.
+- The high-P down rows (≥ 0.65, n 50) cluster: 12 from 08-06, 8 from 09-02, 5 from 08-12; NBIS 7, SNDK 6, AAOI 5,
+  BSP 5, WDC 4. In 33 of the 50 the low came before the high.
+
+**4. Not the inputs, not the calibration.**
+- The raw P is 0.81–0.98 (up) and 0.84–0.98 (down) on the same rows. It correlates 0.83–0.84 with the calibrated P,
+  and the isotonic map only rescales P: it can't turn up into down.
+- Raw-P quartiles (down) don't separate the sides either: touched −1% 77 / 82 / 85 / 77%, touched +1% 85 / 75 / 95 /
+  89%.
+- The targets say where the volume centres on **each** side (Q41, size by design). The model learnt them; no
+  target asks which side comes first.
+
+**5. What the files can't say.** `high_min` / `low_min` are the minutes of the best high and low, not of the first
+±1% crossing, so "touched 78%" is not "would have won 78%" with a stop. A first-touch race needs a new extremes
+column.
+
+**Checks proposed (read only, not run; the user's OK):** CIs per P bucket clustered by day (with and without
+08-06, 09-02, 08-12); IA1 vs noS vs fold A on the same settings; whether P(up) − P(down) predicts the direction;
+the first-touch race (+1% before −0.7%). A direction target fits Phase 2's GBM.
+
 ### 2026-11 Intraday P1 bounce check: the d = 0 direction edge was bid–ask bounce (run 2026-11-01, 56 min)
 Tags: `tag-ml-intraday`. Plan: [live-recommendations-plan.md](live-recommendations-plan.md) P1. Script:
 `ml/scripts_intraday_probe.py --parts p1`. Same rows in every arm (stock-minutes where minute i traded), full

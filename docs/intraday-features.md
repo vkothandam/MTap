@@ -1,12 +1,30 @@
-# Intraday model v2: columns, targets and testing
+# Intraday model v2: data, columns, targets, training, testing and live use
 
-Status: **schema v2 locked 2026-11-06; S1 code + tests done 2026-11-07 (`ml/intraday_ft/`, 39 tests on
-synthetic frames); nothing built on real data yet (S2 waits for the OK).** Phase 1 = a sequence model (TFT, or an
-equivalent such as PatchTST) on the pocket targets. Phase 2 = the GBM twin, the input ladder and the GBM
-overlay, after Phase 1's report. The decisions behind each column are in MODEL-STRATEGY Q40; the earlier
-design (Stage A/B GBM, Step 0 probe, P1) is in [intraday-design.md](intraday-design.md) and LEARNINGS
-`tag-ml-intraday`. This file is the single dictionary. When `ml/intraday_ft/features.py` exists, its
-`FEATURES` table is the source and this file must match it.
+Status (2026-11-14):
+- **Built and tested on real data.**
+  - Schema v2 was locked 2026-11-06.
+  - S1 code and tests were done 2026-11-07.
+  - The S2 frames for 2023-01 → 2026-10 were built 2026-11-07.
+- **Trained and scored:** IA1 (fold B, 2026), IA1A (fold A, 2025), and the ablations noS / enc120 / enc60 (fold
+  B, 2026-11-08).
+- **Read-outs built:** rolling recalibration, Moves (the ±X% filter) and extremes.
+- **Not built:** the live scorer (§16).
+
+The phases:
+- Phase 1 = this sequence model (a thin TFT of our own) on the pocket targets.
+- Phase 2 = the GBM twin, the input ladder and the GBM overlay. Not started; it is the user's call.
+
+What this file covers:
+- **§1–§7:** the column dictionary. `ml/intraday_ft/features.py` `FEATURES` (117 columns) is the source, and this
+  file must match it. A test checks that every name is here.
+- **§8–§19:** the pipeline end to end: data, preprocessing, the frames, training, testing, the read-outs, the
+  results, live use, the assumptions and the decision pivots.
+
+Other documents:
+- The decisions behind each column: MODEL-STRATEGY Q40.
+- The earlier design (Stage A/B GBM, Step 0 probe, P1): [intraday-design.md](intraday-design.md) and LEARNINGS
+  `tag-ml-intraday`.
+- §20 maps which document holds what.
 
 **Why v2.** P1 (2026-11-01) showed that minute-bar summaries predict how **big** the next hour's move is,
 not which **way** once bid–ask bounce is removed. v2 adds second-level inputs (resistance, time at price),
@@ -23,13 +41,13 @@ time windows instead of a single touch.
 | **normal(x)** | The median of x over the previous 20 sessions, for the same minute of the day where it varies by time | normal volume at 10:30 = 80k |
 | **typical day** | The median regular-session volume (minute bars, 09:30–16:00) of the previous 20 sessions | 50M shares |
 | **price unit** | `ln(x / prev_vwap) / σ`, clipped to ±10; `prev_vwap` = yesterday's regular-session VWAP | prev VWAP $270, σ 1.5%, price $272.70 → +0.66 |
-| **volume unit** | `ln(x / normal(x))`, or a share of the typical day where named "share" | |
+| **volume unit** | `ln((x + 1) / (normal(x) + 1))` (the +1 keeps a zero-volume minute finite), or a share of the typical day where named "share" | 120k vs 80k → ≈ ln 1.5 = 0.41 |
 | **market unit** | the % log change of each instrument against **its own** reference (never across instruments) | §4 |
 | **entry P₀** | The first trade after the decision moment: minute i+1's open (minute tier), the first trade after the decision second (second tier). Only the zero line for targets, **not** a prediction | minute 10:14 closes at $272.70 (ask), 10:15 opens $272.66 → P₀ = $272.66 |
 | **decision minute i** | The model stands at the end of minute i, with everything up to and including minute i | |
 | **held price** | The last trade price carried forward to every later second until the next trade | trades at :05 $100.01 and :09 $100.03 → :06–:08 hold $100.01 |
-| **poll grid** | The seconds a live E*TRADE poll would see. Training samples Massive 1 s bars on the same grid | 1 s from the switch; 2 s before |
-| **stock id** | `composite_figi` (else CIK). The ticker is only a label | FI → FISV keeps one id |
+| **poll grid** | The seconds a live E*TRADE poll would see. **As built, training uses Massive's 1 s bars as they are (step 1) on every day.** Live polling is 2 s (MAIN) / 20 s (MIDCAP) today, with a 1 s trial planned (§16). `profile.POLL_STEP` has 2 s / 20 s grids, but no training run uses them | a day with seconds → `poll_tier` 1 |
+| **stock id** | `composite_figi`, else CIK, else the ticker. The ticker is only a label. A recycled ticker takes the row in force on the day (§9) | FI → FISV keeps one id |
 
 **Leakage rules (tests enforce each):**
 - changing any bar after minute i never changes an input at i;
@@ -58,9 +76,12 @@ and a report slice, not a filter.
 **The frames hold the day's top 1,000 eligible stocks by prior dollar volume** (`LIVE_N`,
 `intraday-ft-build --stocks`). They stand in for the live set, because the E*TRADE lists exist only from
 2026-10-12. The whole universe would be ~2.5 GB of float16 sequences a month, while the model is used on
-~1,000 live symbols. `live_set` = in that top 1,000.
+~1,000 live symbols. `live_set` = in that top 1,000. The frames keep only those rows, so `live_set` is True on
+every row of a run file: it isn't a usable slice there.
 
-**Cache** (`/tmp/mtap/intraday_ft/`, env `MTAP_INTRADAY_FT_CACHE`; the NAS is read only):
+**Cache** (`/tmp/mtap/intraday_ft/`, env `MTAP_INTRADAY_FT_CACHE`; the NAS is read only). The seven runs used
+`/tmp/mtap/intraday_ft_w8/` (each run's `config.json` `cache`). macOS clears `/tmp` on a restart, and **that cache
+was gone on 2026-11-14**. The run files are kept (§8):
 - the layout is `frames/month=YYYY-MM/` with:
   - `rows.parquet`: stock-days, keys and statics;
   - `dec.parquet`: decisions with every target and `pers_*`;
@@ -118,7 +139,9 @@ Both volume features use minute-bar volume on both sides, so the ~19% of daily v
   min, open}. `res_dn_w` is the mirror. `res_bal_w` = ln(res_dn ÷ res_up): > 0 = cheaper to go up.
 - `vol_to_up1` / `vol_to_dn1` = today's volume already traded between the price now and ±1%, % of a typical
   day: supply or demand sitting in the way.
-- M fallback (no seconds): minute volume ÷ |minute VWAP change|, split by its sign.
+- M fallback (no seconds): minute volume ÷ |minute VWAP change|, split by its sign. **Designed, not built**
+  (checked 2026-11-14). On a day without seconds the S-tier columns stay NaN, which becomes 0 after
+  standardisation, and `poll_tier` = 0. Every training day from 2023-01 has 1 s data, so no run was affected.
 
 | second | price | volume | side |
 | --- | --- | --- | --- |
@@ -244,7 +267,7 @@ are dropped.
 | --- | --- | --- |
 | `minute` `to_close` `dow` | known | minute of the session, minutes to 16:00, weekday |
 | `normal_rvol` | known | the normal volume share of each minute (the U-shaped curve) |
-| `poll_tier` | static | grid of the stock's second tier that day: 1 s, 2 s, 20 s, none |
+| `poll_tier` | static | as built: 1 = the day has Massive seconds (the S tier is filled), 0 = none (the S columns fall back or are NaN). The planned 1 s / 2 s / 20 s / none split is for live (§16) |
 | `pm_cut` | known | 555 or 570 |
 | `bin_cut_at_close` | known (decoder) | the bin was shortened by the close |
 
@@ -395,7 +418,8 @@ Result:
    - **beats climatology:** pinball skill of `cm_up`, `cm_dn`, `bulge`, `sag` and `rvol` clear of 0 in every
      bin, and their P50 rank stocks better than climatology's (rank IC CI above climatology's);
    - **calibrated:** P10–P90 coverage within 75–85% and the P50 within 0.45–0.55 of outcomes, or fixed by a
-     recalibration fitted on the validation months.
+     recalibration. The rule first said a recalibration "fitted on the validation months". As built (2026-11-08)
+     it is the rolling 20-session recalibration on past test sessions (§13), the daily model's cal20s rule.
 
    The direction numbers stay in the report as a record; they don't decide.
    Was (2026-11-06): direction skill over both baselines clear of 0; size skill alone didn't count.
@@ -487,6 +511,403 @@ P10 / P90.
 The dashboard's "Intraday pockets" page reads only this file, and its MODEL.md (which records the daily run
 label used for Chunk 0).
 
+## 8. Data sources, paths and commands
+
+Everything is read from the NAS (read only from ml/, env `MTAP_NAS`, default `/Volumes/Backups/MTap-Data`) and from
+two ml/ files. ml/ imports nothing from `sourcing_py`: where a rule must match sourcing (the `exclusion()` list), it
+is copied and kept in step by hand.
+
+| input | path | what it gives |
+| --- | --- | --- |
+| minute bars | `bars_1m/month=YYYY-MM/` | 04:00–20:00 ET bars: the M tier, the targets, every reference value |
+| second bars | `agg_1s/massive_rest/` (`day-D` + `day-D.extra`) | the S tier (held prices on the 1 s grid) |
+| market | `out/market/` `spy_1m`, `spy_daily`, `spy_dividends`, `spx_daily` | SPY / SPX columns (§4), `beta60` |
+| ticker reference | `out/tickers_cs/tickers_cs-*.jsonl` | type (CS), `composite_figi`, CIK, delisting date: the universe, the stock id, `delisted_later` |
+| shares | `out/shares/shares-*.jsonl` | quarter-end shares outstanding: the market cap |
+| daily panel | `out/tft/exp5y-r1/panel.parquet` (repo `out/`, `data.PANEL`) | `industry_code` (TRBC, 6 digits), `results_window_pit` (the earnings flag) |
+| daily forecasts | `ml/runs/20261029-211059Z-gbm-4438sym~px-cal20s` (09:30), `…-gbm-4438sym-cal20s` (09:45) | Chunk 0 (`data.FORECAST`) |
+| E*TRADE feed | `intraday_feed/date=*/source=etrade_watchlist` | only `data.live_symbols()`; the frames don't use it |
+
+**Commands** (ml/pyproject.toml; run from `ml/` with `uv run`):
+
+| command | does | flags (default) |
+| --- | --- | --- |
+| `intraday-ft-build` | the month frames (§10) | `--from 2023-01 --to 2026-10 --every 5 --stocks 1000 --workers 8`, `--check` (one month + the S2 check), `--no-seconds`, `--force`, `--status-dir`, `--out` (the cache) |
+| `intraday-ft` | train, then score the test months blind (§12–§13) | `--folds B`, `--cache`, `--out runs/intraday_ft`, `--no-seconds`, `--encoder N`, `--hidden 32 --heads 4 --dropout 0.1 --lr 1e-3 --batch-days 32 --steps 1000 --max-epochs 15 --patience 3 --valid-days 2000 --valid-every 3 --test-every 3 --test-frac 0.25 --accelerator auto --seed 0`, `--label`, `--about` |
+| `intraday-ft-report RUN` | the report, climatology files and recalibration (§13) | `--cache` |
+| `intraday-ft-extremes RUN` | `extremes.parquet` (§7) | `--cache` (default: the run's `config.json` cache) |
+
+**The runs** (`ml/runs/intraday_ft/`, 8.0 GB on the Mac):
+
+| label | run | what | epochs (best valid) |
+| --- | --- | --- | --- |
+| IA0-timing | `20261107-140359-ft-B`, `20261107-141636-ft-B` | 1-epoch timing checks | 1 |
+| **IA1** | `20261107-141854-ft-B` | fold B, whole day, M + S tier | 15 (0.907) |
+| IA1A | `20261107-162439-ft-A` | fold A, the same | 13 (0.906) |
+| IA1-noS | `20261107-181646-ft-B-noS` | fold B, S-tier inputs zeroed | 15 (0.908) |
+| IA1-enc120 | `20261107-201958-ft-B-enc120` | fold B, last 120 minutes | 15 (0.904) |
+| IA1-enc60 | `20261107-225358-ft-B-enc60` | fold B, last 60 minutes | 9 (0.921) |
+
+Every run's `config.json` says `cache: /tmp/mtap/intraday_ft_w8`. **That cache is gone** (§2), so retraining,
+re-scoring or a new `extremes.parquet` needs the frames rebuilt first (≈ 2½ h). The dashboard doesn't need them.
+
+## 9. Reference values and identity (prior sessions only)
+
+All in `build.reference()`, `normals()`, `beta60()` and `data.py`. "Prior" = the stock's earlier sessions, today
+left out (`shift(1)`). The window is `N_NORM` = 20 sessions and needs `MIN_SESS` = 15 of them, or the value is NaN.
+
+| value | rule | example |
+| --- | --- | --- |
+| stock id (`sid`) | `composite_figi`, else `cik:` + CIK, else `tk:` + ticker. A ticker used by two companies takes the row delisted soonest on or after the day, else the last row | FI and FISV share one figi → one id |
+| `prev`, `prevclose`, `prevpost` | yesterday's regular-session VWAP, close, after-hours last | |
+| daily change r | ln(VWAP / prev VWAP); \|r\| > 0.4 → NaN (a split guard: a split shows as one huge change) | |
+| σ (`sig`) | std of r over the prior 20 (≥ 15) | |
+| `ndol` | mean dollar volume over the prior 20 | $45M |
+| `typical` | median regular-session volume over the prior 20 | |
+| `prior` | the count of earlier sessions | |
+| `npm555`, `npm570` | median pre-market volume to 09:15 / 09:30 over the prior 20 | |
+| normals `nvm`, `nnm` | per minute of the day: the median volume / trade count over the prior 20 (≥ 15) | |
+| σ₁ₘ (`sig1m`) | per 15-min bucket (26 of them): √(Σ r² ÷ n) over the prior 20 sessions' 1-min returns, n ≥ 20 | |
+| `beta60` | vs the daily SPY VWAP change, over the prior 60 sessions (≥ 40). NaN → 1.0 in Chunk 2's `resid` | |
+| market cap | shares from the last quarter-end snapshot before the day × prevclose | 15.4B × $270 = $4.2T |
+| cap band | mega ≥ $200B, large ≥ $10B, mid ≥ $2B, small ≥ $250M, micro; unknown if no shares | |
+| sector / industry | the TRBC industry code last seen in the panel per stock id; sector = its first 2 digits | 57 = Technology |
+| `results` | 1 if the panel's point-in-time earnings window says Earnings_Day or Post_Earnings_Reaction | |
+| `delisted_later` | the stock id is delisted after the day (from the ticker file). A report slice only, never an input | |
+
+**Sector and industry are not point in time:** each stock gets its last known code for every day. Codes rarely
+change, so this was accepted.
+
+## 10. Universe and the frame build
+
+**Eligibility per day** (`build.eligible`, constants in `data.py`):
+- `ndol` ≥ $20M (`MIN_DOLLAR_VOL`), σ > 0.3% (`MIN_SIGMA`), ≥ 3 prior sessions (`MIN_PRIOR`);
+- an open today, a previous VWAP, `typical` > 0;
+- a common stock: Massive type CS on the day, minus the `exclusion()` names (notes, preferreds, funds, rights). ADRs
+  are typed ADRC by Massive, so they are out.
+
+Then the eligible stocks are ranked by `ndol` per day and the top `LIVE_N` = 1,000 kept (the live stand-in, §2).
+
+**One month at a time** (`build_month`):
+1. Read the month's `bars_1m` once. Reference values need history, so the build also holds summaries of the
+   `WARM` = 4 months before (≥ 61 sessions, enough for the 60 changes of `beta60`).
+2. Reference values and eligibility (§9) for the month's stock-days; keep the top 1,000 per day.
+3. The per-minute normals, only for the kept rows (the full window would be 20 × stock-days × 390).
+4. The inputs per chunk (§11). The S tier runs one day per job over `--workers` processes, and the 1 s zig-zag runs
+   over all of a day's stocks together.
+5. Decisions: per stock-day an offset `off` = `rng.integers(0, every)` with `rng = default_rng(seed + YYYYMM)`,
+   then minutes `4 + off, 9 + off, …` up to 384 (`FIRST_DEC`, `LAST_DEC`). Every minute of the day is covered over
+   the stock-days, and the same seed gives the same decisions.
+6. The targets (§5) and persistence for every decision.
+7. Write `rows.parquet`, `dec.parquet`, `seq.npy` (float16), then `meta.json` last. A month with `meta.json` of
+   the same `FRAME_VERSION` (1) and settings is skipped; a month cut short has none and is built again; `--force`
+   rebuilds.
+
+**Size and time.** 2023-01 → 2026-10 = 46 months, ≈ 966k stock-days, 83–86 GB on disk; ≈ 2.1 min a month with
+`--workers 12` (≈ 2½ h in all; the 2026-01 check took 3 min with 8). The NAS reads are not the bottleneck
+(~0.5 s per 1 s day file, ~10 s per month of minute bars).
+
+## 11. Transformations, input by input
+
+The column-by-column definitions are §3. This section gives the rules that sit between the columns.
+
+**Units.** Prices are `ln(x / prev_vwap) / σ`, volumes `ln((x + 1) / (normal(x) + 1))`, market moves % log
+changes vs each instrument's own reference (§1, §4). Every input is clipped to ±10 (`CLIP`).
+
+**Chunk 0 (daily forecast).** The 09:30 run's shape (`R5~px-cal20s`, prices only) for minutes 0–14 and the 09:45
+run's (`R5-cal20s`) from minute 15. Only walk-forward test predictions exist, so Chunk 0 starts 2023-01-23; the
+`fc_*` columns are NaN (then 0) when a stock-day has no forecast (~5% of rows). `band_px` / `band_vwap` place the
+price and the running VWAP within the forecast's quantiles.
+
+**Chunk 1 (the stock's day).** The running digests of the day from minute bars, plus the zig-zag pivots. A pivot
+counts only from the minute it is confirmed, so later bars can't change it. The live scorer must call the same step
+code (`zigzag.py`) so live and training agree.
+
+**Chunk 2 (sector and market), per minute.**
+- Each stock's move mv = ln(close so far / prev VWAP) × 100.
+- Groups: the sector, the industry, the whole market. Members = the day's live set (in training, the top 1,000).
+- Each member gets the **other** members' move (leave one out): cap-weighted with no member above 25%
+  (`MKT_CAP_W`; the excess is spread over the rest, repeated; skipped if 25% × n < 1), and equal-weight
+  (`sec_mv_ew`). A stock outside the live set gets the full live mean.
+- `ind_mv` falls back to the sector when the industry has fewer than 5 other members (`IND_MIN`).
+- SPY: `spy_mv` vs its previous close, `spy_vwap_mv` vs its previous VWAP, `spy_rvol`.
+- `resid` = mv − β × `spy_mv` (β NaN → 1.0). `breadth` = the share of the live set with mv > 0.
+
+**Chunk 3 (static).** Yesterday's close / after-hours vs its VWAP, today's gap, the pre-market, σ, `log_dvol`,
+`log_mcap`, `beta60`, `results`, `spy_gap`, `spx_y`, `spx_gap`. The pre-market comes as two cuts (09:15 and 09:30);
+the 09:30 cut reaches decisions only from minute 15 (§6).
+
+**S tier (`profile.py`).** From the held price every second of the session (23,400 s):
+- time at price: a profile of 0.1σ bins from −10σ to +10σ (201 bins) around yesterday's VWAP;
+- near the day's high / low = within 0.25σ;
+- a visit to a price ends after ≥ 30 s away; visits and dwell are recomputed every 5 minutes and carried
+  forward (at most 4 minutes old);
+- decays use a 30-minute half-life; resistance windows are 1 / 5 / 15 / 30 minutes and the open;
+- each value at the end of minute m uses only the seconds before 60 × (m + 1).
+
+`poll_tier` = 1 where the day has Massive seconds, else 0 (then every S column is NaN → 0). **The minute-bar
+fallback for the S tier is designed but not built**; every training day from 2023-01 has 1 s data, so it never
+mattered in training.
+
+**Targets** (`targets.py`, §5). The entry P₀ = minute i+1's open, else the held price at i; no target when
+i + 1 ≥ 390. `cm_*` are masked below 5% of the bin's volume (`CM_MIN`); the race is at ±0.5σ (`RACE`); `vol_to_*`
+is capped at 1.0 (`VOL_TO_CAP`). Bins past the close are cut (`bin_cut`) and their targets masked.
+
+## 12. Training
+
+**Folds** (`windows.FOLDS`; the last 2 training months are the validation months for early stopping):
+
+| fold | train | validation | test |
+| --- | --- | --- | --- |
+| B (first) | 2023-01 → 2025-10 | 2025-11 → 12 | 2026-01 → 10 |
+| A | 2023-01 → 2024-10 | 2024-11 → 12 | 2025-01 → 12 |
+
+**Fitted on the training months only:**
+- the scaler (`fit_scaler`): 3,000 stock-days sampled evenly over the months; each sequence column and static
+  real gets its median and IQR; each target its IQR (for the loss weights), from 20 decisions per sampled day;
+- the vocabularies (`fit_vocab`): sector, industry, symbol; a symbol needs ≥ 60 training sessions
+  (`MIN_SYMBOL_SESSIONS`), else it is 0 = unknown;
+- standardised = (x − median) / IQR, NaN → 0, clipped to ±10.
+
+**Batches.** 32 stock-days with all their decisions (`--batch-days`). Each batch masks the overlays at random:
+sector 30%, industry 30%, symbol 50% (`OVERLAY_P`) are set to unknown, so the model also works without them. The
+cap band is never masked.
+
+**The network** (`tft.Net`, built from pytorch-forecasting's sub-modules):
+- statics: a variable selection network over the static reals and the embeddings (cap band, sector, industry,
+  symbol; size 8), giving 4 context vectors (selection, enrichment, the LSTM's initial h and c);
+- per minute: variable selection over the 98 sequence inputs, an LSTM, a gated skip, enrichment, causal
+  interpretable multi-head attention (each minute sees only earlier minutes), a gated skip, a position-wise GRN;
+- decoder: one step per bin, from the known inputs (`bin_minutes`, `bin_normal_share`, `bin_to_close`,
+  `bin_cut`) plus a bin embedding, with the decision's state as context;
+- heads: per-bin quantiles, row quantiles, and the classes (race 3, `t_peak_up` / `t_peak_dn` 5);
+- quantiles = the median ± cumulative softplus steps, so they never cross.
+
+**Loss.** Mean pinball loss over the bin and row quantiles, each target divided by its training IQR, plus
+0.2 × the cross-entropy of the class heads (`CLS_W`). Masked targets weigh 0. A non-finite loss stops the run.
+
+| setting | value |
+| --- | --- |
+| hidden size, attention heads, dropout | 32, 4, 0.1 |
+| optimiser | AdamW, lr 1e-3, weight decay 1e-4, gradient clip 1.0 |
+| epoch | 1,000 batches; at most 15 epochs |
+| early stop | after 3 epochs without a validation loss 1e-4 below the best; the best `model.pt` is reloaded |
+| validation | 2,000 sampled stock-days of the validation months, every 3rd decision (15 min) |
+| device, seed | MPS if available, else CPU; seed 0 |
+
+Time: ~0.45–0.55 s a step on MPS, ~7.5 min an epoch, 2 h 6 min for IA1 with scoring. `pi_*` reaches ≈ 3·10⁴ in a
+few batches; the IQR scaling and the gradient clip hold it (not capped).
+
+**Ablations.** `--no-seconds` zeroes the S-tier inputs (the network is the same). `--encoder N` gives each decision
+only its last N minutes: the variable selection still runs once per day; the LSTM and attention run per window,
+with a zero minute padding windows that start before 09:30.
+
+## 13. Testing, the report and the read-outs
+
+**Scoring** (`tft.score`): the best model predicts every 3rd decision (every 15 min) of 25% of the test stock-days
+(seeded), blind. Each decision is predicted four times, with the overlays none / sector / sector + industry / all
+(`VARIANTS`); the run file holds each read-out four times (§7), `quantiles.npy` the `all` quantiles.
+
+**Read-outs from quantiles (`cdf_at`).** P(X ≤ v) is linear between the five quantiles. Past P10 / P90 the tails
+are exponential, with the decay fitted to the outer pair (s = (P25 − P10) / ln 2.5 below, (P90 − P75) / ln 2.5
+above). A flat 5% outside can't say less than 5% for a rare event, which is why it changed (2026-11-07).
+
+**The report** (`report.py`, `intraday-ft-report`):
+- baselines on the same rows:
+  - climatology = the training span's quantiles and event rates per cell (5-min bucket × σ tercile × dollar-volume
+    tercile; up to 2M training decisions);
+  - persistence = the last 15 minutes' pocket (§5);
+- scores: pinball skill, coverage, the share of outcomes at or below each quantile, rank IC across stocks at a
+  minute (≥ 10 stocks), Brier skill and AUC for events, top-20 minus bottom-20;
+- CIs: 500 bootstrap draws over days (`N_BOOT`);
+- slices: minute bucket (0–15, 15–60, 60–120, 120–240, 240–330, 330–390), cap band, `live_set`, `delisted_later`,
+  `poll_tier`;
+- `bulge` / `sag` quantiles below 0.01σ read as 0 (`DUST`): they sit on a point mass at 0;
+- the go-rule table "Pocket shape" (§6) for `cm_up`, `cm_dn`, `bulge`, `sag`, `rvol` per bin.
+
+**Rolling recalibration** (`recal.py`, `fold_k/recal.parquet`). Per day, target and quantile τ:
+- offset = the τ-quantile of (outcome − predicted quantile) over the previous 20 test sessions (`WINDOW`);
+- calibrated quantiles = sort(q + offset), clipped to the target's range (shares 0 … 1; `net`, `rvol`, `net60` any
+  sign; the rest ≥ 0);
+- the first 20 sessions get no offset and are left out of the "Recalibrated" table;
+- one offset for every stock at a minute, so the ranking can't change.
+
+Files: `report.json`, `report.md`, MODEL.md (run level); `clim.parquet`, `clim_rates.parquet`, `recal.parquet`
+(fold level), so the dashboard grades without ml/ code.
+
+**Extremes** (`intraday-ft-extremes`, §7): the highs, lows, VWAP / TWAP and last price after the entry, from the
+cached frames. A bin holding a minute at the ±10σ clip is NaN.
+
+## 14. The Moves read-out (dashboard, no model change)
+
+`dashboard/forecast_dash/pockets_calc.py` (`move_*`), on the page Intraday → Pockets model → Moves. Q42.
+
+**The probability, per bin K and side:**
+- the side forms: P(`mass_up` ≥ 5%) up, P(`mass_up` ≤ 95%) down;
+- its centre is beyond the target: 1 − P(`cm_up` < ln(1 + X) / σ) up, the same with `cm_dn` and −ln(1 − X) down;
+- P = forms × beyond, both read with `cdf_at` off the stored quantiles.
+
+**"By the window's end"** (toggle, on by default): P = 1 − Π(1 − P_k) over b1 … bK, treated as independent; the
+calibration corrects what that gets wrong.
+
+**Calibration** (`move_recal`): for each day, the previous 20 sessions' decisions, sorted by P into equal-count bins
+of ≥ 150, their hit rates made non-decreasing (pool-adjacent violators), then read off by linear interpolation. It
+needs ≥ 1,500 past rows, else P stays raw (`warm` False). **The hit it calibrates on is `reached`** (the centre),
+not `touched` (pockets_page.py).
+
+**Outcomes** (`move_outcome`, from the run file and `extremes.parquet`):
+- `reached` = the real centre is at or beyond the target (NaN if the bin had no trade);
+- `touched` = the best price (the high for up, the low for down) reached the target;
+- `best_pct` / `best_min` = that best price and its minute after the decision (the best, not the first touch);
+- with the toggle, each is "in any window" and the shown centre is the window with the highest P
+  (`move_centre_cum`);
+- three row states (commit 7e7ad38, 2026-11-12): happened (`reached`, green), touched only (blue), did not
+  (dimmed);
+- `best_x` = the best move ÷ X; `captured` = the real centre move ÷ the predicted P50 move.
+
+The list shows the 500 rows with the highest P; the summary, by-day and by-time tables use every row.
+
+## 15. Results so far
+
+Details and CIs are in LEARNINGS (`tag-ml-intraday`); the Scoreboard row in MODEL-STRATEGY is the summary.
+
+| check | result |
+| --- | --- |
+| IA1, fold B (2026) | **pocket shape passes:** `cm` rank IC +0.27 … +0.30 (climatology +0.12 … +0.17), `rvol` +0.54 … +0.61; skill `cm` +1.4 … +5.0%, `rvol` +18.5 … +23.0%, `bulge` / `sag` b2–b5 +1.8 … +2.1% (b1 `sag` −0.9%). **Direction none:** net60 rank IC +0.000 [−0.005, +0.005] |
+| IA1A, fold A (2025) | holds: `cm` rank IC +0.29 … +0.31, `rvol` +0.57 … +0.63, `bulge` / `sag` +0.9 … +3.3% every bin. Calibration level drifts between years |
+| rolling recalibration | 25 of 25 shape targets calibrated on both folds (18 raw) |
+| ablations, fold B | no S tier: as good or better (25/25); 120-min encoder: as good (`rvol` +2 points); 60 min: worse (23/25, early stop at epoch 9) |
+| Moves (±1%) | calibrated P good to a few points up to 0.4–0.5; by the window's end, 0–60 min, P ≥ 0.5: said 56–58%, centre happened 55–56% on both folds |
+| Moves export check (2026-11-13/14) | the price moved, but not in the predicted direction: below |
+
+**The export check** (the user's IA1-noS export: +1%, calibrated, P ≥ 0.55, the entry to the close, 2026-08-05 →
+10-20):
+- **The summary is right as a size forecast.** Up: 613 predictions, said 0.60, centre reached 58%, touched +1% 78%.
+  Down: 602, said 0.60, reached 54%, touched −1% 77%. The median best move is ~2.3× the target.
+- **It isn't a direction forecast.** In the 500-row list (the top P), the up picks touched −1% almost as often as
+  +1%:
+
+  | predicted | touched +1% | touched −1% | both | median end of day | ended on the predicted side |
+  | --- | --- | --- | --- | --- | --- |
+  | up (245 known) | 82% | 80% | 62% | −0.44% | 46% |
+  | down (242 known) | 80% | 86% | 66% | −0.05% | 50% |
+
+  420 decisions are in both lists: the model names stocks that will move a lot, then rates both sides.
+- **A higher P:** up improves (P 0.70–0.80: centre reached 90%, n 21); down gets worse (P 0.70–0.80: said 74%,
+  reached 42%, touched +1% 95%, n 19). The high-P down rows are a few days (08-06, 09-02, 08-12) and a few stocks
+  (NBIS, SNDK, AAOI, BSP, WDC). Small samples; no CI yet.
+- **Not the inputs or the calibration.** The raw P is 0.81–0.98 on both sides of the same rows and correlates 0.83
+  with the calibrated P. The isotonic map only rescales P; it can't swap up for down. The targets (where the volume
+  centres, on each side) are size targets by design (Q41), and the model learnt them.
+- **"Touched 78%" is not "wins 78%".** `high_min` / `low_min` are the minutes of the best extremes, not the first
+  touch, so the files can't say which side came first. In 33 of the 50 high-P down rows the low came before the
+  high.
+- The earlier raw b5 read (~19.7k rows, P > 0.5) gave the same shape: touched +1% 69%, −1% 69%, median end
+  −0.16%.
+
+## 16. Live prediction (planned, not built)
+
+This is design only (P16 in [live-recommendations-plan.md](live-recommendations-plan.md) §0). Nothing below runs
+yet.
+
+**User choices (2026-11-12):**
+- the model is **IA1** (over noS);
+- the score is the calibrated b5 "touched +X%" read-out ("good enough for me"), with the skill vs climatology shown
+  next to it.
+
+**The scorer** (planned `ml/intraday_ft/live.py`; reads contract files and Redis only, no `sourcing_py` imports):
+- **symbols:** the E*TRADE watchlist tickers only (MAIN 605 symbols, polled every 2 s; MIDCAP 422, every 20 s);
+- **M tier:** Massive minute bars to t − 15 min, stitched with minutes built from the E*TRADE polls;
+- **S tier:** held prices from the polls from 09:30; IA1 was trained on the 1 s grid, so 1 s polling is planned
+  (a one-session trial first, staggered calls: MAIN 0, MIDCAP 350, POSITIONS 700 ms);
+- **Chunk 0:** the morning daily forecast. `mtap-morning` is not deployed (branch `feat/daily-5y-inputs`);
+- **Chunk 2:** sector / market moves over the live set (in training, the top 1,000);
+- **model:** loads `fold_B/model.pt` + `prep.json` + `quantiles.json` and calls the same `tft` code; writes the
+  same quantile columns as `intraday_ft_pred.parquet`, so the dashboard views work unchanged;
+- **ladder:** the Moves maths moved into a shared helper inside ml/ (not imported from dashboard/), with the
+  rolling 20-session calibration on live graded outcomes, seeded from the stored test runs;
+- **calibration of the score:** the score is a touch, but `move_recal` calibrates on the centre. The live ladder
+  must calibrate each touch rung on `touched` (centre P mapped to the past touch rate);
+- **skill gate:** ≥ 60 test days, ≥ 1,000 events and a CI low end above 0 vs climatology, else the tier says
+  "skill unknown" / "no edge";
+- **grading:** the extremes after each window closes, vs `price_ref` at the decision time;
+- **replay test:** one stored test day through `live.py` must reproduce the run file's quantiles to 1e-4.
+
+If 1 s polling fails, IA1-noS is the fallback. It needs no S tier, and it scored as well as IA1 (§15).
+
+## 17. Assumptions
+
+Each is stated in the code or a test unless marked "not checked".
+
+1. **The top 1,000 eligible stocks by prior dollar volume stand in for the live set.** The E*TRADE lists exist only
+   from 2026-10-12. Live predictions cover ~1,000 watchlist names, which aren't the same 1,000.
+2. **Past sessions only** for σ, the normals, β, the typical day and the scaler (tests enforce it).
+3. **Massive's 1 s held prices equal what a 1 s E*TRADE poll would see.** Not checked; the replay and polling trial
+   are the checks. E*TRADE's ChartIQ minute volume is about half of Massive's (LEARNINGS `tag-chartiq`), so
+   volumes built from polls may differ too.
+4. **Minute bars miss the auction prints** (~16% of the day's volume): the targets and normals use what the minute
+   bars hold, live and in training alike.
+5. **The daily forecast is out of sample** (walk-forward test predictions only).
+6. **Sector and industry are fixed per stock** (the last code seen), not point in time.
+7. **Split guard:** a daily change above 40% is a data break, not a move.
+8. **Bins are disjoint and cut at the close**; a decision never sees past 16:00.
+9. **Dividends:** Massive's `adjusted=true` adjusts splits only; SPY's gap adds the dividend back (§4).
+10. **The 25% test sample is representative** of every stock-day (seeded, at random).
+11. **The rolling recalibration's 20 sessions are known by the next morning live** (they are graded the same day).
+12. **"By the window's end" P assumes independent windows**; the calibration corrects the error.
+
+## 18. Decision pivots
+
+| date | from | to | why | where |
+| --- | --- | --- | --- | --- |
+| 2026-10-12 | no intraday model | `tft_intraday` on E*TRADE watchlist panels | first try: 1–15 min edge ~2–3% vs climatology, no direction | [intraday-model.md](intraday-model.md) |
+| 2026-10-30 | the TFT as predictor | an analog engine (similar past moments, pockets in price × time × volume) | the user's rethink | Q37, [intraday-redesign.md](intraday-redesign.md) |
+| 2026-10-31 | | the analog check: fast, no edge | | [analog-pockets.md](analog-pockets.md) |
+| 2026-11-01 | analogs as predictor | a GBM ladder (Stage A/B) and a Step 0 probe | test before weeks of building | Q38, [intraday-design.md](intraday-design.md) |
+| 2026-11-01 | "d = 0 has direction" | no direction | P1: the edge was bid–ask bounce | LEARNINGS P1 |
+| 2026-11-02 → 06 | GBM on summaries | a sequence model on raw 1-min and 1-s series | direction failed on summaries; maybe the sequence holds it | Q39, Q40 |
+| 2026-11-06 | single touch targets | pocket targets over five duration bins | describe where volume goes, not one event | Q40, §5 |
+| 2026-11-07 | the library's TFT | a thin TFT of our own | `TimeSeriesDataSet` can't do whole-day encoders with many decisions | §6 |
+| 2026-11-07 | the whole universe | the top 1,000 per day | ~2.5 GB a month for all, ~1,000 used live | §2 |
+| 2026-11-07 | go = direction skill | go = pocket shape (direction not required) | IA1: no direction, real size skill; the user's call | Q41, §6 |
+| 2026-11-07 | flat 5% tails, raw `bulge` / `sag` | exponential tails, the 0.01σ dust rule | rare events and point mass at 0 scored wrongly | §13 |
+| 2026-11-08 | recalibrate on the validation months | rolling 20 sessions of past test days | the daily model's cal20s rule; usable live | §13 |
+| 2026-11-08 | | the S tier and the whole day not needed for the shape | ablations | §15 |
+| 2026-11-08 | quantiles only | Moves: P(centre beyond ±X%), isotonic calibration, "by the window's end" | the user's filter question | Q42, §14 |
+| 2026-11-12 | centre only | touched and centre shown apart (three states) | price touches 15–20 points more often | 7e7ad38, §14 |
+| 2026-11-12 | score not chosen | the calibrated b5 touched +X%, IA1 for live | the user's choice | §16 |
+| 2026-11-14 | | export check: high P is size, not direction | the user's 1,215-row report | §15, Q43 |
+
+## 19. Open items and limits
+
+- **Direction:** none found in any arm or fold. A direction target ("+X% before a −stop", first touch) would suit
+  Phase 2's GBM; not started.
+- **The first touch isn't measured:** `extremes.parquet` has the best extremes' minutes, not the first crossing.
+- **The 25% sample:** a re-score of every stock-day (~5 h both folds, no training) would give full counts. It needs
+  the frames rebuilt first (≈ 2½ h), since the cache is gone.
+- **Fold A for noS + enc120 together** (the proposed cheaper model): not run.
+- **The minute-bar fallback for the S tier:** designed, not built.
+- **Read-only checks awaiting the user's OK:**
+  1. per-P-bucket CIs clustered by day, with and without 08-06, 09-02 and 08-12;
+  2. IA1 vs noS vs fold A on the same settings;
+  3. whether P(up) − P(down) predicts the direction;
+  4. the first-touch race, +1% before a −0.7% stop.
+- **Live:** §16, not built; `mtap-morning` not deployed; 1 s polling untried.
+
+## 20. Document map
+
+| document | holds |
+| --- | --- |
+| this file | the column dictionary and the pipeline end to end |
+| [../ml/MODEL-STRATEGY.md](../ml/MODEL-STRATEGY.md) | the Scoreboard (current choices and results); the Q&A log: Q37–Q43 for intraday |
+| [LEARNINGS.md](LEARNINGS.md) `tag-ml-intraday` | every experiment with numbers: v2 design, IA1, Moves, the export check, P1 |
+| [live-recommendations-plan.md](live-recommendations-plan.md) | the live path to MBin; §0 = the pending list by owner (P16 = the live scorer) |
+| [STATUS.md](STATUS.md) | hosts, schedules, data locations, the dated Changes log |
+| [intraday-design.md](intraday-design.md) | the Stage A/B GBM design and the Step 0 probe (before v2) |
+| [intraday-redesign.md](intraday-redesign.md), [analog-pockets.md](analog-pockets.md) | the analog engine and the Space page |
+| [intraday-model.md](intraday-model.md), [../ml/FEATURES-intraday.md](../ml/FEATURES-intraday.md) | the first `tft_intraday` model (superseded) |
+| `ml/runs/intraday_ft/<run>/report.md`, MODEL.md | each run's full report and label |
+
 ## Change log
 
 | date | change |
@@ -509,3 +930,4 @@ label used for Chunk 0).
 | 2026-11-08 | **Moves tab + `extremes.parquet`** (§7): the dashboard reads P(centre at or beyond ±X%) off the stored `mass_up` / `cm_*` quantiles, calibrated by a rolling 20-session isotonic map; no model change. Extremes written for IA1 and IA1A. |
 | 2026-11-08 | `extremes.parquet` adds the prices after the entry: `vw_bk` / `tw_bk` (bin VWAP / TWAP), `cvw_bk` / `ctw_bk` (from the entry to the bin's end), `cl_bk` (last price). Written for all seven runs. Moves list: high / low / VWAP / TWAP / last price in $ and %, the predicted centre of the window with the highest P (toggle on), `max_said` per day. |
 | 2026-11-08 | Moves: the bins are exclusive (b4 = 30–60 min only). A toggle (default on) gives P by the window's end: 1 − Π(1 − P_k) over b1..bK, calibrated on the OR of their outcomes; better calibrated than one bin. |
+| 2026-11-14 | **The file now covers the whole pipeline** (§8–§20): sources and commands, reference values, the build, the transformations, training, testing, Moves, results, live (planned), assumptions, decision pivots, open items, a document map. Corrected against the code: training uses Massive 1 s as is (step 1), `poll_tier` is 1 / 0, the volume unit has +1, `live_set` is True on every run-file row, the minute-bar S fallback isn't built, the go rule's recalibration is the rolling one. The frame cache in `/tmp` is gone. Export check: high P is size, not direction (§15). |

@@ -35,7 +35,7 @@ recommendation has gone to MBin yet:** there is no scorer, no live price and no 
 | --- | --- | --- |
 | P2 deploy: open the NAS Redis read-only to the Mac | OK to deploy the 2026-11-01 draft (§3, ~45 min, outside market hours, plus a DSM firewall rule only the user can add) | decided A on 2026-11-01; drafted (commit 5a37885), not deployed |
 | P15: how MBin filters on the Moves (±X%) predictions | option 1, a calibrated ladder P(centre ≥ X) as `events`, recommended; or option 2, raw quantiles plus a calibration table | MODEL-STRATEGY Q42; then a proposal in `MBin/docs/contracts/proposed/` |
-| What `score` means for the intraday v2 model | the pocket model sizes moves but doesn't call direction (Q41, Q42). Its `score` would be a base rate (`baseline.climatology`, tier 3), with the forecast block carrying the size predictions | decides whether P16 sends BUYs at all, or only forecasts |
+| What `score` means for the intraday v2 model | **decided (user, 2026-11-12):** the calibrated b5 "touched +X%" read-out of IA1 (IA1 chosen over noS for live), with the skill vs climatology gating the tier. On record (Q43, 2026-11-14): it measures size, not direction; at P ≥ 0.55 the up picks touched −1% about as often as +1% (80% vs 82%) | P16 sends it as `score`; the forecast block carries the size predictions |
 | Item 13 (phase 2: an active exit's `ttl_ms` ≥ 60 000 in the schema) | MTap's call; not needed for the MVP | open since 2026-11-01 |
 
 **C. MTap to build** (no outside dependency except as noted)
@@ -48,7 +48,7 @@ recommendation has gone to MBin yet:** there is no scorer, no live price and no 
 | P7 | launchd start on the Mac, trading days ~06:00–13:30 PT | **not built.** MBin starts the contract Redis with its own tool |
 | P13 | the v2 builder: vendor v2 and pin its hash; `forecast` from the daily run files, then from the intraday run file; `score_readout` / `probability_readout`; `max_entry_pct` (¼ of the target); `skill` only at ≥ 60 days and ≥ 1,000 events | waits for M13 (A) |
 | P14 | re-pin the outcome / parameters schemas after MBin's item 15 edits | waits for MBin (A) |
-| P16 | **live scorer for intraday v2** (new; replaces P8 / P9): write the IA1 quantile columns per minute for the live set, then the extremes as each window closes, so the Moves filter and grading run live | **not designed.** Needs P2 (fresh E*TRADE prices) and the user's call on the model (Phase 2 GBM, fold A noS + enc120) |
+| P16 | **live scorer for intraday v2** (new; replaces P8 / P9): write the IA1 quantile columns per minute for the live set, then the extremes as each window closes, so the Moves filter and grading run live | **designed, not built** ([intraday-features.md](intraday-features.md) §16; model IA1, score chosen 2026-11-12). Needs P2 (fresh E*TRADE prices), 1 s polling (trial), `mtap-morning` deployed (Chunk 0) |
 | P17 | after M6: raise the protocol from `1.0-draft` to `1.0` with MBin in REVIEW | after M6 |
 
 **D. Later (phase 2):** P12 (EXIT_RECOMMENDATION, POSITIONS_SNAPSHOT, item 13).
@@ -153,4 +153,5 @@ make tomorrow's live tests real except for the edge.
 | 2026-11-07 | P13 added: contract item M13 (RECOMMENDATION v2 forecast block) proposed to MBin; v1 unchanged. |
 | 2026-11-07 | M13 confirmed; REVIEW items 15–18 answered. MTap's views: rank in tiers (skilled / skill unknown / no edge), then by lift. Supersede only by the same or a better tier. Stop and target anchored to `price_ref`. Entry cap `max_entry_pct`. Grading from market data only. P6 and P13 updated, P14 added. Fix: the recommender withheld candidates outside `NORMAL`, against item 12; it now sends them in every state. |
 | 2026-11-12 | §0 added: every pending item by owner (waiting on MBin / the user / MTap to build / phase 2), checked against the code and both repos. MBin unchanged since 2026-11-07. P10: M3–M5 done, M6 pending. P11 done. P4 partly built (TTL clamp, repeat drop). P15 (Moves ladder, Q42), P16 (intraday v2 live scorer) and P17 (protocol 1.0) added. |
+| 2026-11-14 | §0: `score` for intraday v2 decided (IA1, calibrated b5 touched +X%; Q43 export check: size, not direction); P16 designed in intraday-features.md §16, not built. |
 | 2026-11-01 | P2 decided: A (NAS Redis, read only, from the Mac). P1 built and started: `--parts p1` in `ml/scripts_intraday_probe.py`; five arms on the same rows (d0 / d1 inputs × entry at the last close / minute i's open / minute i's VWAP with outcomes from i + 1). Resumable: rerun `/tmp/mtap/intraday_probe/run_p1.sh`; finished months (`rows_p1/`) and (fold, arm) files (`p1/`) are skipped, files are written via a temp name. |

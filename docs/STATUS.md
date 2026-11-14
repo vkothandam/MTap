@@ -41,8 +41,7 @@ MTap sources market data for the ML work.
 | `nas/massive1s/` | Rust 1-second REST backfill, runs on the NAS | [nas/README.md](../nas/README.md) |
 | `ml/` | TFT trainer, report, predict, grade (to move to its own repo) | [ml/README.md](../ml/README.md), [MODEL-STRATEGY.md](../ml/MODEL-STRATEGY.md) |
 | `dashboard/` | Streamlit forecast dashboard (reads run files and the `space/` moment library only) | [dashboard/README.md](../dashboard/README.md) |
-| `space/` | `mtap-space`: the analog-pockets moment library and matcher (`space-build`), used by Intraday → Space | [intraday-features.md](intraday-features.md) | intraday v2 (2026-11-06): every input and target column with formula, units, sources and a worked example; SPY vs SPX rule; how testing works; run-file columns |
-| [analog-pockets.md](analog-pockets.md) |
+| `space/` | `mtap-space`: the analog-pockets moment library and matcher (`space-build`), used by Intraday → Space | [analog-pockets.md](analog-pockets.md) |
 
 ## Hosts
 
@@ -352,7 +351,8 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
 | [nas-migration.md](nas-migration.md) | why and how the sourcing moved to the NAS; E*TRADE on the NAS; decommissioning the iMac; a cloud VM later |
 | [deploy/synology/README.md](../deploy/synology/README.md) | NAS runbook: one-time setup, trial, cutover, rollback, Monday checks |
 | [LEARNINGS.md](LEARNINGS.md) | what the data checks found, by tagged topic |
-| [intraday-model.md](intraday-model.md) | the intraday model: data, the daily forecast as input, folds aligned with the daily model |
+| [intraday-features.md](intraday-features.md) | **intraday v2, the current intraday model, end to end** (2026-11-14): the column dictionary (§1–§7, test-checked), then sources and commands, reference values, the frame build, transformations, training, testing, the Moves read-out, results, the live plan, assumptions, decision pivots, open items and a document map (§8–§20) |
+| [intraday-model.md](intraday-model.md) | the first intraday model (`tft_intraday`, superseded by intraday v2): data, the daily forecast as input, folds aligned with the daily model |
 | [intraday-redesign.md](intraday-redesign.md) | the intraday redesign: predictions from past events (analog engine), pockets and pressure, solutions evaluated (TFT not the predictor), the Space page, next steps |
 | [intraday-design.md](intraday-design.md) | the intraday model design (2026-11-01): two-stage GBM, Step 0 probe (`ml/scripts_intraday_probe.py`), test points near the day's high / low, recommendation count |
 | [analog-pockets.md](analog-pockets.md) | the analog-pockets experiment: first check, verdict (no edge yet), the Intraday → Space view, how to rerun |
@@ -622,3 +622,15 @@ The tables above come from `ml/scripts_compare_vs_r0.py night|bake`, `ml/scripts
   to `schemas/`, the item 15 schema edits, M6). The user's calls: the P2 NAS Redis deploy, the Moves ladder option
   (P15), and what `score` means for intraday v2. MTap to build: P3–P7, P13–P14 after MBin, and the new P16 (intraday v2
   live scorer). No real recommendation has reached MBin yet.
+- 2026-11-14: **Intraday v2 docs brought up to date** (docs only, no code or run change):
+  - [intraday-features.md](intraday-features.md) now covers the whole pipeline (§8–§20). It was checked against the
+    code, and a few lines were corrected: training uses Massive 1 s as is; `poll_tier` is 1 / 0; the minute-bar S
+    fallback isn't built.
+  - LEARNINGS "Intraday v2 Moves export check" and MODEL-STRATEGY Q43: the user's IA1-noS export (+1%, P ≥ 0.55,
+    the entry to the close) is a good **size** forecast (touched 78% / 77%), not a direction forecast (the up picks
+    touched −1% in 80%).
+  - Score for live recorded: IA1, the calibrated b5 "touched +X%" (user, 2026-11-12).
+  - **The intraday frame cache `/tmp/mtap/intraday_ft_w8/` is gone** (macOS clears `/tmp` on a restart). The run
+    files and the dashboard are unaffected. Any retrain, re-score or new `extremes.parquet` needs a rebuild first
+    (`intraday-ft-build`, ≈ 2½ h, ≈ 86 GB).
+  - Fixed this file's docs index: the intraday-features row had been merged into the `space/` row.
